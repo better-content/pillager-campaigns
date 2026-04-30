@@ -28,7 +28,6 @@ object PillagerPressureConfig {
 
     val targetPlayerImmediately: ForgeConfigSpec.BooleanValue
     val persistentPatrolMobs: ForgeConfigSpec.BooleanValue
-    val dropOminousBottleFromLeaders: ForgeConfigSpec.BooleanValue
 
     init {
         val builder = ForgeConfigSpec.Builder()
@@ -75,7 +74,6 @@ object PillagerPressureConfig {
         )
         targetPlayerImmediately = builder.define("target_player_immediately", true)
         persistentPatrolMobs = builder.comment("Persistence prevents patrols from vanishing before they find the player; accumulation cap prevents runaway counts.").define("persistent_patrol_mobs", true)
-        dropOminousBottleFromLeaders = builder.comment("If Base Raid is loaded, patrol leaders drop its ominous bottle unless another drop already added one.").define("drop_ominous_bottle_from_leaders", true)
         builder.pop()
 
         SPEC = builder.build()

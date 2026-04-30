@@ -13,9 +13,7 @@ import net.minecraft.server.level.ServerPlayer
 import net.minecraft.world.entity.EntityType
 import net.minecraft.world.entity.Mob
 import net.minecraft.world.entity.MobSpawnType
-import net.minecraft.world.entity.item.ItemEntity
 import net.minecraft.world.entity.monster.PatrollingMonster
-import net.minecraft.world.item.ItemStack
 import net.minecraft.world.level.GameRules
 import net.minecraft.world.level.Level
 import net.minecraft.world.level.block.state.BlockState
@@ -23,10 +21,8 @@ import net.minecraft.world.level.levelgen.Heightmap
 import net.minecraft.world.phys.AABB
 import net.minecraftforge.event.RegisterCommandsEvent
 import net.minecraftforge.event.TickEvent
-import net.minecraftforge.event.entity.living.LivingDropsEvent
 import net.minecraftforge.event.server.ServerStartedEvent
 import net.minecraftforge.eventbus.api.SubscribeEvent
-import net.minecraftforge.fml.ModList
 import net.minecraftforge.registries.ForgeRegistries
 import kotlin.math.cos
 import kotlin.math.max
@@ -65,19 +61,6 @@ object PillagerPressureEvents {
     fun onRegisterCommands(event: RegisterCommandsEvent) {
         register(event.dispatcher, "pillagerpressure")
         register(event.dispatcher, "ppatrol")
-    }
-
-    @SubscribeEvent
-    fun onLivingDrops(event: LivingDropsEvent) {
-        if (!PillagerPressureConfig.dropOminousBottleFromLeaders.get()) return
-        if (!ModList.get().isLoaded("baseraid")) return
-        val entity = event.entity
-        if (entity !is PatrollingMonster || !entity.isPatrolLeader) return
-        if (!entity.persistentData.getBoolean(PillagerPressureMod.PATROL_TAG)) return
-
-        val bottle = ForgeRegistries.ITEMS.getValue(ResourceLocation.parse("baseraid:ominous_bottle")) ?: return
-        if (event.drops.any { it.item.item == bottle }) return
-        event.drops.add(ItemEntity(entity.level(), entity.x, entity.y, entity.z, ItemStack(bottle)))
     }
 
     private fun register(dispatcher: CommandDispatcher<CommandSourceStack>, name: String) {
