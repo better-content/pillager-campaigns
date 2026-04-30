@@ -237,9 +237,7 @@ object PillagerRuntime {
         itemStack(loadout.mainhand)?.let { entity.setItemSlot(EquipmentSlot.MAINHAND, it) }
         val offhand = if (loadout.offhand?.endsWith("_banner") == true && faction != null) PillagerIdentity.bannerStack(faction) else loadout.offhand?.let { itemStack(it) }
         offhand?.let { entity.setItemSlot(EquipmentSlot.OFFHAND, it) }
-        if (offhand == null && (officer.rank == OfficerRank.BANNERLORD || officer.doctrine == OfficerDoctrine.STANDARD || OfficerAffix.BANNERED in officer.affixes)) {
-            faction?.let { entity.setItemSlot(EquipmentSlot.HEAD, PillagerIdentity.bannerStack(it)) }
-        }
+        if (offhand?.item !is net.minecraft.world.item.BannerItem) faction?.let { entity.setItemSlot(EquipmentSlot.HEAD, PillagerIdentity.bannerStack(it)) }
     }
 
     private fun itemStack(itemId: String): ItemStack? {

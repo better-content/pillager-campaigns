@@ -18,7 +18,10 @@ data class OfficerLoadout(
     val mainhand: String,
     val offhand: String?,
     val notes: List<String>,
-)
+) {
+    val carriesBannerInOffhand: Boolean = offhand?.endsWith("_banner") == true
+    val requiresBannerHelmetFallback: Boolean = !carriesBannerInOffhand
+}
 
 object OfficerLoadoutRules {
     fun forOfficer(officer: PillagerOfficer): OfficerLoadout =
@@ -30,13 +33,13 @@ object OfficerLoadoutRules {
         affixes: Set<OfficerAffix> = emptySet(),
         engineeringTalent: OfficerEngineeringTalent = OfficerEngineeringTalent.NONE,
     ): OfficerLoadout {
-        val bannerCarrier = rank == OfficerRank.BANNERLORD || doctrine == OfficerDoctrine.STANDARD || OfficerAffix.BANNERED in affixes
+        val bannerCarrier = true
         val mainhand = mainhandFor(doctrine, affixes, bannerCarrier)
         val offhand = offhandFor(doctrine, affixes, bannerCarrier)
         val notes = buildList {
             add("rank: ${rank.readable()}")
             add("doctrine: ${doctrine.readable()}")
-            if (bannerCarrier) add("banner intent: visible rally marker, not a boss aura")
+            add("banner intent: every officer is a visible named rally marker, not a boss aura")
             affixNotes(affixes).forEach(::add)
             engineeringNote(engineeringTalent)?.let(::add)
             add("runtime intent: vanilla item ids only; no enchantments, effects, or exotic boss powers")
@@ -100,12 +103,12 @@ object OfficerLoadoutRules {
     }
 
     private fun offhandFor(doctrine: OfficerDoctrine, affixes: Set<OfficerAffix>, bannerCarrier: Boolean): String? = when {
-        bannerCarrier -> "minecraft:white_banner"
         doctrine == OfficerDoctrine.HUNTER || doctrine == OfficerDoctrine.STALKER -> "minecraft:shield"
         doctrine == OfficerDoctrine.BREAKER -> "minecraft:shield"
         doctrine == OfficerDoctrine.SIEGE_CAPTAIN -> "minecraft:shield"
         doctrine == OfficerDoctrine.SURVIVOR -> "minecraft:shield"
         OfficerAffix.IRONBOUND in affixes -> "minecraft:shield"
+        bannerCarrier -> "minecraft:white_banner"
         else -> null
     }
 

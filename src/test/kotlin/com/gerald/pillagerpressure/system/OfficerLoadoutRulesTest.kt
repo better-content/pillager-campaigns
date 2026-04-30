@@ -24,9 +24,11 @@ class OfficerLoadoutRulesTest {
 
         assertEquals("minecraft:crossbow", loadout.mainhand)
         assertEquals("minecraft:shield", loadout.offhand)
+        assertTrue(loadout.requiresBannerHelmetFallback)
         assertEquals("minecraft:iron_chestplate", loadout.armor.chestplate)
         assertTrue(loadout.notes.any { it.contains("hunter") })
         assertTrue(loadout.notes.any { it.contains("longshot") })
+        assertTrue(loadout.notes.any { it.contains("every officer") })
     }
 
     @Test
@@ -62,7 +64,7 @@ class OfficerLoadoutRulesTest {
     }
 
     @Test
-    fun hexerIsMarkedButNotGivenExoticBossPowers() {
+    fun hexerCarriesBannerAndIsNotGivenExoticBossPowers() {
         val loadout = OfficerLoadoutRules.plan(
             rank = OfficerRank.CAPTAIN,
             doctrine = OfficerDoctrine.HEXER,
@@ -70,7 +72,8 @@ class OfficerLoadoutRulesTest {
         )
 
         assertEquals("minecraft:iron_sword", loadout.mainhand)
-        assertEquals(null, loadout.offhand)
+        assertEquals("minecraft:white_banner", loadout.offhand)
+        assertTrue(loadout.carriesBannerInOffhand)
         assertTrue(loadout.notes.any { it.contains("witch-touched markings only") })
         assertTrue(loadout.notes.any { it.contains("no enchantments, effects, or exotic boss powers") })
     }
@@ -87,7 +90,7 @@ class OfficerLoadoutRulesTest {
         assertEquals("minecraft:white_banner", loadout.offhand)
         assertEquals("minecraft:iron_chestplate", loadout.armor.chestplate)
         assertTrue(loadout.notes.any { it.contains("banner intent") })
-        assertTrue(loadout.notes.any { it.contains("visible rally marker") })
+        assertTrue(loadout.notes.any { it.contains("visible named rally marker") })
     }
 
     @Test
@@ -119,6 +122,21 @@ class OfficerLoadoutRulesTest {
         assertEquals("minecraft:iron_chestplate", loadout.armor.chestplate)
         assertTrue(loadout.notes.any { it.contains("survivor") })
         assertTrue(loadout.notes.any { it.contains("grave-marked") })
+    }
+
+    @Test
+    fun everyRankAndDoctrineHasAVisibleBannerPlan() {
+        OfficerRank.entries.forEach { rank ->
+            OfficerDoctrine.entries.forEach { doctrine ->
+                val loadout = OfficerLoadoutRules.plan(rank = rank, doctrine = doctrine)
+
+                assertTrue(
+                    loadout.carriesBannerInOffhand || loadout.requiresBannerHelmetFallback,
+                    "missing visible banner plan for $rank/$doctrine",
+                )
+                assertTrue(loadout.notes.any { it.contains("every officer") })
+            }
+        }
     }
 
     private fun officer(
