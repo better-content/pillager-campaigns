@@ -46,6 +46,7 @@ object PillagerRuntime {
     const val OBJECTIVE_Z_TAG = "PillagerPressureObjectiveZ"
     const val ENGINEER_NEXT_TICK_TAG = "PillagerPressureEngineerNextTick"
     const val ENGINEER_PLACED_COUNT_TAG = "PillagerPressureEngineerPlaced"
+    const val SQUAD_LEADER_TAG = "PillagerPressureSquadLeader"
 
     fun eligible(player: ServerPlayer): Boolean {
         if (PillagerPressureConfig.skipSpectatorPlayers.get() && player.isSpectator) return false
@@ -77,13 +78,16 @@ object PillagerRuntime {
     ): Int {
         var spawned = 0
         val objective = PillagerObjectiveRules.objectiveFor(campaign, target, pos)
+        var leaderEntity: Mob? = null
         if (leader) {
-            if (spawnMob(level, "minecraft:pillager", jitter(pos, level, 3), target, objective, base, faction, campaign, officer, true)) spawned++
+            leaderEntity = createMob(level, "minecraft:pillager", jitter(pos, level, 3), target, objective, base, faction, campaign, officer, true, null)
+            if (leaderEntity != null && level.addFreshEntity(leaderEntity)) spawned++
         }
+        val leaderId = leaderEntity?.uuid
         val manifest = squadManifest(level, officer, pillagers, specials)
         manifest.forEach { (entityId, count) ->
             repeat(count.coerceAtLeast(0)) {
-                if (spawnMob(level, entityId, jitter(pos, level, 6), target, objective, base, faction, campaign, officer, false)) spawned++
+                if (spawnMob(level, entityId, jitter(pos, level, 6), target, objective, base, faction, campaign, officer, false, leaderId)) spawned++
             }
         }
         if (spawned > 0) data.markChanged()
@@ -101,10 +105,28 @@ object PillagerRuntime {
         campaign: PillagerCampaign?,
         officer: PillagerOfficer?,
         leader: Boolean,
+        squadLeaderId: java.util.UUID? = null,
     ): Boolean {
-        val id = ResourceLocation.tryParse(entityId) ?: return false
-        val type = ForgeRegistries.ENTITY_TYPES.getValue(id) ?: return false
-        val entity = type.create(level) as? Mob ?: return false
+        val entity = createMob(level, entityId, pos, target, objective, base, faction, campaign, officer, leader, squadLeaderId) ?: return false
+        return level.addFreshEntity(entity)
+    }
+
+    private fun createMob(
+        level: ServerLevel,
+        entityId: String,
+        pos: BlockPos,
+        target: ServerPlayer?,
+        objective: PillagerObjectiveRules.Objective,
+        base: PillagerBase?,
+        faction: PillagerFaction?,
+        campaign: PillagerCampaign?,
+        officer: PillagerOfficer?,
+        leader: Boolean,
+        squadLeaderId: java.util.UUID?,
+    ): Mob? {
+        val id = ResourceLocation.tryParse(entityId) ?: return null
+        val type = ForgeRegistries.ENTITY_TYPES.getValue(id) ?: return null
+        val entity = type.create(level) as? Mob ?: return null
         entity.moveTo(pos.x + 0.5, pos.y.toDouble(), pos.z + 0.5, level.random.nextFloat() * 360.0f, 0.0f)
         runCatching { entity.finalizeSpawn(level, level.getCurrentDifficultyAt(pos), MobSpawnType.EVENT, null, null) }
             .onFailure { PillagerPressureMod.LOGGER.debug("finalizeSpawn failed for {} at {}", entityId, pos, it) }
@@ -122,6 +144,7 @@ object PillagerRuntime {
             entity.isCustomNameVisible = true
             applyOfficerSignal(level, entity, it, faction)
         }
+        if (!leader && squadLeaderId != null) entity.persistentData.putUUID(SQUAD_LEADER_TAG, squadLeaderId)
         target?.let {
             entity.persistentData.putUUID("BoundToMatterPressureTarget", it.uuid)
             if (PillagerPressureConfig.targetPlayerImmediately.get()) entity.target = it
@@ -130,7 +153,7 @@ object PillagerRuntime {
         if (entity is PatrollingMonster) {
             entity.patrolTarget = objective.pos
         }
-        return level.addFreshEntity(entity)
+        return entity
     }
 
     private fun squadManifest(level: ServerLevel, officer: PillagerOfficer?, pillagers: Int, specials: Int): Map<String, Int> {
@@ -255,6 +278,23 @@ object PillagerRuntime {
         }
     }
 
+    fun chooseForcedSpawnPos(level: ServerLevel, center: BlockPos): BlockPos? =
+        chooseSpawnPos(level, center) ?: chooseNearbyLoadedSpawnPos(level, center)
+
+    private fun chooseNearbyLoadedSpawnPos(level: ServerLevel, center: BlockPos): BlockPos? {
+        val offsets = PillagerSpawnPlacementRules.farthestFirstOffsets(8, 32, 4) + listOf(PillagerSpawnPlacementRules.Offset(0, 0))
+        for (offset in offsets) {
+            val x = center.x + offset.dx
+            val z = center.z + offset.dz
+            val probe = BlockPos(x, center.y, z)
+            if (!level.hasChunkAt(probe)) continue
+            val y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z)
+            val candidate = BlockPos(x, y, z)
+            if (validSpawnSurface(level, candidate)) return candidate
+        }
+        return null
+    }
+
     fun validSpawnSurface(level: ServerLevel, pos: BlockPos): Boolean {
         if (pos.y <= level.minBuildHeight + 1 || pos.y >= level.maxBuildHeight - 2) return false
         val state = level.getBlockState(pos)
@@ -270,6 +310,21 @@ object PillagerRuntime {
         val radius = PillagerPressureConfig.activeCheckRadius.get().toDouble()
         val box = AABB(center).inflate(radius, 96.0, radius)
         return level.getEntitiesOfClass(Mob::class.java, box) { it.isAlive && it.persistentData.getBoolean(PillagerPressureMod.PATROL_TAG) }.size
+    }
+
+    fun pullFollowerTowardOfficer(level: ServerLevel, mob: Mob): Boolean {
+        val tag = mob.persistentData
+        if (!tag.hasUUID(SQUAD_LEADER_TAG) || tag.hasUUID(OFFICER_TAG)) return false
+        val leaderId = tag.getUUID(SQUAD_LEADER_TAG)
+        val box = AABB(mob.blockPosition()).inflate(64.0, 32.0, 64.0)
+        val leader = level.getEntitiesOfClass(Mob::class.java, box) { it.uuid == leaderId && it.isAlive }.firstOrNull() ?: return false
+        val dist = mob.distanceToSqr(leader)
+        if (mob.target == null) mob.target = leader.target
+        if (dist > 6.0 * 6.0) {
+            mob.navigation.moveTo(leader, if (dist > 16.0 * 16.0) 1.35 else 1.15)
+            return true
+        }
+        return false
     }
 
     fun placeFactionFlags(level: ServerLevel, faction: PillagerFaction, center: BlockPos, count: Int): Int {

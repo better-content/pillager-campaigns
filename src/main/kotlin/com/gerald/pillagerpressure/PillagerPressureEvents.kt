@@ -113,8 +113,10 @@ object PillagerPressureEvents {
         if (!mob.isAlive) return
         if (level.gameTime % 10L != 0L) return
         val tag = mob.persistentData
-        if (!tag.hasUUID(PillagerRuntime.OFFICER_TAG)) return
-        PillagerRuntime.tryOfficerEngineering(level, PillagerWorldData.get(level.server), mob)
+        PillagerRuntime.pullFollowerTowardOfficer(level, mob)
+        if (tag.hasUUID(PillagerRuntime.OFFICER_TAG)) {
+            PillagerRuntime.tryOfficerEngineering(level, PillagerWorldData.get(level.server), mob)
+        }
     }
 
     @SubscribeEvent
@@ -184,7 +186,11 @@ object PillagerPressureEvents {
         dispatcher.register(
             Commands.literal(name).requires { it.hasPermission(2) }
                 .then(Commands.literal("status").executes { context -> context.source.sendSuccess({ Component.literal(statusLine(context.source.server)) }, false); Command.SINGLE_SUCCESS })
-                .then(Commands.literal("now").executes { context -> val spawned = runAttempt(context.source.server, force = true, source = "command"); context.source.sendSuccess({ Component.literal("Pillager Pressure forced attempt spawned_groups=$spawned status=$lastStatus") }, true); Command.SINGLE_SUCCESS })
+                .then(Commands.literal("now").executes { context ->
+                    val spawned = runAttempt(context.source.server, force = true, source = "command", commandPlayer = context.source.player)
+                    context.source.sendSuccess({ Component.literal("Pillager Pressure forced attempt spawned_groups=$spawned status=$lastStatus") }, true)
+                    Command.SINGLE_SUCCESS
+                })
                 .then(Commands.literal("tick_once").executes { context -> tickCampaignOnce(context.source) })
                 .then(
                     Commands.literal("base")
@@ -199,17 +205,19 @@ object PillagerPressureEvents {
         )
     }
 
-    private fun runAttempt(server: MinecraftServer, force: Boolean, source: String): Int {
+    private fun runAttempt(server: MinecraftServer, force: Boolean, source: String, commandPlayer: ServerPlayer? = null): Int {
         attempts++
         var spawnedGroups = 0
         val data = PillagerWorldData.get(server)
-        for (player in server.playerList.players) {
-            if (!PillagerRuntime.eligible(player)) continue
+        val players = if (force && commandPlayer != null) listOf(commandPlayer) else server.playerList.players
+        for (player in players) {
+            if (!force && !PillagerRuntime.eligible(player)) { lastStatus = "no eligible player: ${player.gameProfile.name}"; continue }
+            if (force && PillagerPressureConfig.overworldOnly.get() && player.serverLevel().dimension() != Level.OVERWORLD) { lastStatus = "forced player not in overworld: ${player.gameProfile.name}"; continue }
             if (!force && player.random.nextDouble() > PillagerPressureConfig.spawnChance.get()) { lastStatus = "skipped chance for ${player.gameProfile.name}"; continue }
             if (spawnFallbackPatrolFor(data, player, force)) spawnedGroups++
         }
-        if (spawnedGroups == 0 && server.playerList.players.isEmpty()) lastStatus = "no players online"
-        PillagerPressureMod.LOGGER.info("Pillager Pressure attempt source={} force={} players={} spawned_groups={} status={}", source, force, server.playerList.players.size, spawnedGroups, lastStatus)
+        if (spawnedGroups == 0 && players.isEmpty()) lastStatus = "no players online"
+        PillagerPressureMod.LOGGER.info("Pillager Pressure attempt source={} force={} players={} spawned_groups={} status={}", source, force, players.size, spawnedGroups, lastStatus)
         return spawnedGroups
     }
 
@@ -217,11 +225,12 @@ object PillagerPressureEvents {
         val level = player.serverLevel()
         val active = PillagerRuntime.countActivePatrolMobs(level, player.blockPosition())
         if (!force && active >= PillagerPressureConfig.maxActiveNearPlayer.get()) { lastStatus = "active cap near ${player.gameProfile.name}: $active"; return false }
-        val pos = PillagerRuntime.chooseSpawnPos(level, player.blockPosition()) ?: run { lastStatus = "no valid spawn surface near ${player.gameProfile.name}"; return false }
+        val pos = (if (force) PillagerRuntime.chooseForcedSpawnPos(level, player.blockPosition()) else PillagerRuntime.chooseSpawnPos(level, player.blockPosition()))
+            ?: run { lastStatus = "no valid loaded spawn surface near ${player.gameProfile.name}"; return false }
         val base = PillagerBaseService.nearestActiveBase(level, data, player.blockPosition())
         val faction = base?.let { data.factions[it.factionId] }
         val officer = base?.let { PillagerBaseService.officerForBase(data, it) }
-        val spawned = PillagerRuntime.spawnSquad(level, data, pos, player, base, faction, null, officer, PillagerPressureConfig.maxPillagers.get(), PillagerPressureConfig.specialAmount.get(), leader = true)
+        val spawned = PillagerRuntime.spawnSquad(level, data, pos, player, base, faction, null, officer, PillagerPressureConfig.maxPillagers.get(), PillagerPressureConfig.specialAmount.get(), leader = PillagerPressureConfig.spawnLeader.get())
         if (spawned <= 0) { lastStatus = "all entity spawns failed near ${player.gameProfile.name}"; return false }
         groupsSpawned++; mobsSpawned += spawned.toLong(); lastStatus = "spawned $spawned near ${player.gameProfile.name} at ${pos.x} ${pos.y} ${pos.z} active_before=$active"; return true
     }
