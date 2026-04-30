@@ -14,7 +14,6 @@ import net.minecraft.server.level.ServerPlayer
 import net.minecraft.core.particles.ParticleTypes
 import net.minecraft.world.effect.MobEffectInstance
 import net.minecraft.world.effect.MobEffects
-import net.minecraft.world.entity.EntityType
 import net.minecraft.world.entity.EquipmentSlot
 import net.minecraft.world.entity.Mob
 import net.minecraft.world.entity.MobSpawnType
@@ -81,12 +80,11 @@ object PillagerRuntime {
         if (leader) {
             if (spawnMob(level, "minecraft:pillager", jitter(pos, level, 3), target, objective, base, faction, campaign, officer, true)) spawned++
         }
-        repeat(pillagers.coerceAtLeast(0)) {
-            if (spawnMob(level, "minecraft:pillager", jitter(pos, level, 5), target, objective, base, faction, campaign, officer, false)) spawned++
-        }
-        repeat(specials.coerceAtLeast(0)) {
-            val id = chooseSpecial(level) ?: return@repeat
-            if (spawnMob(level, id, jitter(pos, level, 6), target, objective, base, faction, campaign, officer, false)) spawned++
+        val manifest = squadManifest(level, officer, pillagers, specials)
+        manifest.forEach { (entityId, count) ->
+            repeat(count.coerceAtLeast(0)) {
+                if (spawnMob(level, entityId, jitter(pos, level, 6), target, objective, base, faction, campaign, officer, false)) spawned++
+            }
         }
         if (spawned > 0) data.markChanged()
         return spawned
@@ -105,7 +103,7 @@ object PillagerRuntime {
         leader: Boolean,
     ): Boolean {
         val id = ResourceLocation.tryParse(entityId) ?: return false
-        val type = ForgeRegistries.ENTITY_TYPES.getValue(id) as? EntityType<*> ?: return false
+        val type = ForgeRegistries.ENTITY_TYPES.getValue(id) ?: return false
         val entity = type.create(level) as? Mob ?: return false
         entity.moveTo(pos.x + 0.5, pos.y.toDouble(), pos.z + 0.5, level.random.nextFloat() * 360.0f, 0.0f)
         runCatching { entity.finalizeSpawn(level, level.getCurrentDifficultyAt(pos), MobSpawnType.EVENT, null, null) }
@@ -131,13 +129,26 @@ object PillagerRuntime {
         if (PillagerPressureConfig.persistentPatrolMobs.get()) entity.setPersistenceRequired()
         if (entity is PatrollingMonster) {
             entity.patrolTarget = objective.pos
-            if (leader) {
-                entity.isPatrolLeader = true
-                faction?.let { entity.setItemSlot(EquipmentSlot.HEAD, PillagerIdentity.bannerStack(it)) }
-            }
         }
         return level.addFreshEntity(entity)
     }
+
+    private fun squadManifest(level: ServerLevel, officer: PillagerOfficer?, pillagers: Int, specials: Int): Map<String, Int> {
+        if (officer == null) {
+            val fallback = linkedMapOf(SquadCompositionRules.PILLAGER to pillagers.coerceAtLeast(0))
+            repeat(specials.coerceAtLeast(0)) { chooseSpecial(level)?.let { fallback[it] = (fallback[it] ?: 0) + 1 } }
+            return fallback
+        }
+        val planned = SquadCompositionRules.plan(
+            doctrine = officer.doctrine,
+            rank = officer.rank,
+            engineeringTalent = OfficerEngineeringRules.talentFor(officer),
+            pressure = SquadCompositionPressure.fromGenes(officer.genes),
+        )
+        return SquadCompositionRules.fallbackManifest(planned.manifest, availableEntityIds()).manifest
+    }
+
+    private fun availableEntityIds(): Set<String> = ForgeRegistries.ENTITY_TYPES.keys.map { it.toString() }.toSet()
 
     private fun applyOfficerSignal(level: ServerLevel, entity: Mob, officer: PillagerOfficer, faction: PillagerFaction?) {
         val rankHealth = when (officer.rank) {
@@ -151,6 +162,7 @@ object PillagerRuntime {
             it.baseValue *= rankHealth
             entity.health = entity.maxHealth
         }
+        applyOfficerLoadout(entity, officer, faction)
         if (officer.rank == OfficerRank.WARLORD || officer.rank == OfficerRank.BANNERLORD) entity.setGlowingTag(true)
 
         officer.affixes.forEach { affix ->
@@ -161,14 +173,11 @@ object PillagerRuntime {
                     level.sendParticles(ParticleTypes.CLOUD, entity.x, entity.y + 1.0, entity.z, 16, 0.4, 0.7, 0.4, 0.05)
                 }
                 OfficerAffix.LONGSHOT -> {
-                    entity.addEffect(MobEffectInstance(MobEffects.DAMAGE_BOOST, 20 * 60 * 20, 0, true, true))
-                    entity.setItemSlot(EquipmentSlot.MAINHAND, ItemStack(Items.CROSSBOW))
                     level.sendParticles(ParticleTypes.CRIT, entity.x, entity.y + 1.2, entity.z, 18, 0.5, 0.5, 0.5, 0.08)
                 }
                 OfficerAffix.IRONBOUND -> {
                     entity.addEffect(MobEffectInstance(MobEffects.DAMAGE_RESISTANCE, 20 * 60 * 20, 1, true, true))
                     entity.getAttribute(Attributes.KNOCKBACK_RESISTANCE)?.let { it.baseValue = (it.baseValue + 0.6).coerceAtMost(1.0) }
-                    entity.setItemSlot(EquipmentSlot.CHEST, ItemStack(Items.IRON_CHESTPLATE))
                     level.sendParticles(ParticleTypes.ASH, entity.x, entity.y + 1.0, entity.z, 20, 0.5, 0.8, 0.5, 0.02)
                 }
                 OfficerAffix.WITCH_TOUCHED -> {
@@ -186,15 +195,35 @@ object PillagerRuntime {
                     level.sendParticles(ParticleTypes.SMOKE, entity.x, entity.y + 1.0, entity.z, 18, 0.5, 0.8, 0.5, 0.02)
                 }
                 OfficerAffix.BEAST_CALLER -> {
-                    entity.getAttribute(Attributes.ATTACK_DAMAGE)?.let { it.baseValue *= 1.25 }
                     level.sendParticles(ParticleTypes.ANGRY_VILLAGER, entity.x, entity.y + 1.4, entity.z, 10, 0.5, 0.5, 0.5, 0.02)
                 }
                 OfficerAffix.GRAVE_MARKED -> {
-                    entity.addEffect(MobEffectInstance(MobEffects.DAMAGE_BOOST, 20 * 60 * 20, 1, true, true))
+                    entity.addEffect(MobEffectInstance(MobEffects.DAMAGE_BOOST, 20 * 60 * 20, 0, true, true))
                     level.sendParticles(ParticleTypes.SOUL_FIRE_FLAME, entity.x, entity.y + 1.0, entity.z, 24, 0.5, 0.8, 0.5, 0.02)
                 }
             }
         }
+    }
+
+    private fun applyOfficerLoadout(entity: Mob, officer: PillagerOfficer, faction: PillagerFaction?) {
+        val loadout = OfficerLoadoutRules.forOfficer(officer)
+        itemStack(loadout.armor.helmet)?.let { entity.setItemSlot(EquipmentSlot.HEAD, it) }
+        itemStack(loadout.armor.chestplate)?.let { entity.setItemSlot(EquipmentSlot.CHEST, it) }
+        itemStack(loadout.armor.leggings)?.let { entity.setItemSlot(EquipmentSlot.LEGS, it) }
+        itemStack(loadout.armor.boots)?.let { entity.setItemSlot(EquipmentSlot.FEET, it) }
+        itemStack(loadout.mainhand)?.let { entity.setItemSlot(EquipmentSlot.MAINHAND, it) }
+        val offhand = if (loadout.offhand?.endsWith("_banner") == true && faction != null) PillagerIdentity.bannerStack(faction) else loadout.offhand?.let { itemStack(it) }
+        offhand?.let { entity.setItemSlot(EquipmentSlot.OFFHAND, it) }
+        if (offhand == null && (officer.rank == OfficerRank.BANNERLORD || officer.doctrine == OfficerDoctrine.STANDARD || OfficerAffix.BANNERED in officer.affixes)) {
+            faction?.let { entity.setItemSlot(EquipmentSlot.HEAD, PillagerIdentity.bannerStack(it)) }
+        }
+    }
+
+    private fun itemStack(itemId: String): ItemStack? {
+        val id = ResourceLocation.tryParse(itemId) ?: return null
+        val item = ForgeRegistries.ITEMS.getValue(id) ?: return null
+        if (item == Items.AIR) return null
+        return ItemStack(item)
     }
 
     private fun nameColor(officer: PillagerOfficer): ChatFormatting = when {

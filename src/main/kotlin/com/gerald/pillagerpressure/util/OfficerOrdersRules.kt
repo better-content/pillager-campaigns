@@ -7,6 +7,10 @@ import com.gerald.pillagerpressure.data.PillagerBase
 import com.gerald.pillagerpressure.data.PillagerCampaign
 import com.gerald.pillagerpressure.data.PillagerFaction
 import com.gerald.pillagerpressure.data.PillagerOfficer
+import com.gerald.pillagerpressure.system.OfficerEngineeringRules
+import com.gerald.pillagerpressure.system.OfficerLoadoutRules
+import com.gerald.pillagerpressure.system.SquadCompositionPressure
+import com.gerald.pillagerpressure.system.SquadCompositionRules
 
 /**
  * Pure story/order generator. Does not touch Minecraft runtime classes.
@@ -28,14 +32,15 @@ object OfficerOrdersRules {
 
         val lines = mutableListOf<String>()
         lines += "Faction: ${faction.name}"
-        lines += "Base: ${base.center.x}, ${base.center.z}"
-        lines += "Base Status: ${baseStatePhrase(base.state)}"
+        lines += "Assigned Base: ${base.center.x}, ${base.center.z}; ${baseStatePhrase(base.state)}"
         lines += "Command: ${officerDirective(officer, campaign)}"
         lines += "Priority: ${priorityLine(base, campaign)}"
 
         officer?.let {
             lines += "Officer: ${it.displayName()} (${it.doctrine.name.lowercase().replace('_', ' ')})"
-            lines += "Method: ${methodLine(it)}"
+            lines += "Engineering: ${OfficerEngineeringRules.talentFor(it).name.lowercase().replace('_', ' ')}"
+            lines += "Loadout: ${loadoutLine(it)}"
+            lines += "Squad: ${squadLine(it)}"
             if (it.lineage.predecessorOfficerId != null) lines += "Succession: ${it.lineage.causeOfSuccession}"
         } ?: run {
             lines += "Officer: unknown"
@@ -45,13 +50,18 @@ object OfficerOrdersRules {
             lines += "Campaign: ${campaignStatePhrase(it.state)}; Route: ${it.current.x},${it.current.z} -> ${it.target.x},${it.target.z}"
         }
 
-        return OfficerOrders(title, lines.take(8))
+        return OfficerOrders(title, lines.take(10))
     }
 
-    private fun methodLine(officer: PillagerOfficer): String {
-        val genes = officer.genes.topGenes(3).joinToString("/") { it.first }
-        val affixes = if (officer.affixes.isEmpty()) "unmarked" else officer.affixes.joinToString("/") { it.name.lowercase().replace('_', '-') }
-        return "$genes; $affixes"
+    private fun loadoutLine(officer: PillagerOfficer): String {
+        val loadout = OfficerLoadoutRules.forOfficer(officer)
+        val offhand = loadout.offhand?.substringAfter(':') ?: "empty"
+        return "${loadout.mainhand.substringAfter(':')} + $offhand"
+    }
+
+    private fun squadLine(officer: PillagerOfficer): String {
+        val plan = SquadCompositionRules.plan(officer.doctrine, officer.rank, OfficerEngineeringRules.talentFor(officer), SquadCompositionPressure.fromGenes(officer.genes))
+        return plan.summary.substringAfter(": ")
     }
 
     private fun baseStatePhrase(state: BaseState): String = when (state) {

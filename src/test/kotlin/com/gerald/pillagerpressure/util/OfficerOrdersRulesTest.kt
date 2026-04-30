@@ -30,7 +30,10 @@ class OfficerOrdersRulesTest {
 
         assertEquals("Orders of ${officer.name}", orders.title)
         assertTrue(orders.loreLines.any { it.contains("Faction: ${faction.name}") })
-        assertTrue(orders.loreLines.any { it.contains("Base: ${base.center.x}, ${base.center.z}") })
+        assertTrue(orders.loreLines.any { it.contains("Assigned Base: ${base.center.x}, ${base.center.z}") })
+        assertTrue(orders.loreLines.any { it.contains("Engineering:") })
+        assertTrue(orders.loreLines.any { it.contains("Loadout:") })
+        assertTrue(orders.loreLines.any { it.contains("Squad:") })
         assertTrue(orders.loreLines.any { it.contains("Campaign: engagement underway") })
         assertTrue(orders.loreLines.any { it.contains("Route: 0,0 -> 3,5") })
     }
@@ -48,7 +51,7 @@ class OfficerOrdersRulesTest {
     }
 
     @Test
-    fun generateCapsLoreAtEightLines() {
+    fun generateCapsLoreAtTenLines() {
         val faction = faction()
         val base = base(faction.id)
         val officer = officer(faction.id, base.id)
@@ -56,7 +59,7 @@ class OfficerOrdersRulesTest {
 
         val orders = OfficerOrdersRules.generate(faction, base, officer, campaign)
 
-        assertEquals(8, orders.loreLines.size)
+        assertTrue(orders.loreLines.size <= 10)
     }
 
     private fun faction() = PillagerFaction(UUID.randomUUID(), "Blackroot Standard", "black", "red", 12, 3, 2)
