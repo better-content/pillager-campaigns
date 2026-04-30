@@ -6,6 +6,7 @@ import com.gerald.pillagerpressure.system.PillagerCampaignDirector
 import com.gerald.pillagerpressure.system.OfficerAffixRules
 import com.gerald.pillagerpressure.system.OfficerGeneRules
 import com.gerald.pillagerpressure.system.OfficerOutcomeRules
+import com.gerald.pillagerpressure.system.PillagerAttemptRules
 import com.gerald.pillagerpressure.system.PillagerRuntime
 import com.gerald.pillagerpressure.util.OfficerOrdersRules
 import com.gerald.pillagerpressure.util.PillagerIdentity
@@ -188,7 +189,7 @@ object PillagerPressureEvents {
                 .then(Commands.literal("status").executes { context -> context.source.sendSuccess({ Component.literal(statusLine(context.source.server)) }, false); Command.SINGLE_SUCCESS })
                 .then(Commands.literal("now").executes { context ->
                     val spawned = runAttempt(context.source.server, force = true, source = "command", commandPlayer = context.source.player)
-                    context.source.sendSuccess({ Component.literal("Pillager Pressure forced attempt spawned_groups=$spawned status=$lastStatus") }, true)
+                    context.source.sendSuccess({ Component.literal(PillagerAttemptRules.commandFeedback(spawned, lastStatus)) }, true)
                     Command.SINGLE_SUCCESS
                 })
                 .then(Commands.literal("tick_once").executes { context -> tickCampaignOnce(context.source) })
@@ -211,9 +212,17 @@ object PillagerPressureEvents {
         val data = PillagerWorldData.get(server)
         val players = if (force && commandPlayer != null) listOf(commandPlayer) else server.playerList.players
         for (player in players) {
-            if (!force && !PillagerRuntime.eligible(player)) { lastStatus = "no eligible player: ${player.gameProfile.name}"; continue }
-            if (force && PillagerPressureConfig.overworldOnly.get() && player.serverLevel().dimension() != Level.OVERWORLD) { lastStatus = "forced player not in overworld: ${player.gameProfile.name}"; continue }
-            if (!force && player.random.nextDouble() > PillagerPressureConfig.spawnChance.get()) { lastStatus = "skipped chance for ${player.gameProfile.name}"; continue }
+            val decision = PillagerAttemptRules.playerDecision(
+                force = force,
+                playerName = player.gameProfile.name,
+                eligible = PillagerRuntime.eligible(player),
+                inAllowedDimension = !PillagerPressureConfig.overworldOnly.get() || player.serverLevel().dimension() == Level.OVERWORLD,
+                chancePassed = force || player.random.nextDouble() <= PillagerPressureConfig.spawnChance.get(),
+            )
+            if (!decision.shouldAttempt) {
+                lastStatus = decision.skippedStatus ?: "skipped ${player.gameProfile.name}"
+                continue
+            }
             if (spawnFallbackPatrolFor(data, player, force)) spawnedGroups++
         }
         if (spawnedGroups == 0 && players.isEmpty()) lastStatus = "no players online"

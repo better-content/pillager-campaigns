@@ -30,10 +30,11 @@ object PillagerSpawnPlacementRules {
         center: BlockPos,
         minRadius: Int,
         maxRadius: Int,
+        step: Int = 8,
         isLoaded: (BlockPos) -> Boolean,
         isValid: (BlockPos) -> Boolean,
     ): BlockPos? {
-        for (offset in farthestFirstOffsets(minRadius, maxRadius)) {
+        for (offset in farthestFirstOffsets(minRadius, maxRadius, step)) {
             val probe = center.offset(offset.dx, 0, offset.dz)
             if (!isLoaded(probe)) continue
             if (isValid(probe)) return probe
@@ -41,10 +42,54 @@ object PillagerSpawnPlacementRules {
         return null
     }
 
+    fun chooseForced(
+        center: BlockPos,
+        normalMinRadius: Int,
+        normalMaxRadius: Int,
+        fallbackMinRadius: Int,
+        fallbackMaxRadius: Int,
+        fallbackStep: Int = 4,
+        isLoaded: (BlockPos) -> Boolean,
+        isValid: (BlockPos) -> Boolean,
+    ): BlockPos? =
+        chooseFarthest(center, normalMinRadius, normalMaxRadius, isLoaded = isLoaded, isValid = isValid)
+            ?: chooseFarthest(center, fallbackMinRadius, fallbackMaxRadius, fallbackStep, isLoaded, isValid)
+            ?: center.takeIf { isLoaded(it) && isValid(it) }
+
     private fun addIfInRing(offsets: MutableSet<Offset>, dx: Int, dz: Int, minRadius: Int, maxRadius: Int) {
         val distanceSqr = dx * dx + dz * dz
         if (distanceSqr in (minRadius * minRadius)..(maxRadius * maxRadius)) offsets += Offset(dx, dz)
     }
+}
+
+object PillagerAttemptRules {
+    data class PlayerDecision(val shouldAttempt: Boolean, val skippedStatus: String?)
+
+    fun playerDecision(
+        force: Boolean,
+        playerName: String,
+        eligible: Boolean,
+        inAllowedDimension: Boolean,
+        chancePassed: Boolean,
+    ): PlayerDecision = when {
+        force && !inAllowedDimension -> PlayerDecision(false, "forced player not in overworld: $playerName")
+        !force && !eligible -> PlayerDecision(false, "no eligible player: $playerName")
+        !force && !chancePassed -> PlayerDecision(false, "skipped chance for $playerName")
+        else -> PlayerDecision(true, null)
+    }
+
+    fun commandFeedback(spawnedGroups: Int, status: String): String =
+        "Pillager Pressure forced attempt spawned_groups=$spawnedGroups status=$status"
+}
+
+object SquadCohesionRules {
+    const val PULL_DISTANCE_BLOCKS = 6.0
+    const val SPRINT_DISTANCE_BLOCKS = 16.0
+
+    fun shouldPullToLeader(distanceSqr: Double): Boolean = distanceSqr > PULL_DISTANCE_BLOCKS * PULL_DISTANCE_BLOCKS
+
+    fun moveSpeed(distanceSqr: Double): Double =
+        if (distanceSqr > SPRINT_DISTANCE_BLOCKS * SPRINT_DISTANCE_BLOCKS) 1.35 else 1.15
 }
 
 object PillagerObjectiveRules {

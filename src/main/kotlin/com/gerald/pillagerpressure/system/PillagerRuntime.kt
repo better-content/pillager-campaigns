@@ -279,21 +279,21 @@ object PillagerRuntime {
     }
 
     fun chooseForcedSpawnPos(level: ServerLevel, center: BlockPos): BlockPos? =
-        chooseSpawnPos(level, center) ?: chooseNearbyLoadedSpawnPos(level, center)
-
-    private fun chooseNearbyLoadedSpawnPos(level: ServerLevel, center: BlockPos): BlockPos? {
-        val offsets = PillagerSpawnPlacementRules.farthestFirstOffsets(8, 32, 4) + listOf(PillagerSpawnPlacementRules.Offset(0, 0))
-        for (offset in offsets) {
-            val x = center.x + offset.dx
-            val z = center.z + offset.dz
-            val probe = BlockPos(x, center.y, z)
-            if (!level.hasChunkAt(probe)) continue
-            val y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z)
-            val candidate = BlockPos(x, y, z)
-            if (validSpawnSurface(level, candidate)) return candidate
+        PillagerSpawnPlacementRules.chooseForced(
+            center = center,
+            normalMinRadius = min(PillagerPressureConfig.minRadius.get(), PillagerPressureConfig.maxRadius.get()).coerceAtLeast(8),
+            normalMaxRadius = max(PillagerPressureConfig.minRadius.get(), PillagerPressureConfig.maxRadius.get()).coerceAtLeast(8),
+            fallbackMinRadius = 8,
+            fallbackMaxRadius = 32,
+            isLoaded = { probe -> level.hasChunkAt(probe) },
+            isValid = { probe ->
+                val y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, probe.x, probe.z)
+                validSpawnSurface(level, BlockPos(probe.x, y, probe.z))
+            },
+        )?.let { probe ->
+            val y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, probe.x, probe.z)
+            BlockPos(probe.x, y, probe.z)
         }
-        return null
-    }
 
     fun validSpawnSurface(level: ServerLevel, pos: BlockPos): Boolean {
         if (pos.y <= level.minBuildHeight + 1 || pos.y >= level.maxBuildHeight - 2) return false
@@ -320,8 +320,8 @@ object PillagerRuntime {
         val leader = level.getEntitiesOfClass(Mob::class.java, box) { it.uuid == leaderId && it.isAlive }.firstOrNull() ?: return false
         val dist = mob.distanceToSqr(leader)
         if (mob.target == null) mob.target = leader.target
-        if (dist > 6.0 * 6.0) {
-            mob.navigation.moveTo(leader, if (dist > 16.0 * 16.0) 1.35 else 1.15)
+        if (SquadCohesionRules.shouldPullToLeader(dist)) {
+            mob.navigation.moveTo(leader, SquadCohesionRules.moveSpeed(dist))
             return true
         }
         return false

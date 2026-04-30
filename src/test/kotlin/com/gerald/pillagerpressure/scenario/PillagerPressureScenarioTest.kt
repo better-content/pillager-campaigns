@@ -24,11 +24,13 @@ import com.gerald.pillagerpressure.system.OfficerEngineeringRules
 import com.gerald.pillagerpressure.system.OfficerGeneRules
 import com.gerald.pillagerpressure.system.OfficerLoadoutRules
 import com.gerald.pillagerpressure.system.OfficerOutcomeRules
+import com.gerald.pillagerpressure.system.PillagerAttemptRules
 import com.gerald.pillagerpressure.system.PillagerBaseService
 import com.gerald.pillagerpressure.system.PillagerCampaignMaterializationRules
 import com.gerald.pillagerpressure.system.PillagerCampaignRules
 import com.gerald.pillagerpressure.system.PillagerObjectiveRules
 import com.gerald.pillagerpressure.system.PillagerSpawnPlacementRules
+import com.gerald.pillagerpressure.system.SquadCohesionRules
 import com.gerald.pillagerpressure.system.SquadCompositionPressure
 import com.gerald.pillagerpressure.system.SquadCompositionRules
 import com.gerald.pillagerpressure.util.OfficerOrdersRules
@@ -42,6 +44,91 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 class PillagerPressureScenarioTest {
+    @Test
+    fun forcedCommandAttemptsCommandPlayerEvenWhenNormalEligibilityWouldSkipThem() {
+        val decision = PillagerAttemptRules.playerDecision(
+            force = true,
+            playerName = "olGerald",
+            eligible = false,
+            inAllowedDimension = true,
+            chancePassed = false,
+        )
+
+        assertTrue(decision.shouldAttempt)
+        assertEquals(null, decision.skippedStatus)
+        assertEquals(
+            "Pillager Pressure forced attempt spawned_groups=0 status=no valid loaded spawn surface near olGerald",
+            PillagerAttemptRules.commandFeedback(0, "no valid loaded spawn surface near olGerald"),
+        )
+    }
+
+    @Test
+    fun forcedCommandReportsDimensionBlockerInsteadOfLeavingLoadedStatus() {
+        val decision = PillagerAttemptRules.playerDecision(
+            force = true,
+            playerName = "olGerald",
+            eligible = true,
+            inAllowedDimension = false,
+            chancePassed = true,
+        )
+
+        assertFalse(decision.shouldAttempt)
+        assertEquals("forced player not in overworld: olGerald", decision.skippedStatus)
+    }
+
+    @Test
+    fun normalSchedulerStillUsesEligibilityAndChanceAsSkips() {
+        val ineligible = PillagerAttemptRules.playerDecision(false, "Scout", eligible = false, inAllowedDimension = true, chancePassed = true)
+        val chance = PillagerAttemptRules.playerDecision(false, "Scout", eligible = true, inAllowedDimension = true, chancePassed = false)
+        val attempt = PillagerAttemptRules.playerDecision(false, "Scout", eligible = true, inAllowedDimension = true, chancePassed = true)
+
+        assertFalse(ineligible.shouldAttempt)
+        assertEquals("no eligible player: Scout", ineligible.skippedStatus)
+        assertFalse(chance.shouldAttempt)
+        assertEquals("skipped chance for Scout", chance.skippedStatus)
+        assertTrue(attempt.shouldAttempt)
+    }
+
+    @Test
+    fun forcedSpawnPlacementFallsBackToCloserLoadedSurfaceWhenFarRingFails() {
+        val center = BlockPos.ZERO
+        val chosen = PillagerSpawnPlacementRules.chooseForced(
+            center = center,
+            normalMinRadius = 32,
+            normalMaxRadius = 64,
+            fallbackMinRadius = 8,
+            fallbackMaxRadius = 32,
+            isLoaded = { pos -> pos.x in -16..16 && pos.z == 0 },
+            isValid = { pos -> pos.z == 0 },
+        )
+
+        assertEquals(BlockPos(-16, 0, 0), chosen)
+    }
+
+    @Test
+    fun forcedSpawnPlacementCanUsePlayerBlockAsLastResortForDebugCommand() {
+        val center = BlockPos(10, 64, -5)
+        val chosen = PillagerSpawnPlacementRules.chooseForced(
+            center = center,
+            normalMinRadius = 32,
+            normalMaxRadius = 64,
+            fallbackMinRadius = 8,
+            fallbackMaxRadius = 32,
+            isLoaded = { it == center },
+            isValid = { it == center },
+        )
+
+        assertEquals(center, chosen)
+    }
+
+    @Test
+    fun squadCohesionKeepsCampaignPillagersTightToOfficerBanner() {
+        assertFalse(SquadCohesionRules.shouldPullToLeader(6.0 * 6.0))
+        assertTrue(SquadCohesionRules.shouldPullToLeader(6.1 * 6.1))
+        assertEquals(1.15, SquadCohesionRules.moveSpeed(7.0 * 7.0))
+        assertEquals(1.35, SquadCohesionRules.moveSpeed(17.0 * 17.0))
+    }
+
     @Test
     fun scoutCampaignInterceptionSpawnsAsRouteContactNotInstantPlayerTarget() {
         val campaign = campaign(CampaignState.APPROACHING_INTEL).also {
