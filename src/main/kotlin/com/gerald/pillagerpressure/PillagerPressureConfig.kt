@@ -29,15 +29,29 @@ object PillagerPressureConfig {
     val targetPlayerImmediately: ForgeConfigSpec.BooleanValue
     val persistentPatrolMobs: ForgeConfigSpec.BooleanValue
 
+    val campaignEnabled: ForgeConfigSpec.BooleanValue
+    val regionSizeChunks: ForgeConfigSpec.IntValue
+    val staleRegionTicks: ForgeConfigSpec.IntValue
+    val baseScanIntervalTicks: ForgeConfigSpec.IntValue
+    val campaignTickInterval: ForgeConfigSpec.IntValue
+    val campaignSpeedTicksPerChunk: ForgeConfigSpec.IntValue
+    val maxCampaignsPerBase: ForgeConfigSpec.IntValue
+    val maxSatellitesPerMajorBase: ForgeConfigSpec.IntValue
+    val structureBaseIds: ForgeConfigSpec.ConfigValue<List<out String>>
+    val replaceNaturalOutpostSpawns: ForgeConfigSpec.BooleanValue
+    val deathFlagsPerKill: ForgeConfigSpec.IntValue
+    val maxDeathFlagsPerChunk: ForgeConfigSpec.IntValue
+    val officerEscapeHealth: ForgeConfigSpec.DoubleValue
+
     init {
         val builder = ForgeConfigSpec.Builder()
 
         builder.push("scheduler")
         enabled = builder.comment("Enable pack-owned pillager pressure patrols.").define("enabled", true)
-        intervalTicks = builder.comment("Ticks between patrol attempts. 1200 is one minute.").defineInRange("interval_ticks", 1200, 20, 240000)
-        spawnChance = builder.comment("Chance that each interval attempts a patrol per eligible player.").defineInRange("spawn_chance", 0.95, 0.0, 1.0)
+        intervalTicks = builder.comment("Ticks between fallback patrol attempts. Campaigns use their own scheduler.").defineInRange("interval_ticks", 1200, 20, 240000)
+        spawnChance = builder.comment("Chance that each fallback interval attempts a patrol per eligible player.").defineInRange("spawn_chance", 0.95, 0.0, 1.0)
         overworldOnly = builder.define("overworld_only", true)
-        allowCreativePlayers = builder.comment("Keep true while tuning so creative playtests still receive patrol pressure.").define("allow_creative_players", true)
+        allowCreativePlayers = builder.comment("Keep true while tuning so creative playtests still receive pressure.").define("allow_creative_players", true)
         skipSpectatorPlayers = builder.define("skip_spectator_players", true)
         disableVanillaPatrolSpawning = builder.comment("Set doPatrolSpawning=false on server start so this mod is the sole patrol scheduler.").define("disable_vanilla_patrol_spawning", true)
         builder.pop()
@@ -58,22 +72,27 @@ object PillagerPressureConfig {
         specialAmount = builder.defineInRange("special_amount", 2, 0, 40)
         specialIllagers = builder.comment("Missing entity ids are skipped, so optional illager mods can be removed safely.").defineListAllowEmpty(
             "special_illagers",
-            listOf(
-                "minecraft:vindicator",
-                "minecraft:evoker",
-                "minecraft:witch",
-                "takesapillage:archer",
-                "takesapillage:skirmisher",
-                "takesapillage:legioner",
-                "savage_and_ravage:griefer",
-                "savage_and_ravage:executioner",
-                "savage_and_ravage:iceologer",
-                "savage_and_ravage:trickster",
-            ),
+            listOf("minecraft:vindicator", "minecraft:evoker", "minecraft:witch", "takesapillage:archer", "takesapillage:skirmisher", "takesapillage:legioner", "savage_and_ravage:griefer", "savage_and_ravage:executioner", "savage_and_ravage:iceologer", "savage_and_ravage:trickster"),
             { it is String && it.contains(":") },
         )
         targetPlayerImmediately = builder.define("target_player_immediately", true)
-        persistentPatrolMobs = builder.comment("Persistence prevents patrols from vanishing before they find the player; accumulation cap prevents runaway counts.").define("persistent_patrol_mobs", true)
+        persistentPatrolMobs = builder.comment("Persistence prevents campaign mobs from vanishing before they matter; accumulation caps prevent runaway counts.").define("persistent_patrol_mobs", true)
+        builder.pop()
+
+        builder.push("campaigns")
+        campaignEnabled = builder.define("enabled", true)
+        regionSizeChunks = builder.defineInRange("region_size_chunks", 8, 4, 32)
+        staleRegionTicks = builder.comment("Regions older than this may receive satellite camps. Default is 5 Minecraft days.").defineInRange("stale_region_ticks", 120000, 1200, 2400000)
+        baseScanIntervalTicks = builder.defineInRange("base_scan_interval_ticks", 200, 20, 6000)
+        campaignTickInterval = builder.defineInRange("campaign_tick_interval", 100, 20, 6000)
+        campaignSpeedTicksPerChunk = builder.defineInRange("campaign_speed_ticks_per_chunk", 80, 10, 6000)
+        maxCampaignsPerBase = builder.defineInRange("max_campaigns_per_base", 4, 0, 32)
+        maxSatellitesPerMajorBase = builder.defineInRange("max_satellites_per_major_base", 4, 0, 24)
+        replaceNaturalOutpostSpawns = builder.comment("Cancel natural raider spawns inside registered bases and spend base economy for garrisons instead.").define("replace_natural_outpost_spawns", true)
+        structureBaseIds = builder.comment("Structure ids treated as major pillager bases. Modded structures can be added here after registry confirmation.").defineListAllowEmpty("structure_base_ids", listOf("minecraft:pillager_outpost"), { it is String && it.contains(":") })
+        deathFlagsPerKill = builder.defineInRange("death_flags_per_kill", 5, 0, 16)
+        maxDeathFlagsPerChunk = builder.defineInRange("max_death_flags_per_chunk", 12, 0, 64)
+        officerEscapeHealth = builder.comment("Named officers below this health fraction try to escape/collapse to campaign state.").defineInRange("officer_escape_health", 0.22, 0.0, 1.0)
         builder.pop()
 
         SPEC = builder.build()

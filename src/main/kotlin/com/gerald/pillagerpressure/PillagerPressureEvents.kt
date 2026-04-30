@@ -1,33 +1,36 @@
 package com.gerald.pillagerpressure
 
+import com.gerald.pillagerpressure.data.*
+import com.gerald.pillagerpressure.system.PillagerBaseService
+import com.gerald.pillagerpressure.system.PillagerCampaignDirector
+import com.gerald.pillagerpressure.system.PillagerRuntime
+import com.gerald.pillagerpressure.util.PillagerIdentity
 import com.mojang.brigadier.Command
 import com.mojang.brigadier.CommandDispatcher
 import net.minecraft.commands.CommandSourceStack
 import net.minecraft.commands.Commands
 import net.minecraft.core.BlockPos
 import net.minecraft.network.chat.Component
-import net.minecraft.resources.ResourceLocation
 import net.minecraft.server.MinecraftServer
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.server.level.ServerPlayer
-import net.minecraft.world.entity.EntityType
 import net.minecraft.world.entity.Mob
 import net.minecraft.world.entity.MobSpawnType
-import net.minecraft.world.entity.monster.PatrollingMonster
+import net.minecraft.world.entity.item.ItemEntity
+import net.minecraft.world.entity.monster.AbstractIllager
 import net.minecraft.world.level.GameRules
 import net.minecraft.world.level.Level
-import net.minecraft.world.level.block.state.BlockState
-import net.minecraft.world.level.levelgen.Heightmap
-import net.minecraft.world.phys.AABB
+import net.minecraft.world.level.chunk.LevelChunk
 import net.minecraftforge.event.RegisterCommandsEvent
 import net.minecraftforge.event.TickEvent
+import net.minecraftforge.event.entity.living.LivingDeathEvent
+import net.minecraftforge.event.entity.living.LivingDropsEvent
+import net.minecraftforge.event.entity.living.MobSpawnEvent
+import net.minecraftforge.event.level.ChunkEvent
 import net.minecraftforge.event.server.ServerStartedEvent
+import net.minecraftforge.eventbus.api.EventPriority
 import net.minecraftforge.eventbus.api.SubscribeEvent
-import net.minecraftforge.registries.ForgeRegistries
-import kotlin.math.cos
-import kotlin.math.max
-import kotlin.math.min
-import kotlin.math.sin
+import java.util.UUID
 
 object PillagerPressureEvents {
     private var ticks: Long = 0L
@@ -42,19 +45,104 @@ object PillagerPressureEvents {
             event.server.gameRules.getRule(GameRules.RULE_DO_PATROL_SPAWNING).set(false, event.server)
             PillagerPressureMod.LOGGER.info("Disabled vanilla patrol spawning; Pillager Pressure owns patrol scheduling")
         }
+        PillagerWorldData.get(event.server)
+    }
+
+    @SubscribeEvent
+    fun onChunkLoad(event: ChunkEvent.Load) {
+        val level = event.level as? ServerLevel ?: return
+        val chunk = event.chunk as? LevelChunk ?: return
+        val data = PillagerWorldData.get(level.server)
+        val added = PillagerBaseService.scanChunk(level, chunk, data)
+        if (added > 0) PillagerPressureMod.LOGGER.info("Registered {} pillager base(s) from chunk {},{}", added, chunk.pos.x, chunk.pos.z)
+    }
+
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    fun onFinalizeSpawn(event: MobSpawnEvent.FinalizeSpawn) {
+        if (!PillagerPressureConfig.replaceNaturalOutpostSpawns.get()) return
+        if (event.spawnType != MobSpawnType.NATURAL) return
+        val level = event.level as? ServerLevel ?: return
+        val mob = event.entity
+        if (mob !is AbstractIllager) return
+        val data = PillagerWorldData.get(level.server)
+        val pos = BlockPos.containing(event.x, event.y, event.z)
+        val base = PillagerBaseService.baseAt(level, data, pos) ?: return
+        if (base.manpower <= 0) {
+            event.setSpawnCancelled(true)
+            return
+        }
+        event.setSpawnCancelled(true)
+        val faction = data.factions[base.factionId]
+        val officer = if (base.manpower > 12 && level.random.nextFloat() < 0.12f) PillagerBaseService.officerForBase(data, base) else null
+        val spend = if (officer != null) 4 else 1
+        base.manpower = (base.manpower - spend).coerceAtLeast(0)
+        PillagerRuntime.spawnSquad(level, data, pos, null, base, faction, null, officer, if (officer != null) 2 else 1, if (officer != null) 1 else 0, leader = officer != null)
+        data.markChanged()
     }
 
     @SubscribeEvent
     fun onServerTick(event: TickEvent.ServerTickEvent) {
-        if (event.phase != TickEvent.Phase.END || !PillagerPressureConfig.enabled.get()) {
-            return
-        }
+        if (event.phase != TickEvent.Phase.END || !PillagerPressureConfig.enabled.get()) return
         ticks++
-        val interval = PillagerPressureConfig.intervalTicks.get().toLong().coerceAtLeast(20L)
-        if (ticks % interval != 0L) {
-            return
+        val server = event.server
+        val data = PillagerWorldData.get(server)
+        val now = server.overworld().gameTime
+        if (PillagerPressureConfig.campaignEnabled.get() && now - data.lastCampaignTick >= PillagerPressureConfig.campaignTickInterval.get()) {
+            data.lastCampaignTick = now
+            val materialized = PillagerCampaignDirector.tick(server, data)
+            if (materialized > 0) {
+                groupsSpawned += materialized.toLong()
+                lastStatus = "campaign materialized groups=$materialized"
+            }
+            data.markChanged()
         }
-        runAttempt(event.server, force = false, source = "scheduled")
+        val interval = PillagerPressureConfig.intervalTicks.get().toLong().coerceAtLeast(20L)
+        if (ticks % interval == 0L) runAttempt(server, force = false, source = "fallback")
+    }
+
+    @SubscribeEvent
+    fun onLivingDeath(event: LivingDeathEvent) {
+        val player = event.entity as? ServerPlayer ?: return
+        val killer = event.source.entity as? Mob ?: return
+        val tag = killer.persistentData
+        if (!tag.hasUUID(PillagerRuntime.FACTION_TAG)) return
+        val level = player.serverLevel()
+        val data = PillagerWorldData.get(level.server)
+        val factionId = tag.getUUID(PillagerRuntime.FACTION_TAG)
+        val officerId = if (tag.hasUUID(PillagerRuntime.OFFICER_TAG)) tag.getUUID(PillagerRuntime.OFFICER_TAG) else null
+        officerId?.let { id ->
+            data.officers[id]?.let { officer ->
+                officer.killedPlayers += 1
+                officer.victories += 1
+                officer.grudges[player.uuid] = (officer.grudges[player.uuid] ?: 0) + 3
+                officer.title = "the Grave-Marker"
+            }
+        }
+        data.pendingMarkers.add(PendingFlagMarker(factionId, officerId, level.dimension().location(), player.blockPosition(), level.gameTime, 0))
+        data.markChanged()
+    }
+
+    @SubscribeEvent
+    fun onLivingDrops(event: LivingDropsEvent) {
+        val mob = event.entity as? Mob ?: return
+        val level = mob.level() as? ServerLevel ?: return
+        val tag = mob.persistentData
+        if (tag.getBoolean("PillagerPressureDropsDone")) return
+        val data = PillagerWorldData.get(level.server)
+        val officerId = if (tag.hasUUID(PillagerRuntime.OFFICER_TAG)) tag.getUUID(PillagerRuntime.OFFICER_TAG) else null
+        val baseId = if (tag.hasUUID(PillagerRuntime.BASE_TAG)) tag.getUUID(PillagerRuntime.BASE_TAG) else null
+        val factionId = if (tag.hasUUID(PillagerRuntime.FACTION_TAG)) tag.getUUID(PillagerRuntime.FACTION_TAG) else null
+        val base = baseId?.let { data.bases[it] } ?: factionId?.let { f -> data.bases.values.firstOrNull { it.factionId == f } }
+        val faction = base?.let { data.factions[it.factionId] } ?: factionId?.let { data.factions[it] }
+        if (officerId != null) data.officers[officerId]?.let { officer -> officer.defeats += 1; officer.state = OfficerState.DEAD }
+        if (base != null && faction != null) {
+            event.drops.add(ItemEntity(level, mob.x, mob.y, mob.z, PillagerRuntime.baseMap(level, base, faction)))
+            val officer = officerId?.let { data.officers[it] }
+            val lines = listOf("Faction: ${faction.name}", "Base: ${base.center.x}, ${base.center.z}", "Officer: ${officer?.displayName() ?: "unknown"}")
+            event.drops.add(ItemEntity(level, mob.x, mob.y, mob.z, PillagerIdentity.ordersPaper("Pillager Orders", lines)))
+        }
+        tag.putBoolean("PillagerPressureDropsDone", true)
+        data.markChanged()
     }
 
     @SubscribeEvent
@@ -65,202 +153,128 @@ object PillagerPressureEvents {
 
     private fun register(dispatcher: CommandDispatcher<CommandSourceStack>, name: String) {
         dispatcher.register(
-            Commands.literal(name)
-                .requires { it.hasPermission(2) }
-                .then(Commands.literal("status").executes { context ->
-                    context.source.sendSuccess({ Component.literal(statusLine()) }, false)
-                    Command.SINGLE_SUCCESS
-                })
-                .then(Commands.literal("now").executes { context ->
-                    val spawned = runAttempt(context.source.server, force = true, source = "command")
-                    context.source.sendSuccess({ Component.literal("Pillager Pressure forced attempt spawned_groups=$spawned status=$lastStatus") }, true)
-                    Command.SINGLE_SUCCESS
-                })
+            Commands.literal(name).requires { it.hasPermission(2) }
+                .then(Commands.literal("status").executes { context -> context.source.sendSuccess({ Component.literal(statusLine(context.source.server)) }, false); Command.SINGLE_SUCCESS })
+                .then(Commands.literal("now").executes { context -> val spawned = runAttempt(context.source.server, force = true, source = "command"); context.source.sendSuccess({ Component.literal("Pillager Pressure forced attempt spawned_groups=$spawned status=$lastStatus") }, true); Command.SINGLE_SUCCESS })
+                .then(Commands.literal("tick_once").executes { context -> tickCampaignOnce(context.source) })
+                .then(
+                    Commands.literal("base")
+                        .then(Commands.literal("list").executes { context -> listBases(context.source) })
+                        .then(Commands.literal("add_here").executes { context -> addBaseHere(context.source) })
+                        .then(Commands.literal("rescan_here").executes { context -> rescanHere(context.source) })
+                        .then(Commands.literal("econ").executes { context -> listEconomy(context.source) }.then(Commands.literal("tick").executes { context -> tickEconomy(context.source) }))
+                )
+                .then(Commands.literal("faction").then(Commands.literal("list").executes { context -> listFactions(context.source) }))
+                .then(Commands.literal("campaign").then(Commands.literal("list").executes { context -> listCampaigns(context.source) }))
+                .then(Commands.literal("reset").executes { context -> resetData(context.source) })
         )
     }
 
     private fun runAttempt(server: MinecraftServer, force: Boolean, source: String): Int {
         attempts++
         var spawnedGroups = 0
-        val players = server.playerList.players
-        for (player in players) {
-            if (!eligible(player)) continue
-            if (!force && player.random.nextDouble() > PillagerPressureConfig.spawnChance.get()) {
-                lastStatus = "skipped chance for ${player.gameProfile.name}"
-                continue
-            }
-            if (spawnPatrolFor(player, force)) {
-                spawnedGroups++
-            }
+        val data = PillagerWorldData.get(server)
+        for (player in server.playerList.players) {
+            if (!PillagerRuntime.eligible(player)) continue
+            if (!force && player.random.nextDouble() > PillagerPressureConfig.spawnChance.get()) { lastStatus = "skipped chance for ${player.gameProfile.name}"; continue }
+            if (spawnFallbackPatrolFor(data, player, force)) spawnedGroups++
         }
-        if (spawnedGroups == 0 && players.isEmpty()) {
-            lastStatus = "no players online"
-        }
-        PillagerPressureMod.LOGGER.info(
-            "Pillager Pressure attempt source={} force={} players={} spawned_groups={} status={}",
-            source,
-            force,
-            players.size,
-            spawnedGroups,
-            lastStatus,
-        )
+        if (spawnedGroups == 0 && server.playerList.players.isEmpty()) lastStatus = "no players online"
+        PillagerPressureMod.LOGGER.info("Pillager Pressure attempt source={} force={} players={} spawned_groups={} status={}", source, force, server.playerList.players.size, spawnedGroups, lastStatus)
         return spawnedGroups
     }
 
-    private fun eligible(player: ServerPlayer): Boolean {
-        if (PillagerPressureConfig.skipSpectatorPlayers.get() && player.isSpectator) {
-            return false
-        }
-        if (!PillagerPressureConfig.allowCreativePlayers.get() && player.isCreative) {
-            return false
-        }
-        if (PillagerPressureConfig.overworldOnly.get() && player.serverLevel().dimension() != Level.OVERWORLD) {
-            return false
-        }
-        return true
-    }
-
-    private fun spawnPatrolFor(player: ServerPlayer, force: Boolean): Boolean {
+    private fun spawnFallbackPatrolFor(data: PillagerWorldData, player: ServerPlayer, force: Boolean): Boolean {
         val level = player.serverLevel()
-        val active = countActivePatrolMobs(level, player.blockPosition())
-        if (!force && active >= PillagerPressureConfig.maxActiveNearPlayer.get()) {
-            lastStatus = "active cap near ${player.gameProfile.name}: $active"
-            return false
-        }
-
-        val pos = chooseSpawnPos(level, player.blockPosition())
-        if (pos == null) {
-            lastStatus = "no valid spawn surface near ${player.gameProfile.name}"
-            return false
-        }
-
-        val patrolTarget = player.blockPosition()
-        var spawned = 0
-        val minPillagers = PillagerPressureConfig.minPillagers.get()
-        val maxPillagers = max(PillagerPressureConfig.maxPillagers.get(), minPillagers)
-        val pillagerCount = if (maxPillagers <= minPillagers) minPillagers else level.random.nextInt(maxPillagers - minPillagers + 1) + minPillagers
-
-        if (PillagerPressureConfig.spawnLeader.get()) {
-            if (spawnMob(level, "minecraft:pillager", jitter(pos, level, 3), player, patrolTarget, leader = true)) spawned++
-        }
-        repeat(pillagerCount) {
-            if (spawnMob(level, "minecraft:pillager", jitter(pos, level, 5), player, patrolTarget, leader = false)) spawned++
-        }
-
-        if (PillagerPressureConfig.specialAmount.get() > 0 && level.random.nextDouble() <= PillagerPressureConfig.specialChance.get()) {
-            repeat(PillagerPressureConfig.specialAmount.get()) {
-                val id = chooseSpecial(level) ?: return@repeat
-                if (spawnMob(level, id, jitter(pos, level, 6), player, patrolTarget, leader = false)) spawned++
-            }
-        }
-
-        if (spawned <= 0) {
-            lastStatus = "all entity spawns failed near ${player.gameProfile.name} at ${pos.x} ${pos.y} ${pos.z}"
-            return false
-        }
-
-        groupsSpawned++
-        mobsSpawned += spawned.toLong()
-        lastStatus = "spawned $spawned near ${player.gameProfile.name} at ${pos.x} ${pos.y} ${pos.z} active_before=$active"
-        return true
+        val active = PillagerRuntime.countActivePatrolMobs(level, player.blockPosition())
+        if (!force && active >= PillagerPressureConfig.maxActiveNearPlayer.get()) { lastStatus = "active cap near ${player.gameProfile.name}: $active"; return false }
+        val pos = PillagerRuntime.chooseSpawnPos(level, player.blockPosition()) ?: run { lastStatus = "no valid spawn surface near ${player.gameProfile.name}"; return false }
+        val base = PillagerBaseService.nearestActiveBase(level, data, player.blockPosition())
+        val faction = base?.let { data.factions[it.factionId] }
+        val officer = base?.let { PillagerBaseService.officerForBase(data, it) }
+        val spawned = PillagerRuntime.spawnSquad(level, data, pos, player, base, faction, null, officer, PillagerPressureConfig.maxPillagers.get(), PillagerPressureConfig.specialAmount.get(), leader = true)
+        if (spawned <= 0) { lastStatus = "all entity spawns failed near ${player.gameProfile.name}"; return false }
+        groupsSpawned++; mobsSpawned += spawned.toLong(); lastStatus = "spawned $spawned near ${player.gameProfile.name} at ${pos.x} ${pos.y} ${pos.z} active_before=$active"; return true
     }
 
-    private fun chooseSpecial(level: ServerLevel): String? {
-        val candidates = PillagerPressureConfig.specialIllagers.get()
-            .mapNotNull { raw -> raw as? String }
-            .filter { ForgeRegistries.ENTITY_TYPES.containsKey(ResourceLocation.parse(it)) }
-        if (candidates.isEmpty()) return null
-        return candidates[level.random.nextInt(candidates.size)]
+    private fun statusLine(server: MinecraftServer): String {
+        val data = PillagerWorldData.get(server)
+        return "enabled=${PillagerPressureConfig.enabled.get()} ticks=$ticks attempts=$attempts groups=$groupsSpawned mobs=$mobsSpawned factions=${data.factions.size} bases=${data.bases.size} campaigns=${data.campaigns.size} officers=${data.officers.size} last=$lastStatus"
     }
 
-    private fun spawnMob(
-        level: ServerLevel,
-        entityId: String,
-        pos: BlockPos,
-        target: ServerPlayer,
-        patrolTarget: BlockPos,
-        leader: Boolean,
-    ): Boolean {
-        val id = ResourceLocation.tryParse(entityId) ?: return false
-        val type = ForgeRegistries.ENTITY_TYPES.getValue(id) as? EntityType<*> ?: return false
-        val entity = type.create(level) as? Mob ?: return false
-
-        entity.moveTo(pos.x + 0.5, pos.y.toDouble(), pos.z + 0.5, level.random.nextFloat() * 360.0f, 0.0f)
-        runCatching {
-            entity.finalizeSpawn(level, level.getCurrentDifficultyAt(pos), MobSpawnType.EVENT, null, null)
-        }.onFailure { error ->
-            PillagerPressureMod.LOGGER.debug("finalizeSpawn failed for {} at {}", entityId, pos, error)
-        }
-        entity.persistentData.putBoolean(PillagerPressureMod.PATROL_TAG, true)
-        entity.persistentData.putUUID("BoundToMatterPressureTarget", target.uuid)
-        if (PillagerPressureConfig.persistentPatrolMobs.get()) {
-            entity.setPersistenceRequired()
-        }
-        if (PillagerPressureConfig.targetPlayerImmediately.get()) {
-            entity.target = target
-        }
-        if (entity is PatrollingMonster) {
-            entity.patrolTarget = patrolTarget
-            if (leader) {
-                entity.isPatrolLeader = true
-            }
-        }
-
-        return level.addFreshEntity(entity)
+    private fun listBases(source: CommandSourceStack): Int {
+        val data = PillagerWorldData.get(source.server)
+        val summary = data.bases.values.joinToString { "${it.type}:${it.state}@${it.center.x},${it.center.z}" }
+        source.sendSuccess({ Component.literal("Bases: $summary") }, false)
+        return Command.SINGLE_SUCCESS
     }
 
-    private fun chooseSpawnPos(level: ServerLevel, center: BlockPos): BlockPos? {
-        val minRadius = min(PillagerPressureConfig.minRadius.get(), PillagerPressureConfig.maxRadius.get()).coerceAtLeast(8)
-        val maxRadius = max(PillagerPressureConfig.minRadius.get(), PillagerPressureConfig.maxRadius.get()).coerceAtLeast(minRadius)
-        repeat(PillagerPressureConfig.spawnAttempts.get()) {
-            val angle = level.random.nextDouble() * Math.PI * 2.0
-            val radius = if (maxRadius == minRadius) minRadius else level.random.nextInt(maxRadius - minRadius + 1) + minRadius
-            val x = center.x + (cos(angle) * radius).toInt()
-            val z = center.z + (sin(angle) * radius).toInt()
-            val probe = BlockPos(x, center.y, z)
-            if (!level.hasChunkAt(probe)) return@repeat
-            val y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z)
-            val pos = BlockPos(x, y, z)
-            if (validSpawnSurface(level, pos)) {
-                return pos
-            }
-        }
-        return null
+    private fun addBaseHere(source: CommandSourceStack): Int {
+        val player = source.playerOrException
+        val data = PillagerWorldData.get(source.server)
+        val faction = PillagerBaseService.factionForNewMajorBase(data, player.level().random.nextLong())
+        val base = PillagerBase(UUID.randomUUID(), faction.id, null, BaseType.MAJOR, player.serverLevel().dimension().location(), null, player.blockPosition(), ChunkRef.of(player.blockPosition()), null, BaseState.ACTIVE, 72, 140, 80, 20, 100, 80, player.serverLevel().gameTime)
+        data.bases[base.id] = base
+        PillagerBaseService.officerForBase(data, base)
+        data.markChanged()
+        source.sendSuccess({ Component.literal("Added pillager base ${base.id} for ${faction.name}") }, true)
+        return Command.SINGLE_SUCCESS
     }
 
-    private fun validSpawnSurface(level: ServerLevel, pos: BlockPos): Boolean {
-        if (pos.y <= level.minBuildHeight + 1 || pos.y >= level.maxBuildHeight - 2) return false
-        val state = level.getBlockState(pos)
-        val above = level.getBlockState(pos.above())
-        val below = level.getBlockState(pos.below())
-        if (!isOpen(level, pos, state) || !isOpen(level, pos.above(), above)) return false
-        if (below.isAir || below.fluidState.isSource) return false
-        if (state.fluidState.isSource || above.fluidState.isSource) return false
-        return below.isCollisionShapeFullBlock(level, pos.below())
+    private fun rescanHere(source: CommandSourceStack): Int {
+        val player = source.playerOrException
+        val level = player.serverLevel()
+        val data = PillagerWorldData.get(source.server)
+        val chunk = level.getChunk(player.blockPosition()) as LevelChunk
+        val added = PillagerBaseService.scanChunk(level, chunk, data)
+        source.sendSuccess({ Component.literal("Rescanned chunk ${chunk.pos.x},${chunk.pos.z}; added_bases=$added") }, true)
+        return Command.SINGLE_SUCCESS
     }
 
-    private fun isOpen(level: ServerLevel, pos: BlockPos, state: BlockState): Boolean =
-        state.isAir || state.getCollisionShape(level, pos).isEmpty
-
-    private fun jitter(pos: BlockPos, level: ServerLevel, radius: Int): BlockPos {
-        val dx = level.random.nextInt(radius * 2 + 1) - radius
-        val dz = level.random.nextInt(radius * 2 + 1) - radius
-        val x = pos.x + dx
-        val z = pos.z + dz
-        val y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z)
-        val candidate = BlockPos(x, y, z)
-        return if (validSpawnSurface(level, candidate)) candidate else pos
+    private fun listEconomy(source: CommandSourceStack): Int {
+        val data = PillagerWorldData.get(source.server)
+        val summary = data.bases.values.joinToString { "${it.type}@${it.center.x},${it.center.z} manpower=${it.manpower}/${it.maxManpower()} supplies=${it.supplies}/${it.maxSupplies()} morale=${it.morale}" }
+        source.sendSuccess({ Component.literal("Base economy: $summary") }, false)
+        return Command.SINGLE_SUCCESS
     }
 
-    private fun countActivePatrolMobs(level: ServerLevel, center: BlockPos): Int {
-        val radius = PillagerPressureConfig.activeCheckRadius.get().toDouble()
-        val box = AABB(center).inflate(radius, 96.0, radius)
-        return level.getEntitiesOfClass(Mob::class.java, box) { mob ->
-            mob.isAlive && mob.persistentData.getBoolean(PillagerPressureMod.PATROL_TAG)
-        }.size
+    private fun tickEconomy(source: CommandSourceStack): Int {
+        val data = PillagerWorldData.get(source.server)
+        PillagerBaseService.tickEconomy(data)
+        source.sendSuccess({ Component.literal("Advanced pillager base economy once") }, true)
+        return Command.SINGLE_SUCCESS
     }
 
-    private fun statusLine(): String {
-        return "enabled=${PillagerPressureConfig.enabled.get()} ticks=$ticks attempts=$attempts groups=$groupsSpawned mobs=$mobsSpawned last=$lastStatus"
+    private fun tickCampaignOnce(source: CommandSourceStack): Int {
+        val data = PillagerWorldData.get(source.server)
+        val materialized = PillagerCampaignDirector.tick(source.server, data)
+        source.sendSuccess({ Component.literal("Advanced pillager campaign director once; materialized_groups=$materialized") }, true)
+        return Command.SINGLE_SUCCESS
+    }
+
+    private fun listFactions(source: CommandSourceStack): Int {
+        val data = PillagerWorldData.get(source.server)
+        val summary = data.factions.values.joinToString { it.name }
+        source.sendSuccess({ Component.literal("Factions: $summary") }, false)
+        return Command.SINGLE_SUCCESS
+    }
+
+    private fun listCampaigns(source: CommandSourceStack): Int {
+        val data = PillagerWorldData.get(source.server)
+        val summary = data.campaigns.values.joinToString { "${it.state}@${it.current.x},${it.current.z}->${it.target.x},${it.target.z}" }
+        source.sendSuccess({ Component.literal("Campaigns: $summary") }, false)
+        return Command.SINGLE_SUCCESS
+    }
+
+    private fun resetData(source: CommandSourceStack): Int {
+        val data = PillagerWorldData.get(source.server)
+        data.factions.clear()
+        data.bases.clear()
+        data.campaigns.clear()
+        data.officers.clear()
+        data.pendingMarkers.clear()
+        data.markChanged()
+        source.sendSuccess({ Component.literal("Pillager Pressure saved data cleared") }, true)
+        return Command.SINGLE_SUCCESS
     }
 }
