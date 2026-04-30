@@ -38,6 +38,10 @@ object PillagerRuntime {
     const val BASE_TAG = "PillagerPressureBase"
     const val CAMPAIGN_TAG = "PillagerPressureCampaign"
     const val OFFICER_TAG = "PillagerPressureOfficer"
+    const val OBJECTIVE_KIND_TAG = "PillagerPressureObjective"
+    const val OBJECTIVE_X_TAG = "PillagerPressureObjectiveX"
+    const val OBJECTIVE_Y_TAG = "PillagerPressureObjectiveY"
+    const val OBJECTIVE_Z_TAG = "PillagerPressureObjectiveZ"
 
     fun eligible(player: ServerPlayer): Boolean {
         if (PillagerPressureConfig.skipSpectatorPlayers.get() && player.isSpectator) return false
@@ -68,16 +72,16 @@ object PillagerRuntime {
         leader: Boolean,
     ): Int {
         var spawned = 0
-        val patrolTarget = target?.blockPosition() ?: pos.offset(level.random.nextInt(64) - 32, 0, level.random.nextInt(64) - 32)
+        val objective = PillagerObjectiveRules.objectiveFor(campaign, target, pos)
         if (leader) {
-            if (spawnMob(level, "minecraft:pillager", jitter(pos, level, 3), target, patrolTarget, base, faction, campaign, officer, true)) spawned++
+            if (spawnMob(level, "minecraft:pillager", jitter(pos, level, 3), target, objective, base, faction, campaign, officer, true)) spawned++
         }
         repeat(pillagers.coerceAtLeast(0)) {
-            if (spawnMob(level, "minecraft:pillager", jitter(pos, level, 5), target, patrolTarget, base, faction, campaign, officer, false)) spawned++
+            if (spawnMob(level, "minecraft:pillager", jitter(pos, level, 5), target, objective, base, faction, campaign, officer, false)) spawned++
         }
         repeat(specials.coerceAtLeast(0)) {
             val id = chooseSpecial(level) ?: return@repeat
-            if (spawnMob(level, id, jitter(pos, level, 6), target, patrolTarget, base, faction, campaign, officer, false)) spawned++
+            if (spawnMob(level, id, jitter(pos, level, 6), target, objective, base, faction, campaign, officer, false)) spawned++
         }
         if (spawned > 0) data.markChanged()
         return spawned
@@ -88,7 +92,7 @@ object PillagerRuntime {
         entityId: String,
         pos: BlockPos,
         target: ServerPlayer?,
-        patrolTarget: BlockPos,
+        objective: PillagerObjectiveRules.Objective,
         base: PillagerBase?,
         faction: PillagerFaction?,
         campaign: PillagerCampaign?,
@@ -105,6 +109,10 @@ object PillagerRuntime {
         faction?.let { entity.persistentData.putUUID(FACTION_TAG, it.id) }
         base?.let { entity.persistentData.putUUID(BASE_TAG, it.id) }
         campaign?.let { entity.persistentData.putUUID(CAMPAIGN_TAG, it.id) }
+        entity.persistentData.putString(OBJECTIVE_KIND_TAG, objective.kind)
+        entity.persistentData.putInt(OBJECTIVE_X_TAG, objective.pos.x)
+        entity.persistentData.putInt(OBJECTIVE_Y_TAG, objective.pos.y)
+        entity.persistentData.putInt(OBJECTIVE_Z_TAG, objective.pos.z)
         if (leader) officer?.let {
             entity.persistentData.putUUID(OFFICER_TAG, it.id)
             entity.customName = Component.literal(it.displayName()).withStyle(nameColor(it))
@@ -117,7 +125,7 @@ object PillagerRuntime {
         }
         if (PillagerPressureConfig.persistentPatrolMobs.get()) entity.setPersistenceRequired()
         if (entity is PatrollingMonster) {
-            entity.patrolTarget = patrolTarget
+            entity.patrolTarget = objective.pos
             if (leader) {
                 entity.isPatrolLeader = true
                 faction?.let { entity.setItemSlot(EquipmentSlot.HEAD, PillagerIdentity.bannerStack(it)) }
@@ -198,18 +206,19 @@ object PillagerRuntime {
     fun chooseSpawnPos(level: ServerLevel, center: BlockPos): BlockPos? {
         val minRadius = min(PillagerPressureConfig.minRadius.get(), PillagerPressureConfig.maxRadius.get()).coerceAtLeast(8)
         val maxRadius = max(PillagerPressureConfig.minRadius.get(), PillagerPressureConfig.maxRadius.get()).coerceAtLeast(minRadius)
-        repeat(PillagerPressureConfig.spawnAttempts.get()) {
-            val angle = level.random.nextDouble() * Math.PI * 2.0
-            val radius = if (maxRadius == minRadius) minRadius else level.random.nextInt(maxRadius - minRadius + 1) + minRadius
-            val x = center.x + (cos(angle) * radius).toInt()
-            val z = center.z + (sin(angle) * radius).toInt()
-            val probe = BlockPos(x, center.y, z)
-            if (!level.hasChunkAt(probe)) return@repeat
-            val y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z)
-            val pos = BlockPos(x, y, z)
-            if (validSpawnSurface(level, pos)) return pos
+        return PillagerSpawnPlacementRules.chooseFarthest(
+            center = center,
+            minRadius = minRadius,
+            maxRadius = maxRadius,
+            isLoaded = { probe -> level.hasChunkAt(probe) },
+            isValid = { probe ->
+                val y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, probe.x, probe.z)
+                validSpawnSurface(level, BlockPos(probe.x, y, probe.z))
+            },
+        )?.let { probe ->
+            val y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, probe.x, probe.z)
+            BlockPos(probe.x, y, probe.z)
         }
-        return null
     }
 
     fun validSpawnSurface(level: ServerLevel, pos: BlockPos): Boolean {
