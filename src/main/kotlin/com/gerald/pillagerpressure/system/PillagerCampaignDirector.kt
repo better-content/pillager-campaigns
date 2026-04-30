@@ -99,10 +99,15 @@ object PillagerCampaignDirector {
         val base = data.bases[campaign.originBaseId]
         val faction = data.factions[campaign.factionId]
         val officer = campaign.officerId?.let { data.officers[it] }
-        val count = PillagerRuntime.spawnSquad(level, data, pos, player, base, faction, campaign, officer, campaign.pillagers, campaign.specials, leader = true)
+        val plan = PillagerCampaignMaterializationRules.planFor(campaign)
+        val originalState = campaign.state
+        campaign.state = plan.nextState
+        val objectivePlayer = if (plan.targetPlayerImmediately) player else null
+        val count = PillagerRuntime.spawnSquad(level, data, pos, objectivePlayer, base, faction, campaign, officer, campaign.pillagers, campaign.specials, leader = true)
         if (count > 0) {
             campaign.lastMaterializedTick = now
-            campaign.state = CampaignState.ENGAGING
+        } else {
+            campaign.state = originalState
         }
         return if (count > 0) 1 else 0
     }

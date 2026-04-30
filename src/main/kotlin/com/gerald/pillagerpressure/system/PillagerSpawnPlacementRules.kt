@@ -1,5 +1,7 @@
 package com.gerald.pillagerpressure.system
 
+import com.gerald.pillagerpressure.data.CampaignState
+import com.gerald.pillagerpressure.data.PillagerCampaign
 import net.minecraft.core.BlockPos
 
 object PillagerSpawnPlacementRules {
@@ -65,5 +67,24 @@ object PillagerObjectiveRules {
             return Objective(kind, campaign.target.centerBlock(fallback.y))
         }
         return Objective("patrol", fallback)
+    }
+}
+
+object PillagerCampaignMaterializationRules {
+    data class Plan(val targetPlayerImmediately: Boolean, val nextState: CampaignState)
+
+    fun planFor(campaign: PillagerCampaign): Plan {
+        if (campaign.current != campaign.target) return Plan(targetPlayerImmediately = false, nextState = campaign.state)
+        return when (campaign.state) {
+            CampaignState.SCOUTING,
+            CampaignState.APPROACHING_INTEL -> Plan(targetPlayerImmediately = false, nextState = CampaignState.SEARCHING)
+            CampaignState.ENGAGING -> Plan(targetPlayerImmediately = true, nextState = CampaignState.ENGAGING)
+            CampaignState.SEARCHING,
+            CampaignState.RETREATING_WITH_INTEL,
+            CampaignState.RETURNING_TO_BASE,
+            CampaignState.EXPANDING,
+            CampaignState.SUPPLYING,
+            CampaignState.DISBANDED -> Plan(targetPlayerImmediately = false, nextState = campaign.state)
+        }
     }
 }

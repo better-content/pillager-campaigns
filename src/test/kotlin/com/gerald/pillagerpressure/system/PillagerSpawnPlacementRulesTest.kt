@@ -7,6 +7,7 @@ import net.minecraft.core.BlockPos
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -75,6 +76,45 @@ class PillagerSpawnPlacementRulesTest {
 
         assertEquals("patrol", objective.kind)
         assertEquals(fallback, objective.pos)
+    }
+
+    @Test
+    fun enRouteCampaignMaterializesWithoutForcingPlayerTarget() {
+        val campaign = campaign(CampaignState.APPROACHING_INTEL).also {
+            it.current = ChunkRef(0, 0)
+            it.target = ChunkRef(8, 0)
+        }
+
+        val plan = PillagerCampaignMaterializationRules.planFor(campaign)
+
+        assertFalse(plan.targetPlayerImmediately)
+        assertEquals(CampaignState.APPROACHING_INTEL, plan.nextState)
+    }
+
+    @Test
+    fun campaignAtIntelDestinationBecomesSearchingInsteadOfForcedEngagement() {
+        val campaign = campaign(CampaignState.APPROACHING_INTEL).also {
+            it.current = ChunkRef(8, 0)
+            it.target = ChunkRef(8, 0)
+        }
+
+        val plan = PillagerCampaignMaterializationRules.planFor(campaign)
+
+        assertFalse(plan.targetPlayerImmediately)
+        assertEquals(CampaignState.SEARCHING, plan.nextState)
+    }
+
+    @Test
+    fun alreadyEngagingCampaignKeepsExplicitPlayerTarget() {
+        val campaign = campaign(CampaignState.ENGAGING).also {
+            it.current = ChunkRef(4, 4)
+            it.target = ChunkRef(4, 4)
+        }
+
+        val plan = PillagerCampaignMaterializationRules.planFor(campaign)
+
+        assertTrue(plan.targetPlayerImmediately)
+        assertEquals(CampaignState.ENGAGING, plan.nextState)
     }
 
     @Test
