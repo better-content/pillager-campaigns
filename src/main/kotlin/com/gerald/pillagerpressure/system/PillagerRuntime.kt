@@ -5,16 +5,22 @@ import com.gerald.pillagerpressure.PillagerPressureMod
 import com.gerald.pillagerpressure.data.*
 import com.gerald.pillagerpressure.util.PillagerIdentity
 import net.minecraft.core.BlockPos
+import net.minecraft.ChatFormatting
 import net.minecraft.network.chat.Component
 import net.minecraft.resources.ResourceLocation
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.server.level.ServerPlayer
+import net.minecraft.core.particles.ParticleTypes
+import net.minecraft.world.effect.MobEffectInstance
+import net.minecraft.world.effect.MobEffects
 import net.minecraft.world.entity.EntityType
 import net.minecraft.world.entity.EquipmentSlot
 import net.minecraft.world.entity.Mob
 import net.minecraft.world.entity.MobSpawnType
+import net.minecraft.world.entity.ai.attributes.Attributes
 import net.minecraft.world.entity.monster.PatrollingMonster
 import net.minecraft.world.item.ItemStack
+import net.minecraft.world.item.Items
 import net.minecraft.world.item.MapItem
 import net.minecraft.world.level.Level
 import net.minecraft.world.level.block.BannerBlock
@@ -99,10 +105,11 @@ object PillagerRuntime {
         faction?.let { entity.persistentData.putUUID(FACTION_TAG, it.id) }
         base?.let { entity.persistentData.putUUID(BASE_TAG, it.id) }
         campaign?.let { entity.persistentData.putUUID(CAMPAIGN_TAG, it.id) }
-        officer?.let {
+        if (leader) officer?.let {
             entity.persistentData.putUUID(OFFICER_TAG, it.id)
-            entity.customName = Component.literal(it.displayName())
+            entity.customName = Component.literal(it.displayName()).withStyle(nameColor(it))
             entity.isCustomNameVisible = true
+            applyOfficerSignal(level, entity, it, faction)
         }
         target?.let {
             entity.persistentData.putUUID("BoundToMatterPressureTarget", it.uuid)
@@ -117,6 +124,75 @@ object PillagerRuntime {
             }
         }
         return level.addFreshEntity(entity)
+    }
+
+    private fun applyOfficerSignal(level: ServerLevel, entity: Mob, officer: PillagerOfficer, faction: PillagerFaction?) {
+        val rankHealth = when (officer.rank) {
+            OfficerRank.SCOUT -> 1.0
+            OfficerRank.CAPTAIN -> 1.25
+            OfficerRank.LIEUTENANT -> 1.5
+            OfficerRank.WARLORD -> 1.9
+            OfficerRank.BANNERLORD -> 2.2
+        }
+        entity.getAttribute(Attributes.MAX_HEALTH)?.let {
+            it.baseValue *= rankHealth
+            entity.health = entity.maxHealth
+        }
+        if (officer.rank == OfficerRank.WARLORD || officer.rank == OfficerRank.BANNERLORD) entity.setGlowingTag(true)
+
+        officer.affixes.forEach { affix ->
+            when (affix) {
+                OfficerAffix.SWIFT -> {
+                    entity.addEffect(MobEffectInstance(MobEffects.MOVEMENT_SPEED, 20 * 60 * 20, 2, true, true))
+                    entity.getAttribute(Attributes.MOVEMENT_SPEED)?.let { it.baseValue *= 1.45 }
+                    level.sendParticles(ParticleTypes.CLOUD, entity.x, entity.y + 1.0, entity.z, 16, 0.4, 0.7, 0.4, 0.05)
+                }
+                OfficerAffix.LONGSHOT -> {
+                    entity.addEffect(MobEffectInstance(MobEffects.DAMAGE_BOOST, 20 * 60 * 20, 0, true, true))
+                    entity.setItemSlot(EquipmentSlot.MAINHAND, ItemStack(Items.CROSSBOW))
+                    level.sendParticles(ParticleTypes.CRIT, entity.x, entity.y + 1.2, entity.z, 18, 0.5, 0.5, 0.5, 0.08)
+                }
+                OfficerAffix.IRONBOUND -> {
+                    entity.addEffect(MobEffectInstance(MobEffects.DAMAGE_RESISTANCE, 20 * 60 * 20, 1, true, true))
+                    entity.getAttribute(Attributes.KNOCKBACK_RESISTANCE)?.let { it.baseValue = (it.baseValue + 0.6).coerceAtMost(1.0) }
+                    entity.setItemSlot(EquipmentSlot.CHEST, ItemStack(Items.IRON_CHESTPLATE))
+                    level.sendParticles(ParticleTypes.ASH, entity.x, entity.y + 1.0, entity.z, 20, 0.5, 0.8, 0.5, 0.02)
+                }
+                OfficerAffix.WITCH_TOUCHED -> {
+                    entity.addEffect(MobEffectInstance(MobEffects.REGENERATION, 20 * 60 * 20, 0, true, true))
+                    level.sendParticles(ParticleTypes.WITCH, entity.x, entity.y + 1.0, entity.z, 24, 0.5, 0.9, 0.5, 0.05)
+                }
+                OfficerAffix.BANNERED -> {
+                    faction?.let { entity.setItemSlot(EquipmentSlot.HEAD, PillagerIdentity.bannerStack(it)) }
+                    entity.addEffect(MobEffectInstance(MobEffects.GLOWING, 20 * 60 * 20, 0, true, false))
+                    level.sendParticles(ParticleTypes.HAPPY_VILLAGER, entity.x, entity.y + 1.5, entity.z, 12, 0.5, 0.5, 0.5, 0.02)
+                }
+                OfficerAffix.ASHEN -> {
+                    entity.addEffect(MobEffectInstance(MobEffects.FIRE_RESISTANCE, 20 * 60 * 20, 0, true, true))
+                    level.sendParticles(ParticleTypes.FLAME, entity.x, entity.y + 1.0, entity.z, 18, 0.5, 0.8, 0.5, 0.03)
+                    level.sendParticles(ParticleTypes.SMOKE, entity.x, entity.y + 1.0, entity.z, 18, 0.5, 0.8, 0.5, 0.02)
+                }
+                OfficerAffix.BEAST_CALLER -> {
+                    entity.getAttribute(Attributes.ATTACK_DAMAGE)?.let { it.baseValue *= 1.25 }
+                    level.sendParticles(ParticleTypes.ANGRY_VILLAGER, entity.x, entity.y + 1.4, entity.z, 10, 0.5, 0.5, 0.5, 0.02)
+                }
+                OfficerAffix.GRAVE_MARKED -> {
+                    entity.addEffect(MobEffectInstance(MobEffects.DAMAGE_BOOST, 20 * 60 * 20, 1, true, true))
+                    level.sendParticles(ParticleTypes.SOUL_FIRE_FLAME, entity.x, entity.y + 1.0, entity.z, 24, 0.5, 0.8, 0.5, 0.02)
+                }
+            }
+        }
+    }
+
+    private fun nameColor(officer: PillagerOfficer): ChatFormatting = when {
+        OfficerAffix.GRAVE_MARKED in officer.affixes -> ChatFormatting.DARK_RED
+        OfficerAffix.WITCH_TOUCHED in officer.affixes -> ChatFormatting.DARK_PURPLE
+        OfficerAffix.SWIFT in officer.affixes -> ChatFormatting.AQUA
+        OfficerAffix.IRONBOUND in officer.affixes -> ChatFormatting.GRAY
+        OfficerAffix.BANNERED in officer.affixes -> ChatFormatting.GOLD
+        officer.rank == OfficerRank.BANNERLORD -> ChatFormatting.RED
+        officer.rank == OfficerRank.WARLORD -> ChatFormatting.DARK_RED
+        else -> ChatFormatting.YELLOW
     }
 
     fun chooseSpawnPos(level: ServerLevel, center: BlockPos): BlockPos? {

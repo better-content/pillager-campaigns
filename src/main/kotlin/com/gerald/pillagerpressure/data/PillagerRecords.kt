@@ -10,6 +10,7 @@ import net.minecraft.world.item.DyeColor
 import net.minecraft.world.level.ChunkPos
 import net.minecraft.world.level.levelgen.structure.BoundingBox
 import java.util.UUID
+import kotlin.math.roundToInt
 
 fun CompoundTag.getRequiredUuidString(key: String): UUID =
     if (contains(key, Tag.TAG_STRING.toInt())) UUID.fromString(getString(key)) else throw IllegalArgumentException("Missing UUID field '$key'")
@@ -24,6 +25,81 @@ inline fun <reified T : Enum<T>> CompoundTag.getEnumString(key: String, fallback
 
 fun CompoundTag.getResourceLocationString(key: String, fallback: ResourceLocation? = null): ResourceLocation? =
     if (contains(key, Tag.TAG_STRING.toInt())) ResourceLocation.tryParse(getString(key)) ?: fallback else fallback
+
+data class OfficerGeneProfile(
+    var range: Int,
+    var melee: Int,
+    var speed: Int,
+    var armor: Int,
+    var magic: Int,
+    var beast: Int,
+    var fire: Int,
+    var banner: Int,
+    var siege: Int,
+    var survival: Int,
+) {
+    fun save(): CompoundTag = CompoundTag().also { tag ->
+        tag.putInt("range", range); tag.putInt("melee", melee); tag.putInt("speed", speed); tag.putInt("armor", armor); tag.putInt("magic", magic)
+        tag.putInt("beast", beast); tag.putInt("fire", fire); tag.putInt("banner", banner); tag.putInt("siege", siege); tag.putInt("survival", survival)
+    }
+
+    fun clamped(): OfficerGeneProfile = OfficerGeneProfile(range.clampGene(), melee.clampGene(), speed.clampGene(), armor.clampGene(), magic.clampGene(), beast.clampGene(), fire.clampGene(), banner.clampGene(), siege.clampGene(), survival.clampGene())
+    fun scaled(factor: Double): OfficerGeneProfile = OfficerGeneProfile((range * factor).roundToInt(), (melee * factor).roundToInt(), (speed * factor).roundToInt(), (armor * factor).roundToInt(), (magic * factor).roundToInt(), (beast * factor).roundToInt(), (fire * factor).roundToInt(), (banner * factor).roundToInt(), (siege * factor).roundToInt(), (survival * factor).roundToInt())
+    fun plus(other: OfficerGeneProfile): OfficerGeneProfile = OfficerGeneProfile(range + other.range, melee + other.melee, speed + other.speed, armor + other.armor, magic + other.magic, beast + other.beast, fire + other.fire, banner + other.banner, siege + other.siege, survival + other.survival)
+    fun minus(other: OfficerGeneProfile): OfficerGeneProfile = OfficerGeneProfile(range - other.range, melee - other.melee, speed - other.speed, armor - other.armor, magic - other.magic, beast - other.beast, fire - other.fire, banner - other.banner, siege - other.siege, survival - other.survival)
+    fun topGenes(count: Int): List<Pair<String, Int>> = listOf("range" to range, "melee" to melee, "speed" to speed, "armor" to armor, "magic" to magic, "beast" to beast, "fire" to fire, "banner" to banner, "siege" to siege, "survival" to survival).sortedByDescending { it.second }.take(count)
+
+    companion object {
+        fun neutral(value: Int = 35): OfficerGeneProfile = OfficerGeneProfile(value, value, value, value, value, value, value, value, value, value)
+        fun load(tag: CompoundTag): OfficerGeneProfile = OfficerGeneProfile(tag.getInt("range"), tag.getInt("melee"), tag.getInt("speed"), tag.getInt("armor"), tag.getInt("magic"), tag.getInt("beast"), tag.getInt("fire"), tag.getInt("banner"), tag.getInt("siege"), tag.getInt("survival")).clamped()
+    }
+}
+
+data class FactionWarMemory(
+    var successfulGenes: OfficerGeneProfile = OfficerGeneProfile.neutral(0),
+    var failedGenes: OfficerGeneProfile = OfficerGeneProfile.neutral(0),
+    var mutationSeed: Long = 0L,
+    var generation: Int = 0,
+) {
+    fun save(): CompoundTag = CompoundTag().also { tag ->
+        tag.put("success", successfulGenes.save())
+        tag.put("failure", failedGenes.save())
+        tag.putLong("mutationSeed", mutationSeed)
+        tag.putInt("generation", generation)
+    }
+
+    fun learnedPreference(): OfficerGeneProfile = successfulGenes.minus(failedGenes.scaled(0.5)).plus(OfficerGeneProfile.neutral(35)).clamped()
+
+    companion object {
+        fun load(tag: CompoundTag): FactionWarMemory = FactionWarMemory(
+            if (tag.contains("success", Tag.TAG_COMPOUND.toInt())) OfficerGeneProfile.load(tag.getCompound("success")) else OfficerGeneProfile.neutral(0),
+            if (tag.contains("failure", Tag.TAG_COMPOUND.toInt())) OfficerGeneProfile.load(tag.getCompound("failure")) else OfficerGeneProfile.neutral(0),
+            tag.getLong("mutationSeed"),
+            tag.getInt("generation"),
+        )
+    }
+}
+
+data class OfficerLineage(
+    var predecessorOfficerId: UUID?,
+    var inheritedRank: OfficerRank,
+    var inheritedBannerSeed: Int,
+    var causeOfSuccession: String,
+) {
+    fun save(): CompoundTag = CompoundTag().also { tag ->
+        predecessorOfficerId?.let { tag.putUuidString("predecessor", it) }
+        tag.putString("inheritedRank", inheritedRank.name)
+        tag.putInt("inheritedBannerSeed", inheritedBannerSeed)
+        tag.putString("cause", causeOfSuccession)
+    }
+
+    companion object {
+        fun none(rank: OfficerRank = OfficerRank.CAPTAIN, bannerSeed: Int = 0): OfficerLineage = OfficerLineage(null, rank, bannerSeed, "raised from the ranks")
+        fun load(tag: CompoundTag, fallbackRank: OfficerRank): OfficerLineage = OfficerLineage(tag.getOptionalUuidString("predecessor"), tag.getEnumString("inheritedRank", fallbackRank), tag.getInt("inheritedBannerSeed"), tag.getString("cause").ifBlank { "raised from the ranks" })
+    }
+}
+
+private fun Int.clampGene(): Int = coerceIn(0, 100)
 
 data class ChunkRef(val x: Int, val z: Int) {
     fun toChunkPos(): ChunkPos = ChunkPos(x, z)
@@ -70,14 +146,7 @@ data class PlayerIntel(
     }
 
     companion object {
-        fun load(tag: CompoundTag): PlayerIntel = PlayerIntel(
-            tag.getRequiredUuidString("player"),
-            tag.getString("name"),
-            ChunkRef.load(tag.getCompound("chunk")),
-            tag.getLong("tick"),
-            tag.getInt("confidence"),
-            tag.getOptionalUuidString("officer"),
-        )
+        fun load(tag: CompoundTag): PlayerIntel = PlayerIntel(tag.getRequiredUuidString("player"), tag.getString("name"), ChunkRef.load(tag.getCompound("chunk")), tag.getLong("tick"), tag.getInt("confidence"), tag.getOptionalUuidString("officer"))
     }
 }
 
@@ -89,6 +158,7 @@ data class PillagerFaction(
     var patternSeed: Int,
     var aggressionBias: Int,
     var expansionBias: Int,
+    var warMemory: FactionWarMemory = FactionWarMemory(),
 ) {
     fun baseDyeColor(): DyeColor = DyeColor.byName(baseColor, DyeColor.BLACK) ?: DyeColor.BLACK
     fun accentDyeColor(): DyeColor = DyeColor.byName(accentColor, DyeColor.RED) ?: DyeColor.RED
@@ -101,6 +171,7 @@ data class PillagerFaction(
         tag.putInt("patternSeed", patternSeed)
         tag.putInt("aggressionBias", aggressionBias)
         tag.putInt("expansionBias", expansionBias)
+        tag.put("warMemory", warMemory.save())
     }
 
     companion object {
@@ -112,16 +183,13 @@ data class PillagerFaction(
             tag.getInt("patternSeed"),
             tag.getInt("aggressionBias"),
             tag.getInt("expansionBias"),
+            if (tag.contains("warMemory", Tag.TAG_COMPOUND.toInt())) FactionWarMemory.load(tag.getCompound("warMemory")) else FactionWarMemory(),
         )
     }
 }
 
 private val vanillaDyeColorNames = setOf("white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black")
-
-private fun normalizedColorName(raw: String, fallback: String): String {
-    val normalized = raw.lowercase()
-    return if (normalized in vanillaDyeColorNames) normalized else fallback
-}
+private fun normalizedColorName(raw: String, fallback: String): String = raw.lowercase().let { if (it in vanillaDyeColorNames) it else fallback }
 
 data class PillagerBase(
     val id: UUID,
@@ -159,27 +227,12 @@ data class PillagerBase(
 
     companion object {
         fun load(tag: CompoundTag): PillagerBase {
-            val bounds = if (tag.contains("bounds", Tag.TAG_INT_ARRAY.toInt())) {
-                tag.getIntArray("bounds").let { raw -> if (raw.size >= 6) BoundingBox(raw[0], raw[1], raw[2], raw[3], raw[4], raw[5]) else null }
-            } else null
+            val bounds = if (tag.contains("bounds", Tag.TAG_INT_ARRAY.toInt())) tag.getIntArray("bounds").let { raw -> if (raw.size >= 6) BoundingBox(raw[0], raw[1], raw[2], raw[3], raw[4], raw[5]) else null } else null
             val base = PillagerBase(
-                id = tag.getRequiredUuidString("id"),
-                factionId = tag.getRequiredUuidString("faction"),
-                parentBaseId = tag.getOptionalUuidString("parent"),
-                type = tag.getEnumString("type", BaseType.MAJOR),
-                dimension = tag.getResourceLocationString("dimension", ResourceLocation("minecraft", "overworld"))!!,
-                structureId = tag.getResourceLocationString("structure"),
-                center = BlockPos(tag.getInt("cx"), tag.getInt("cy"), tag.getInt("cz")),
-                chunk = ChunkRef.load(tag.getCompound("chunk")),
-                bounds = bounds,
-                state = tag.getEnumString("state", BaseState.ACTIVE),
-                manpower = tag.getInt("manpower"),
-                supplies = tag.getInt("supplies"),
-                morale = tag.getInt("morale"),
-                aggression = tag.getInt("aggression"),
-                loyalty = tag.getInt("loyalty"),
-                influence = tag.getInt("influence"),
-                lastValidatedTick = tag.getLong("lastValidated"),
+                tag.getRequiredUuidString("id"), tag.getRequiredUuidString("faction"), tag.getOptionalUuidString("parent"), tag.getEnumString("type", BaseType.MAJOR),
+                tag.getResourceLocationString("dimension", ResourceLocation("minecraft", "overworld"))!!, tag.getResourceLocationString("structure"),
+                BlockPos(tag.getInt("cx"), tag.getInt("cy"), tag.getInt("cz")), ChunkRef.load(tag.getCompound("chunk")), bounds,
+                tag.getEnumString("state", BaseState.ACTIVE), tag.getInt("manpower"), tag.getInt("supplies"), tag.getInt("morale"), tag.getInt("aggression"), tag.getInt("loyalty"), tag.getInt("influence"), tag.getLong("lastValidated"),
             )
             tag.getList("intel", Tag.TAG_COMPOUND.toInt()).forEach { raw -> runCatching { base.intel.add(PlayerIntel.load(raw as CompoundTag)) } }
             return base
@@ -200,39 +253,36 @@ data class PillagerOfficer(
     var defeats: Int,
     var killedPlayers: Int,
     var escapedEncounters: Int,
+    var genes: OfficerGeneProfile = OfficerGeneProfile.neutral(),
+    var doctrine: OfficerDoctrine = OfficerDoctrine.RAIDER,
+    val affixes: MutableSet<OfficerAffix> = mutableSetOf(),
+    var lineage: OfficerLineage = OfficerLineage.none(),
     val traits: MutableSet<String> = mutableSetOf(),
     val grudges: MutableMap<UUID, Int> = mutableMapOf(),
 ) {
-    fun displayName(): String = "$name $title"
+    fun displayName(): String = "${rank.name.lowercase().replaceFirstChar { it.uppercase() }} $name $title"
 
     fun save(): CompoundTag = CompoundTag().also { tag ->
         tag.putUuidString("id", id); tag.putString("name", name); tag.putString("title", title); tag.putUuidString("faction", factionId); tag.putUuidString("home", homeBaseId)
         tag.putString("rank", rank.name); tag.putString("role", role.name); tag.putString("state", state.name); tag.putInt("victories", victories); tag.putInt("defeats", defeats); tag.putInt("kills", killedPlayers); tag.putInt("escapes", escapedEncounters)
+        tag.put("genes", genes.save()); tag.putString("doctrine", doctrine.name); tag.put("lineage", lineage.save())
+        val affixList = ListTag(); affixes.forEach { affixList.add(StringTag.valueOf(it.name)) }; tag.put("affixes", affixList)
         val traitList = ListTag(); traits.forEach { traitList.add(StringTag.valueOf(it)) }; tag.put("traits", traitList)
         val grudgeList = ListTag(); grudges.forEach { (id, value) -> grudgeList.add(CompoundTag().also { it.putUuidString("player", id); it.putInt("value", value) }) }; tag.put("grudges", grudgeList)
     }
 
     companion object {
         fun load(tag: CompoundTag): PillagerOfficer {
+            val rank = tag.getEnumString("rank", OfficerRank.CAPTAIN)
             val officer = PillagerOfficer(
-                tag.getRequiredUuidString("id"),
-                tag.getString("name").ifBlank { "Nameless" },
-                tag.getString("title").ifBlank { "the Unproven" },
-                tag.getRequiredUuidString("faction"),
-                tag.getRequiredUuidString("home"),
-                tag.getEnumString("rank", OfficerRank.CAPTAIN),
-                tag.getEnumString("role", OfficerRole.SKIRMISHER),
-                tag.getEnumString("state", OfficerState.ACTIVE),
-                tag.getInt("victories"),
-                tag.getInt("defeats"),
-                tag.getInt("kills"),
-                tag.getInt("escapes"),
+                tag.getRequiredUuidString("id"), tag.getString("name").ifBlank { "Nameless" }, tag.getString("title").ifBlank { "the Unproven" }, tag.getRequiredUuidString("faction"), tag.getRequiredUuidString("home"),
+                rank, tag.getEnumString("role", OfficerRole.SKIRMISHER), tag.getEnumString("state", OfficerState.ACTIVE), tag.getInt("victories"), tag.getInt("defeats"), tag.getInt("kills"), tag.getInt("escapes"),
+                if (tag.contains("genes", Tag.TAG_COMPOUND.toInt())) OfficerGeneProfile.load(tag.getCompound("genes")) else OfficerGeneProfile.neutral(),
+                tag.getEnumString("doctrine", OfficerDoctrine.RAIDER), mutableSetOf(), if (tag.contains("lineage", Tag.TAG_COMPOUND.toInt())) OfficerLineage.load(tag.getCompound("lineage"), rank) else OfficerLineage.none(rank),
             )
+            tag.getList("affixes", Tag.TAG_STRING.toInt()).forEach { raw -> runCatching { officer.affixes.add(OfficerAffix.valueOf(raw.asString)) } }
             tag.getList("traits", Tag.TAG_STRING.toInt()).forEach { officer.traits.add(it.asString) }
-            tag.getList("grudges", Tag.TAG_COMPOUND.toInt()).forEach { raw ->
-                val grudge = raw as CompoundTag
-                grudge.getOptionalUuidString("player")?.let { officer.grudges[it] = grudge.getInt("value") }
-            }
+            tag.getList("grudges", Tag.TAG_COMPOUND.toInt()).forEach { raw -> val grudge = raw as CompoundTag; grudge.getOptionalUuidString("player")?.let { officer.grudges[it] = grudge.getInt("value") } }
             return officer
         }
     }
@@ -260,21 +310,7 @@ data class PillagerCampaign(
     }
 
     companion object {
-        fun load(tag: CompoundTag): PillagerCampaign = PillagerCampaign(
-            tag.getRequiredUuidString("id"),
-            tag.getRequiredUuidString("faction"),
-            tag.getRequiredUuidString("origin"),
-            tag.getOptionalUuidString("officer"),
-            tag.getEnumString("state", CampaignState.DISBANDED),
-            ChunkRef.load(tag.getCompound("current")),
-            ChunkRef.load(tag.getCompound("target")),
-            tag.getInt("speed").coerceAtLeast(1),
-            tag.getInt("debt"),
-            tag.getInt("pillagers"),
-            tag.getInt("specials"),
-            tag.getLong("created"),
-            tag.getLong("materialized"),
-        )
+        fun load(tag: CompoundTag): PillagerCampaign = PillagerCampaign(tag.getRequiredUuidString("id"), tag.getRequiredUuidString("faction"), tag.getRequiredUuidString("origin"), tag.getOptionalUuidString("officer"), tag.getEnumString("state", CampaignState.DISBANDED), ChunkRef.load(tag.getCompound("current")), ChunkRef.load(tag.getCompound("target")), tag.getInt("speed").coerceAtLeast(1), tag.getInt("debt"), tag.getInt("pillagers"), tag.getInt("specials"), tag.getLong("created"), tag.getLong("materialized"))
     }
 }
 
@@ -290,13 +326,6 @@ data class PendingFlagMarker(val factionId: UUID, val officerId: UUID?, val dime
     }
 
     companion object {
-        fun load(tag: CompoundTag): PendingFlagMarker = PendingFlagMarker(
-            tag.getRequiredUuidString("faction"),
-            tag.getOptionalUuidString("officer"),
-            tag.getResourceLocationString("dimension", ResourceLocation("minecraft", "overworld"))!!,
-            BlockPos(tag.getInt("x"), tag.getInt("y"), tag.getInt("z")),
-            tag.getLong("created"),
-            tag.getInt("attempts"),
-        )
+        fun load(tag: CompoundTag): PendingFlagMarker = PendingFlagMarker(tag.getRequiredUuidString("faction"), tag.getOptionalUuidString("officer"), tag.getResourceLocationString("dimension", ResourceLocation("minecraft", "overworld"))!!, BlockPos(tag.getInt("x"), tag.getInt("y"), tag.getInt("z")), tag.getLong("created"), tag.getInt("attempts"))
     }
 }

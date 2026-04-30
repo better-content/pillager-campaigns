@@ -58,7 +58,7 @@ object PillagerCampaignDirector {
     }
 
     private fun dispatch(level: ServerLevel, data: PillagerWorldData, base: PillagerBase, state: CampaignState, target: ChunkRef, pillagers: Int, specials: Int): PillagerCampaign {
-        val officer = if (state == CampaignState.SCOUTING && data.officers.values.any { it.homeBaseId == base.id }) null else PillagerBaseService.officerForBase(data, base)
+        val officer = PillagerBaseService.officerForBase(data, base)
         val campaign = PillagerCampaign(UUID.randomUUID(), base.factionId, base.id, officer?.id, state, base.chunk, target, PillagerPressureConfig.campaignSpeedTicksPerChunk.get(), 0, pillagers, specials, level.gameTime, 0L)
         data.campaigns[campaign.id] = campaign
         return campaign

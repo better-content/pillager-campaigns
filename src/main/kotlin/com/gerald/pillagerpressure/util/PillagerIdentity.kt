@@ -1,9 +1,9 @@
 package com.gerald.pillagerpressure.util
 
-import com.gerald.pillagerpressure.data.PillagerFaction
-import com.gerald.pillagerpressure.data.PillagerOfficer
-import com.gerald.pillagerpressure.data.OfficerRank
-import com.gerald.pillagerpressure.data.OfficerRole
+import com.gerald.pillagerpressure.data.*
+import com.gerald.pillagerpressure.system.OfficerAffixRules
+import com.gerald.pillagerpressure.system.OfficerDoctrineRules
+import com.gerald.pillagerpressure.system.OfficerGeneRules
 import net.minecraft.ChatFormatting
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.nbt.ListTag
@@ -31,10 +31,41 @@ object PillagerIdentity {
         return PillagerFaction(id, factionNames[idx % factionNames.size], base, accent, idx, 1 + idx % 4, 1 + (idx / 3) % 4)
     }
 
-    fun makeOfficer(factionId: UUID, baseId: UUID, seed: Long, role: OfficerRole = OfficerRole.entries[abs(seed.toInt()) % OfficerRole.entries.size]): PillagerOfficer {
+    fun makeOfficer(
+        faction: PillagerFaction,
+        baseId: UUID,
+        seed: Long,
+        role: OfficerRole = OfficerRole.entries[abs(seed.toInt()) % OfficerRole.entries.size],
+        rank: OfficerRank = OfficerRank.CAPTAIN,
+        predecessor: PillagerOfficer? = null,
+    ): PillagerOfficer {
         val id = UUID.nameUUIDFromBytes("pillagerpressure:officer:$baseId:$seed".toByteArray())
         val idx = abs((seed xor baseId.mostSignificantBits).toInt())
-        return PillagerOfficer(id, names[idx % names.size], titles[(idx / 5) % titles.size], factionId, baseId, OfficerRank.CAPTAIN, role, com.gerald.pillagerpressure.data.OfficerState.ACTIVE, 0, 0, 0, 0)
+        val localPressure = rolePressure(role)
+        val genes = OfficerGeneRules.rollReplacement(faction.warMemory, predecessor, localPressure, seed)
+        val doctrine = OfficerDoctrineRules.doctrineFor(genes)
+        val affixes = OfficerAffixRules.affixesFor(genes, rank, emptySet()).toMutableSet()
+        val lineage = if (predecessor != null) {
+            OfficerLineage(predecessor.id, rank, faction.patternSeed xor predecessor.lineage.inheritedBannerSeed, "took up ${predecessor.name}'s banner")
+        } else {
+            OfficerLineage.none(rank, faction.patternSeed)
+        }
+        return PillagerOfficer(id, names[idx % names.size], titles[(idx / 5) % titles.size], faction.id, baseId, rank, role, OfficerState.ACTIVE, 0, 0, 0, 0, genes, doctrine, affixes, lineage)
+    }
+
+    fun makeOfficer(factionId: UUID, baseId: UUID, seed: Long, role: OfficerRole = OfficerRole.entries[abs(seed.toInt()) % OfficerRole.entries.size]): PillagerOfficer {
+        val faction = PillagerFaction(factionId, "Unmarked Host", "black", "red", seed.toInt(), 1, 1)
+        return makeOfficer(faction, baseId, seed, role)
+    }
+
+    private fun rolePressure(role: OfficerRole): OfficerGeneProfile = when (role) {
+        OfficerRole.SCOUTMASTER -> OfficerGeneProfile.neutral(20).copy(speed = 85, survival = 80, range = 55)
+        OfficerRole.SKIRMISHER -> OfficerGeneProfile.neutral(25).copy(speed = 65, melee = 60, survival = 55)
+        OfficerRole.SIEGE_ENGINEER -> OfficerGeneProfile.neutral(20).copy(siege = 90, fire = 55, armor = 50)
+        OfficerRole.BANNER_BEARER -> OfficerGeneProfile.neutral(20).copy(banner = 90, armor = 65, survival = 55)
+        OfficerRole.BEAST_HANDLER -> OfficerGeneProfile.neutral(20).copy(beast = 90, siege = 60, melee = 50)
+        OfficerRole.WITCH_TOUCHED -> OfficerGeneProfile.neutral(20).copy(magic = 90, survival = 70, range = 45)
+        OfficerRole.HUNTER -> OfficerGeneProfile.neutral(20).copy(range = 90, speed = 60, survival = 55)
     }
 
     fun bannerStack(faction: PillagerFaction): ItemStack {

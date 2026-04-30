@@ -62,7 +62,7 @@ object PillagerBaseService {
         )
         data.bases[base.id] = base
         if (data.officers.values.none { it.homeBaseId == base.id }) {
-            val officer = PillagerIdentity.makeOfficer(faction.id, base.id, level.seed xor base.id.leastSignificantBits)
+            val officer = PillagerIdentity.makeOfficer(faction, base.id, level.seed xor base.id.leastSignificantBits)
             data.officers[officer.id] = officer
         }
         data.markChanged()
@@ -81,11 +81,25 @@ object PillagerBaseService {
 
     fun officerForBase(data: PillagerWorldData, base: PillagerBase): PillagerOfficer {
         val existing = data.officers.values.firstOrNull { it.homeBaseId == base.id && it.state != OfficerState.DEAD }
-        if (existing != null) return existing
-        val officer = PillagerIdentity.makeOfficer(base.factionId, base.id, base.id.leastSignificantBits xor data.officers.size.toLong())
+        if (existing != null) {
+            backfillOfficer(data, base, existing)
+            return existing
+        }
+        val faction = data.factions[base.factionId] ?: PillagerIdentity.makeFaction(base.id.leastSignificantBits)
+        val predecessor = data.officers.values.filter { it.homeBaseId == base.id }.maxByOrNull { it.victories + it.killedPlayers * 3 + it.escapedEncounters - it.defeats }
+        val inheritedRank = predecessor?.rank ?: if (base.type == BaseType.MAJOR) OfficerRank.CAPTAIN else OfficerRank.SCOUT
+        val officer = PillagerIdentity.makeOfficer(faction, base.id, base.id.leastSignificantBits xor data.officers.size.toLong(), rank = inheritedRank, predecessor = predecessor)
         data.officers[officer.id] = officer
         data.markChanged()
         return officer
+    }
+
+    private fun backfillOfficer(data: PillagerWorldData, base: PillagerBase, officer: PillagerOfficer) {
+        if (officer.affixes.isNotEmpty()) return
+        officer.doctrine = OfficerDoctrineRules.doctrineFor(officer.genes)
+        officer.affixes.addAll(OfficerAffixRules.affixesFor(officer.genes, officer.rank, OfficerOutcomeRules.outcomesFor(officer)))
+        if (officer.lineage.inheritedBannerSeed == 0) officer.lineage.inheritedBannerSeed = data.factions[base.factionId]?.patternSeed ?: base.id.hashCode()
+        data.markChanged()
     }
 
     fun factionForNewMajorBase(data: PillagerWorldData, seed: Long): PillagerFaction {

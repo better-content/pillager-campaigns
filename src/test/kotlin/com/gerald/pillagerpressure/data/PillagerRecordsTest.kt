@@ -72,6 +72,34 @@ class PillagerRecordsTest {
     }
 
     @Test
+    fun factionWarMemoryRoundTripsAndDefaultsWhenMissing() {
+        val faction = PillagerFaction(
+            UUID.randomUUID(),
+            "Red Ash Compact",
+            "red",
+            "black",
+            17,
+            2,
+            3,
+            FactionWarMemory(
+                successfulGenes = OfficerGeneProfile.neutral(20).copy(range = 80),
+                failedGenes = OfficerGeneProfile.neutral(10).copy(fire = 70),
+                mutationSeed = 77L,
+                generation = 3,
+            ),
+        )
+        val loaded = PillagerFaction.load(faction.save())
+        assertEquals(80, loaded.warMemory.successfulGenes.range)
+        assertEquals(70, loaded.warMemory.failedGenes.fire)
+        assertEquals(3, loaded.warMemory.generation)
+
+        val legacy = faction.save()
+        legacy.remove("warMemory")
+        val legacyLoaded = PillagerFaction.load(legacy)
+        assertEquals(FactionWarMemory(), legacyLoaded.warMemory)
+    }
+
+    @Test
     fun baseRoundTripsCompleteRecordIncludingIntelAndBounds() {
         val factionId = UUID.randomUUID()
         val officerId = UUID.randomUUID()
@@ -148,6 +176,68 @@ class PillagerRecordsTest {
         assertEquals(OfficerRank.CAPTAIN, repaired.rank)
         assertEquals(OfficerRole.SKIRMISHER, repaired.role)
         assertEquals(OfficerState.ACTIVE, repaired.state)
+    }
+
+    @Test
+    fun officerGeneticsAndLineageRoundTripAndLegacyDefaultsWork() {
+        val predecessor = UUID.randomUUID()
+        val officer = PillagerOfficer(
+            UUID.randomUUID(),
+            "Ghor",
+            "the Finder",
+            UUID.randomUUID(),
+            UUID.randomUUID(),
+            OfficerRank.WARLORD,
+            OfficerRole.HUNTER,
+            OfficerState.WOUNDED,
+            4,
+            2,
+            1,
+            3,
+            OfficerGeneProfile(15, 90, 80, 70, 60, 50, 40, 30, 20, 10),
+            OfficerDoctrine.HUNTER,
+            mutableSetOf(OfficerAffix.LONGSHOT),
+            OfficerLineage(predecessor, OfficerRank.WARLORD, 11, "killed by player"),
+        )
+        val loaded = PillagerOfficer.load(officer.save())
+        assertEquals(90, loaded.genes.melee)
+        assertEquals(OfficerDoctrine.HUNTER, loaded.doctrine)
+        assertEquals(setOf(OfficerAffix.LONGSHOT), loaded.affixes)
+        assertEquals(predecessor, loaded.lineage.predecessorOfficerId)
+        assertEquals(OfficerRank.WARLORD, loaded.lineage.inheritedRank)
+        assertEquals(11, loaded.lineage.inheritedBannerSeed)
+        assertEquals("killed by player", loaded.lineage.causeOfSuccession)
+
+        val legacy = officer.save()
+        legacy.remove("genes")
+        legacy.remove("lineage")
+        val legacyLoaded = PillagerOfficer.load(legacy)
+        assertEquals(OfficerGeneProfile.neutral(), legacyLoaded.genes)
+        assertEquals(OfficerLineage.none(officer.rank), legacyLoaded.lineage)
+    }
+
+    @Test
+    fun geneticRecordsClampOutOfRangeOrNegativeValues() {
+        val genes = OfficerGeneProfile.load(CompoundTag().also {
+            it.putInt("range", -10)
+            it.putInt("melee", 130)
+            it.putInt("speed", 55)
+            it.putInt("armor", 400)
+        })
+        assertEquals(0, genes.range)
+        assertEquals(100, genes.melee)
+        assertEquals(55, genes.speed)
+        assertEquals(100, genes.armor)
+
+        val memory = FactionWarMemory.load(CompoundTag().also {
+            it.putInt("generation", -9)
+        })
+        assertEquals(-9, memory.generation)
+        assertEquals(OfficerGeneProfile.neutral(0), memory.successfulGenes)
+        assertEquals(OfficerGeneProfile.neutral(0), memory.failedGenes)
+
+        val lineage = OfficerLineage.load(CompoundTag(), OfficerRank.CAPTAIN)
+        assertEquals(OfficerLineage.none(OfficerRank.CAPTAIN), lineage)
     }
 
     @Test

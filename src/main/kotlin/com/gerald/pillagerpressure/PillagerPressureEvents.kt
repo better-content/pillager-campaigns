@@ -3,7 +3,11 @@ package com.gerald.pillagerpressure
 import com.gerald.pillagerpressure.data.*
 import com.gerald.pillagerpressure.system.PillagerBaseService
 import com.gerald.pillagerpressure.system.PillagerCampaignDirector
+import com.gerald.pillagerpressure.system.OfficerAffixRules
+import com.gerald.pillagerpressure.system.OfficerGeneRules
+import com.gerald.pillagerpressure.system.OfficerOutcomeRules
 import com.gerald.pillagerpressure.system.PillagerRuntime
+import com.gerald.pillagerpressure.util.OfficerOrdersRules
 import com.gerald.pillagerpressure.util.PillagerIdentity
 import com.mojang.brigadier.Command
 import com.mojang.brigadier.CommandDispatcher
@@ -73,10 +77,10 @@ object PillagerPressureEvents {
         }
         event.setSpawnCancelled(true)
         val faction = data.factions[base.factionId]
-        val officer = if (base.manpower > 12 && level.random.nextFloat() < 0.12f) PillagerBaseService.officerForBase(data, base) else null
-        val spend = if (officer != null) 4 else 1
+        val officer = PillagerBaseService.officerForBase(data, base)
+        val spend = 4
         base.manpower = (base.manpower - spend).coerceAtLeast(0)
-        PillagerRuntime.spawnSquad(level, data, pos, null, base, faction, null, officer, if (officer != null) 2 else 1, if (officer != null) 1 else 0, leader = officer != null)
+        PillagerRuntime.spawnSquad(level, data, pos, null, base, faction, null, officer, 2, 1, leader = true)
         data.markChanged()
     }
 
@@ -134,12 +138,19 @@ object PillagerPressureEvents {
         val factionId = if (tag.hasUUID(PillagerRuntime.FACTION_TAG)) tag.getUUID(PillagerRuntime.FACTION_TAG) else null
         val base = baseId?.let { data.bases[it] } ?: factionId?.let { f -> data.bases.values.firstOrNull { it.factionId == f } }
         val faction = base?.let { data.factions[it.factionId] } ?: factionId?.let { data.factions[it] }
-        if (officerId != null) data.officers[officerId]?.let { officer -> officer.defeats += 1; officer.state = OfficerState.DEAD }
+        if (officerId != null) data.officers[officerId]?.let { officer ->
+            officer.defeats += 1
+            val outcomes = OfficerOutcomeRules.outcomesFor(officer)
+            faction?.let { OfficerGeneRules.recordOutcome(it.warMemory, officer.genes, outcomes) }
+            officer.affixes.addAll(OfficerAffixRules.affixesFor(officer.genes, officer.rank, outcomes))
+            officer.state = OfficerState.DEAD
+        }
         if (base != null && faction != null) {
             event.drops.add(ItemEntity(level, mob.x, mob.y, mob.z, PillagerRuntime.baseMap(level, base, faction)))
             val officer = officerId?.let { data.officers[it] }
-            val lines = listOf("Faction: ${faction.name}", "Base: ${base.center.x}, ${base.center.z}", "Officer: ${officer?.displayName() ?: "unknown"}")
-            event.drops.add(ItemEntity(level, mob.x, mob.y, mob.z, PillagerIdentity.ordersPaper("Pillager Orders", lines)))
+            val campaign = officerId?.let { id -> data.campaigns.values.firstOrNull { it.officerId == id } }
+            val orders = OfficerOrdersRules.generate(faction, base, officer, campaign)
+            event.drops.add(ItemEntity(level, mob.x, mob.y, mob.z, PillagerIdentity.ordersPaper(orders.title, orders.loreLines)))
         }
         tag.putBoolean("PillagerPressureDropsDone", true)
         data.markChanged()
