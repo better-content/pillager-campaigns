@@ -256,7 +256,7 @@ class PillagerRecordsTest {
 
     @Test
     fun pendingMarkersRoundTripAndDimensionFallbackWorks() {
-        val marker = PendingFlagMarker(UUID.randomUUID(), UUID.randomUUID(), ResourceLocation("minecraft", "overworld"), BlockPos(1, 70, 2), 99L, 3)
+        val marker = PendingFlagMarker(UUID.randomUUID(), UUID.randomUUID(), ResourceLocation("minecraft", "overworld"), BlockPos(1, 70, 2), 99L, 3, 11)
         val loaded = PendingFlagMarker.load(marker.save())
         assertEquals(marker, loaded)
 

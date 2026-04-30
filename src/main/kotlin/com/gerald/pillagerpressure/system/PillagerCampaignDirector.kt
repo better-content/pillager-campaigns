@@ -141,7 +141,8 @@ object PillagerCampaignDirector {
                 continue
             }
             if (level.hasChunkAt(marker.pos)) {
-                PillagerRuntime.placeFactionFlags(level, faction, marker.pos, PillagerPressureConfig.deathFlagsPerKill.get())
+                val count = if (marker.count > 0) marker.count else PillagerPressureConfig.deathFlagsPerKill.get()
+                PillagerRuntime.placeFactionFlags(level, faction, marker.pos, count)
                 iter.remove(); data.markChanged()
             } else if (++marker.attempts > 20) {
                 iter.remove(); data.markChanged()

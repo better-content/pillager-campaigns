@@ -319,14 +319,15 @@ data class RegionActivity(var key: RegionKey, var lastPlayerActiveTick: Long) {
     companion object { fun load(tag: CompoundTag): RegionActivity = RegionActivity(RegionKey.load(tag), tag.getLong("last")) }
 }
 
-data class PendingFlagMarker(val factionId: UUID, val officerId: UUID?, val dimension: ResourceLocation, val pos: BlockPos, val createdTick: Long, var attempts: Int) {
+data class PendingFlagMarker(val factionId: UUID, val officerId: UUID?, val dimension: ResourceLocation, val pos: BlockPos, val createdTick: Long, var attempts: Int, var count: Int = 0) {
     fun save(): CompoundTag = CompoundTag().also { tag ->
         tag.putUuidString("faction", factionId); officerId?.let { tag.putUuidString("officer", it) }; tag.putString("dimension", dimension.toString())
         tag.putInt("x", pos.x); tag.putInt("y", pos.y); tag.putInt("z", pos.z); tag.putLong("created", createdTick); tag.putInt("attempts", attempts)
+        tag.putInt("count", count)
     }
 
     companion object {
-        fun load(tag: CompoundTag): PendingFlagMarker = PendingFlagMarker(tag.getRequiredUuidString("faction"), tag.getOptionalUuidString("officer"), tag.getResourceLocationString("dimension", ResourceLocation("minecraft", "overworld"))!!, BlockPos(tag.getInt("x"), tag.getInt("y"), tag.getInt("z")), tag.getLong("created"), tag.getInt("attempts"))
+        fun load(tag: CompoundTag): PendingFlagMarker = PendingFlagMarker(tag.getRequiredUuidString("faction"), tag.getOptionalUuidString("officer"), tag.getResourceLocationString("dimension", ResourceLocation("minecraft", "overworld"))!!, BlockPos(tag.getInt("x"), tag.getInt("y"), tag.getInt("z")), tag.getLong("created"), tag.getInt("attempts"), tag.getInt("count"))
     }
 }
 

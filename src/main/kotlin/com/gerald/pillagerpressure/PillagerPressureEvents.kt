@@ -135,7 +135,12 @@ object PillagerPressureEvents {
                 officer.title = "the Grave-Marker"
             }
         }
-        data.pendingMarkers.add(PendingFlagMarker(factionId, officerId, level.dimension().location(), player.blockPosition(), level.gameTime, 0))
+        val requested = PillagerPressureConfig.deathFlagsPerKill.get()
+        val placed = data.factions[factionId]?.let { faction ->
+            PillagerRuntime.placeFactionFlags(level, faction, player.blockPosition(), requested)
+        } ?: 0
+        val remaining = (requested - placed).coerceAtLeast(0)
+        if (remaining > 0) data.pendingMarkers.add(PendingFlagMarker(factionId, officerId, level.dimension().location(), player.blockPosition(), level.gameTime, 0, remaining))
         data.markChanged()
     }
 
