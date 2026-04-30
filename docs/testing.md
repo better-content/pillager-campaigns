@@ -7,6 +7,7 @@ Current coverage focus:
 - `data/*`: NBT save/load, corrupt-entry isolation, reference repair, enum/resource/UUID fallback, campaign/base/officer round trips.
 - `system/PillagerCampaignRules`: pure campaign movement, active campaign counts, intel scoring, campaign TTL.
 - `system/PillagerBaseService`: faction/officer reuse and base economy caps.
+- `scenario/PillagerPressureScenarioTest`: end-to-end pure-system scenarios for interception, engagement targeting, scout escape learning, grave-marked killers, siege engineering, succession, order lore, and long-running economy/travel bounds.
 - `util/PillagerIdentity`: deterministic faction/officer identity generation.
 
 Plain JUnit deliberately does not bootstrap full Forge networking or a Minecraft world. Runtime/event/entity behavior remains covered by build compilation plus manual/in-world validation commands:

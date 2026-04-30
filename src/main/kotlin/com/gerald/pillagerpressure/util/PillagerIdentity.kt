@@ -86,7 +86,7 @@ object PillagerIdentity {
         stack.hoverName = Component.literal(title).withStyle(ChatFormatting.GOLD)
         val display = stack.getOrCreateTagElement("display")
         val lore = ListTag()
-        lines.take(8).forEach { lore.add(StringTag.valueOf(Component.Serializer.toJson(Component.literal(it).withStyle(ChatFormatting.GRAY)))) }
+        lines.take(OfficerOrdersRules.MAX_LORE_LINES).forEach { lore.add(StringTag.valueOf(Component.Serializer.toJson(Component.literal(it).withStyle(ChatFormatting.GRAY)))) }
         display.put("Lore", lore)
         return stack
     }

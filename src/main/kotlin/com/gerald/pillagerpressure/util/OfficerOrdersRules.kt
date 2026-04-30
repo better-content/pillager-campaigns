@@ -18,6 +18,8 @@ import com.gerald.pillagerpressure.system.SquadCompositionRules
 data class OfficerOrders(val title: String, val loreLines: List<String>)
 
 object OfficerOrdersRules {
+    const val MAX_LORE_LINES = 10
+
     fun generate(
         faction: PillagerFaction,
         base: PillagerBase,
@@ -50,7 +52,7 @@ object OfficerOrdersRules {
             lines += "Campaign: ${campaignStatePhrase(it.state)}; Route: ${it.current.x},${it.current.z} -> ${it.target.x},${it.target.z}"
         }
 
-        return OfficerOrders(title, lines.take(10))
+        return OfficerOrders(title, lines.take(MAX_LORE_LINES))
     }
 
     private fun loadoutLine(officer: PillagerOfficer): String {
