@@ -76,6 +76,28 @@ class OfficerRulesTest {
         assertTrue(OfficerAffix.SWIFT in bannerlordAffixes)
     }
 
+    @Test
+    fun engineeringTalentComesFromOfficerGenesDoctrineAndRank() {
+        assertEquals(
+            OfficerEngineeringTalent.NONE,
+            OfficerEngineeringRules.talentFor(OfficerGeneProfile.neutral(20).copy(siege = 60, speed = 80), OfficerDoctrine.RAIDER, OfficerRank.SCOUT),
+        )
+        assertEquals(
+            OfficerEngineeringTalent.BRIDGER,
+            OfficerEngineeringRules.talentFor(OfficerGeneProfile.neutral(20).copy(siege = 70, speed = 60), OfficerDoctrine.RAIDER, OfficerRank.CAPTAIN),
+        )
+        assertEquals(
+            OfficerEngineeringTalent.LADDERMASTER,
+            OfficerEngineeringRules.talentFor(OfficerGeneProfile.neutral(20).copy(siege = 70, armor = 60), OfficerDoctrine.RAIDER, OfficerRank.CAPTAIN),
+        )
+        assertEquals(
+            OfficerEngineeringTalent.FIELD_ENGINEER,
+            OfficerEngineeringRules.talentFor(OfficerGeneProfile.neutral(20).copy(siege = 95, survival = 60), OfficerDoctrine.RAIDER, OfficerRank.LIEUTENANT),
+        )
+        assertTrue(OfficerEngineeringRules.canBridge(OfficerEngineeringTalent.FIELD_ENGINEER))
+        assertTrue(OfficerEngineeringRules.canLadder(OfficerEngineeringTalent.FIELD_ENGINEER))
+    }
+
     private fun officer() = PillagerOfficer(
         id = UUID.randomUUID(),
         name = "Krag",

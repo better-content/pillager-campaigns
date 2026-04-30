@@ -6,6 +6,7 @@ import com.gerald.pillagerpressure.data.*
 import com.gerald.pillagerpressure.util.PillagerIdentity
 import net.minecraft.core.BlockPos
 import net.minecraft.ChatFormatting
+import net.minecraft.core.Direction
 import net.minecraft.network.chat.Component
 import net.minecraft.resources.ResourceLocation
 import net.minecraft.server.level.ServerLevel
@@ -24,6 +25,8 @@ import net.minecraft.world.item.Items
 import net.minecraft.world.item.MapItem
 import net.minecraft.world.level.Level
 import net.minecraft.world.level.block.BannerBlock
+import net.minecraft.world.level.block.Blocks
+import net.minecraft.world.level.block.LadderBlock
 import net.minecraft.world.level.block.state.BlockState
 import net.minecraft.world.level.levelgen.Heightmap
 import net.minecraft.world.phys.AABB
@@ -42,6 +45,8 @@ object PillagerRuntime {
     const val OBJECTIVE_X_TAG = "PillagerPressureObjectiveX"
     const val OBJECTIVE_Y_TAG = "PillagerPressureObjectiveY"
     const val OBJECTIVE_Z_TAG = "PillagerPressureObjectiveZ"
+    const val ENGINEER_NEXT_TICK_TAG = "PillagerPressureEngineerNextTick"
+    const val ENGINEER_PLACED_COUNT_TAG = "PillagerPressureEngineerPlaced"
 
     fun eligible(player: ServerPlayer): Boolean {
         if (PillagerPressureConfig.skipSpectatorPlayers.get() && player.isSpectator) return false
@@ -262,7 +267,99 @@ object PillagerRuntime {
         return stack
     }
 
+    fun tryOfficerEngineering(level: ServerLevel, data: PillagerWorldData, mob: Mob): Boolean {
+        if (!PillagerPressureConfig.officerEngineeringEnabled.get()) return false
+        val tag = mob.persistentData
+        if (!tag.hasUUID(OFFICER_TAG)) return false
+        val now = level.gameTime
+        if (tag.getLong(ENGINEER_NEXT_TICK_TAG) > now) return false
+        if (tag.getInt(ENGINEER_PLACED_COUNT_TAG) >= PillagerPressureConfig.officerEngineeringMaxBlocks.get()) return false
+        val officer = data.officers[tag.getUUID(OFFICER_TAG)] ?: return false
+        val talent = OfficerEngineeringRules.talentFor(officer)
+        if (talent == OfficerEngineeringTalent.NONE) return false
+        val objective = objectiveFromTag(tag) ?: return false
+        val direction = directionToward(mob.blockPosition(), objective) ?: return false
+        val placed = tryBridge(level, data, mob.blockPosition(), direction, talent, now) ||
+            tryLadder(level, data, mob.blockPosition(), direction, talent, now)
+        tag.putLong(ENGINEER_NEXT_TICK_TAG, now + PillagerPressureConfig.officerEngineeringCooldownTicks.get())
+        if (placed) tag.putInt(ENGINEER_PLACED_COUNT_TAG, tag.getInt(ENGINEER_PLACED_COUNT_TAG) + 1)
+        return placed
+    }
+
+    fun cleanupEngineeredBlocks(level: ServerLevel, data: PillagerWorldData): Int {
+        val ttl = PillagerPressureConfig.officerEngineeringTtlTicks.get().toLong()
+        val now = level.gameTime
+        var removed = 0
+        val iter = data.engineeredBlocks.iterator()
+        while (iter.hasNext()) {
+            val marker = iter.next()
+            if (marker.dimension != level.dimension().location()) continue
+            if (now - marker.placedTick < ttl) continue
+            if (!level.hasChunkAt(marker.pos)) {
+                if (++marker.attempts > 20) iter.remove()
+                continue
+            }
+            val currentId = ForgeRegistries.BLOCKS.getKey(level.getBlockState(marker.pos).block)
+            if (currentId == marker.blockId) {
+                level.setBlockAndUpdate(marker.pos, Blocks.AIR.defaultBlockState())
+                removed++
+            }
+            iter.remove()
+        }
+        if (removed > 0) data.markChanged()
+        return removed
+    }
+
     private fun isOpen(level: ServerLevel, pos: BlockPos, state: BlockState): Boolean = state.isAir || state.getCollisionShape(level, pos).isEmpty
+
+    private fun objectiveFromTag(tag: net.minecraft.nbt.CompoundTag): BlockPos? {
+        if (!tag.contains(OBJECTIVE_X_TAG) || !tag.contains(OBJECTIVE_Y_TAG) || !tag.contains(OBJECTIVE_Z_TAG)) return null
+        return BlockPos(tag.getInt(OBJECTIVE_X_TAG), tag.getInt(OBJECTIVE_Y_TAG), tag.getInt(OBJECTIVE_Z_TAG))
+    }
+
+    private fun directionToward(from: BlockPos, to: BlockPos): Direction? {
+        val dx = to.x - from.x
+        val dz = to.z - from.z
+        return when {
+            kotlin.math.abs(dx) >= kotlin.math.abs(dz) && dx > 2 -> Direction.EAST
+            kotlin.math.abs(dx) >= kotlin.math.abs(dz) && dx < -2 -> Direction.WEST
+            dz > 2 -> Direction.SOUTH
+            dz < -2 -> Direction.NORTH
+            else -> null
+        }
+    }
+
+    private fun tryBridge(level: ServerLevel, data: PillagerWorldData, origin: BlockPos, direction: Direction, talent: OfficerEngineeringTalent, now: Long): Boolean {
+        if (!OfficerEngineeringRules.canBridge(talent)) return false
+        val forward = origin.relative(direction)
+        val bridge = forward.below()
+        if (!level.hasChunkAt(bridge)) return false
+        if (!level.getBlockState(forward).isAir || !level.getBlockState(forward.above()).isAir) return false
+        if (!level.getBlockState(bridge).isAir) return false
+        return placeEngineeredBlock(level, data, bridge, Blocks.SCAFFOLDING.defaultBlockState(), now)
+    }
+
+    private fun tryLadder(level: ServerLevel, data: PillagerWorldData, origin: BlockPos, direction: Direction, talent: OfficerEngineeringTalent, now: Long): Boolean {
+        if (!OfficerEngineeringRules.canLadder(talent)) return false
+        val support = origin.relative(direction).above()
+        val ladder = origin.above()
+        if (!level.hasChunkAt(ladder)) return false
+        if (!level.getBlockState(ladder).isAir) return false
+        if (!level.getBlockState(support).isCollisionShapeFullBlock(level, support)) return false
+        val state = Blocks.LADDER.defaultBlockState().setValue(LadderBlock.FACING, direction.opposite)
+        if (!state.canSurvive(level, ladder)) return false
+        return placeEngineeredBlock(level, data, ladder, state, now)
+    }
+
+    private fun placeEngineeredBlock(level: ServerLevel, data: PillagerWorldData, pos: BlockPos, state: BlockState, now: Long): Boolean {
+        if (!level.getBlockState(pos).isAir) return false
+        level.setBlockAndUpdate(pos, state)
+        ForgeRegistries.BLOCKS.getKey(state.block)?.let { id ->
+            data.engineeredBlocks.add(EngineeredBlockMarker(level.dimension().location(), pos.immutable(), id, now, 0))
+        }
+        data.markChanged()
+        return true
+    }
 
     private fun jitter(pos: BlockPos, level: ServerLevel, radius: Int): BlockPos {
         val dx = level.random.nextInt(radius * 2 + 1) - radius

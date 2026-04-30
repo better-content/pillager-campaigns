@@ -20,6 +20,7 @@ class PillagerWorldDataTest {
         val campaign = campaign(faction.id, base.id, officer.id)
         val region = RegionActivity(RegionKey(-1, 2), 120L)
         val marker = PendingFlagMarker(faction.id, officer.id, ResourceLocation("minecraft", "overworld"), BlockPos(4, 70, 5), 7L, 2)
+        val engineered = EngineeredBlockMarker(ResourceLocation("minecraft", "overworld"), BlockPos(6, 70, 9), ResourceLocation("minecraft", "scaffolding"), 99L, 1)
 
         data.factions[faction.id] = faction
         data.bases[base.id] = base
@@ -27,6 +28,7 @@ class PillagerWorldDataTest {
         data.campaigns[campaign.id] = campaign
         data.regions[PillagerWorldData.regionKey(region.key)] = region
         data.pendingMarkers += marker
+        data.engineeredBlocks += engineered
         data.lastCampaignTick = 11L
         data.lastBaseScanTick = 12L
         data.lastRegionTick = 13L
@@ -38,6 +40,7 @@ class PillagerWorldDataTest {
         assertEquals(1, loaded.campaigns.size)
         assertEquals(1, loaded.regions.size)
         assertEquals(1, loaded.pendingMarkers.size)
+        assertEquals(listOf(engineered), loaded.engineeredBlocks)
         assertEquals(11L, loaded.lastCampaignTick)
         assertEquals(12L, loaded.lastBaseScanTick)
         assertEquals(13L, loaded.lastRegionTick)

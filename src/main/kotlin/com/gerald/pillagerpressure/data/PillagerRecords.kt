@@ -329,3 +329,23 @@ data class PendingFlagMarker(val factionId: UUID, val officerId: UUID?, val dime
         fun load(tag: CompoundTag): PendingFlagMarker = PendingFlagMarker(tag.getRequiredUuidString("faction"), tag.getOptionalUuidString("officer"), tag.getResourceLocationString("dimension", ResourceLocation("minecraft", "overworld"))!!, BlockPos(tag.getInt("x"), tag.getInt("y"), tag.getInt("z")), tag.getLong("created"), tag.getInt("attempts"))
     }
 }
+
+data class EngineeredBlockMarker(val dimension: ResourceLocation, val pos: BlockPos, val blockId: ResourceLocation, val placedTick: Long, var attempts: Int) {
+    fun save(): CompoundTag = CompoundTag().also { tag ->
+        tag.putString("dimension", dimension.toString())
+        tag.putInt("x", pos.x); tag.putInt("y", pos.y); tag.putInt("z", pos.z)
+        tag.putString("block", blockId.toString())
+        tag.putLong("placed", placedTick)
+        tag.putInt("attempts", attempts)
+    }
+
+    companion object {
+        fun load(tag: CompoundTag): EngineeredBlockMarker = EngineeredBlockMarker(
+            tag.getResourceLocationString("dimension", ResourceLocation("minecraft", "overworld"))!!,
+            BlockPos(tag.getInt("x"), tag.getInt("y"), tag.getInt("z")),
+            tag.getResourceLocationString("block", ResourceLocation("minecraft", "air"))!!,
+            tag.getLong("placed"),
+            tag.getInt("attempts"),
+        )
+    }
+}

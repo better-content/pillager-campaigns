@@ -42,6 +42,10 @@ object PillagerPressureConfig {
     val deathFlagsPerKill: ForgeConfigSpec.IntValue
     val maxDeathFlagsPerChunk: ForgeConfigSpec.IntValue
     val officerEscapeHealth: ForgeConfigSpec.DoubleValue
+    val officerEngineeringEnabled: ForgeConfigSpec.BooleanValue
+    val officerEngineeringCooldownTicks: ForgeConfigSpec.IntValue
+    val officerEngineeringTtlTicks: ForgeConfigSpec.IntValue
+    val officerEngineeringMaxBlocks: ForgeConfigSpec.IntValue
 
     init {
         val builder = ForgeConfigSpec.Builder()
@@ -93,6 +97,10 @@ object PillagerPressureConfig {
         deathFlagsPerKill = builder.defineInRange("death_flags_per_kill", 5, 0, 16)
         maxDeathFlagsPerChunk = builder.defineInRange("max_death_flags_per_chunk", 12, 0, 64)
         officerEscapeHealth = builder.comment("Named officers below this health fraction try to escape/collapse to campaign state.").defineInRange("officer_escape_health", 0.22, 0.0, 1.0)
+        officerEngineeringEnabled = builder.comment("Named officers may place temporary invasion blocks to bridge gaps or ladder walls. They never break or replace solid blocks.").define("officer_engineering_enabled", true)
+        officerEngineeringCooldownTicks = builder.defineInRange("officer_engineering_cooldown_ticks", 30, 5, 1200)
+        officerEngineeringTtlTicks = builder.comment("Temporary officer-placed blocks are removed after this many ticks once their chunk is loaded again.").defineInRange("officer_engineering_ttl_ticks", 6000, 200, 72000)
+        officerEngineeringMaxBlocks = builder.comment("Per spawned officer cap for temporary engineering placements.").defineInRange("officer_engineering_max_blocks", 24, 0, 128)
         builder.pop()
 
         SPEC = builder.build()

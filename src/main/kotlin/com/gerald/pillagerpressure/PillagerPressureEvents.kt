@@ -29,6 +29,7 @@ import net.minecraftforge.event.RegisterCommandsEvent
 import net.minecraftforge.event.TickEvent
 import net.minecraftforge.event.entity.living.LivingDeathEvent
 import net.minecraftforge.event.entity.living.LivingDropsEvent
+import net.minecraftforge.event.entity.living.LivingEvent
 import net.minecraftforge.event.entity.living.MobSpawnEvent
 import net.minecraftforge.event.level.ChunkEvent
 import net.minecraftforge.event.server.ServerStartedEvent
@@ -94,6 +95,7 @@ object PillagerPressureEvents {
         if (PillagerPressureConfig.campaignEnabled.get() && now - data.lastCampaignTick >= PillagerPressureConfig.campaignTickInterval.get()) {
             data.lastCampaignTick = now
             val materialized = PillagerCampaignDirector.tick(server, data)
+            server.allLevels.forEach { level -> PillagerRuntime.cleanupEngineeredBlocks(level, data) }
             if (materialized > 0) {
                 groupsSpawned += materialized.toLong()
                 lastStatus = "campaign materialized groups=$materialized"
@@ -102,6 +104,17 @@ object PillagerPressureEvents {
         }
         val interval = PillagerPressureConfig.intervalTicks.get().toLong().coerceAtLeast(20L)
         if (ticks % interval == 0L) runAttempt(server, force = false, source = "fallback")
+    }
+
+    @SubscribeEvent
+    fun onLivingTick(event: LivingEvent.LivingTickEvent) {
+        val mob = event.entity as? Mob ?: return
+        val level = mob.level() as? ServerLevel ?: return
+        if (!mob.isAlive) return
+        if (level.gameTime % 10L != 0L) return
+        val tag = mob.persistentData
+        if (!tag.hasUUID(PillagerRuntime.OFFICER_TAG)) return
+        PillagerRuntime.tryOfficerEngineering(level, PillagerWorldData.get(level.server), mob)
     }
 
     @SubscribeEvent

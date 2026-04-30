@@ -100,3 +100,21 @@ object OfficerAffixRules {
         OfficerRank.BANNERLORD -> 3
     }
 }
+
+object OfficerEngineeringRules {
+    fun talentFor(officer: PillagerOfficer): OfficerEngineeringTalent = talentFor(officer.genes, officer.doctrine, officer.rank)
+
+    fun talentFor(genes: OfficerGeneProfile, doctrine: OfficerDoctrine, rank: OfficerRank): OfficerEngineeringTalent {
+        if (rank == OfficerRank.SCOUT && genes.siege < 70) return OfficerEngineeringTalent.NONE
+        if (genes.siege + genes.survival >= 145 || doctrine == OfficerDoctrine.SIEGE_CAPTAIN) return OfficerEngineeringTalent.FIELD_ENGINEER
+        if (genes.siege + genes.speed >= 125) return OfficerEngineeringTalent.BRIDGER
+        if (genes.siege + genes.armor >= 125 || genes.siege + genes.melee >= 125) return OfficerEngineeringTalent.LADDERMASTER
+        return OfficerEngineeringTalent.NONE
+    }
+
+    fun canBridge(talent: OfficerEngineeringTalent): Boolean =
+        talent == OfficerEngineeringTalent.BRIDGER || talent == OfficerEngineeringTalent.FIELD_ENGINEER
+
+    fun canLadder(talent: OfficerEngineeringTalent): Boolean =
+        talent == OfficerEngineeringTalent.LADDERMASTER || talent == OfficerEngineeringTalent.FIELD_ENGINEER
+}

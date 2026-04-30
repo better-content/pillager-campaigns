@@ -15,6 +15,7 @@ class PillagerWorldData : SavedData() {
     val officers: MutableMap<UUID, PillagerOfficer> = linkedMapOf()
     val regions: MutableMap<String, RegionActivity> = linkedMapOf()
     val pendingMarkers: MutableList<PendingFlagMarker> = mutableListOf()
+    val engineeredBlocks: MutableList<EngineeredBlockMarker> = mutableListOf()
 
     var lastCampaignTick: Long = 0L
     var lastBaseScanTick: Long = 0L
@@ -31,6 +32,7 @@ class PillagerWorldData : SavedData() {
         tag.put("officers", list(officers.values.map { it.save() }))
         tag.put("regions", list(regions.values.map { it.save() }))
         tag.put("pendingMarkers", list(pendingMarkers.map { it.save() }))
+        tag.put("engineeredBlocks", list(engineeredBlocks.map { it.save() }))
         return tag
     }
 
@@ -55,6 +57,7 @@ class PillagerWorldData : SavedData() {
             loadList(tag, "officers") { PillagerOfficer.load(it).let { officer -> data.officers[officer.id] = officer } }
             loadList(tag, "regions") { RegionActivity.load(it).let { region -> data.regions[regionKey(region.key)] = region } }
             loadList(tag, "pendingMarkers") { data.pendingMarkers.add(PendingFlagMarker.load(it)) }
+            loadList(tag, "engineeredBlocks") { data.engineeredBlocks.add(EngineeredBlockMarker.load(it)) }
             data.repairReferences()
             return data
         }
