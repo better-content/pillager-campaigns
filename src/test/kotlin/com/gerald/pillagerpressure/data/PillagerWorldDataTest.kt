@@ -20,7 +20,7 @@ class PillagerWorldDataTest {
         val campaign = campaign(faction.id, base.id, officer.id)
         val region = RegionActivity(RegionKey(-1, 2), 120L)
         val marker = PendingFlagMarker(faction.id, officer.id, ResourceLocation("minecraft", "overworld"), BlockPos(4, 70, 5), 7L, 2)
-        val engineered = EngineeredBlockMarker(ResourceLocation("minecraft", "overworld"), BlockPos(6, 70, 9), ResourceLocation("minecraft", "scaffolding"), 99L, 1)
+        val engineered = EngineeredBlockMarker(ResourceLocation("minecraft", "overworld"), BlockPos(6, 70, 9), ResourceLocation("minecraft", "scaffolding"), "minecraft:scaffolding[bottom=true,distance=0,waterlogged=false]", 99L, 1)
 
         data.factions[faction.id] = faction
         data.bases[base.id] = base

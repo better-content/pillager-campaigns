@@ -299,8 +299,9 @@ object PillagerRuntime {
                 if (++marker.attempts > 20) iter.remove()
                 continue
             }
-            val currentId = ForgeRegistries.BLOCKS.getKey(level.getBlockState(marker.pos).block)
-            if (currentId == marker.blockId) {
+            val currentState = level.getBlockState(marker.pos)
+            val currentId = ForgeRegistries.BLOCKS.getKey(currentState.block)
+            if (currentId == marker.blockId && blockStateSnapshot(currentState) == marker.blockState) {
                 level.setBlockAndUpdate(marker.pos, Blocks.AIR.defaultBlockState())
                 removed++
             }
@@ -355,11 +356,23 @@ object PillagerRuntime {
         if (!level.getBlockState(pos).isAir) return false
         level.setBlockAndUpdate(pos, state)
         ForgeRegistries.BLOCKS.getKey(state.block)?.let { id ->
-            data.engineeredBlocks.add(EngineeredBlockMarker(level.dimension().location(), pos.immutable(), id, now, 0))
+            data.engineeredBlocks.add(EngineeredBlockMarker(level.dimension().location(), pos.immutable(), id, blockStateSnapshot(state), now, 0))
         }
         data.markChanged()
         return true
     }
+
+    private fun blockStateSnapshot(state: BlockState): String {
+        val id = ForgeRegistries.BLOCKS.getKey(state.block).toString()
+        val properties = state.values.entries
+            .sortedBy { it.key.name }
+            .joinToString(",") { (property, value) -> "${property.name}=${valueName(property, value)}" }
+        return if (properties.isBlank()) id else "$id[$properties]"
+    }
+
+    private fun <T : Comparable<T>> valueName(property: net.minecraft.world.level.block.state.properties.Property<T>, value: Comparable<*>): String =
+        @Suppress("UNCHECKED_CAST")
+        property.getName(value as T)
 
     private fun jitter(pos: BlockPos, level: ServerLevel, radius: Int): BlockPos {
         val dx = level.random.nextInt(radius * 2 + 1) - radius
