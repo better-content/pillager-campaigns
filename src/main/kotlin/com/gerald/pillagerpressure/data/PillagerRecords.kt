@@ -84,17 +84,20 @@ data class PlayerIntel(
 data class PillagerFaction(
     val id: UUID,
     var name: String,
-    var baseColor: DyeColor,
-    var accentColor: DyeColor,
+    var baseColor: String,
+    var accentColor: String,
     var patternSeed: Int,
     var aggressionBias: Int,
     var expansionBias: Int,
 ) {
+    fun baseDyeColor(): DyeColor = DyeColor.byName(baseColor, DyeColor.BLACK) ?: DyeColor.BLACK
+    fun accentDyeColor(): DyeColor = DyeColor.byName(accentColor, DyeColor.RED) ?: DyeColor.RED
+
     fun save(): CompoundTag = CompoundTag().also { tag ->
         tag.putUuidString("id", id)
         tag.putString("name", name)
-        tag.putString("baseColor", baseColor.name)
-        tag.putString("accentColor", accentColor.name)
+        tag.putString("baseColor", normalizedColorName(baseColor, "black"))
+        tag.putString("accentColor", normalizedColorName(accentColor, "red"))
         tag.putInt("patternSeed", patternSeed)
         tag.putInt("aggressionBias", aggressionBias)
         tag.putInt("expansionBias", expansionBias)
@@ -104,13 +107,20 @@ data class PillagerFaction(
         fun load(tag: CompoundTag): PillagerFaction = PillagerFaction(
             tag.getRequiredUuidString("id"),
             tag.getString("name").ifBlank { "Unnamed Banner" },
-            DyeColor.byName(tag.getString("baseColor"), DyeColor.BLACK) ?: DyeColor.BLACK,
-            DyeColor.byName(tag.getString("accentColor"), DyeColor.RED) ?: DyeColor.RED,
+            normalizedColorName(tag.getString("baseColor"), "black"),
+            normalizedColorName(tag.getString("accentColor"), "red"),
             tag.getInt("patternSeed"),
             tag.getInt("aggressionBias"),
             tag.getInt("expansionBias"),
         )
     }
+}
+
+private val vanillaDyeColorNames = setOf("white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black")
+
+private fun normalizedColorName(raw: String, fallback: String): String {
+    val normalized = raw.lowercase()
+    return if (normalized in vanillaDyeColorNames) normalized else fallback
 }
 
 data class PillagerBase(

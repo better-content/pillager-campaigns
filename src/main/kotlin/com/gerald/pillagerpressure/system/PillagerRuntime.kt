@@ -164,7 +164,7 @@ object PillagerRuntime {
             val y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z)
             val pos = BlockPos(x, y, z)
             if (level.getBlockState(pos).isAir && !level.getBlockState(pos.below()).isAir) {
-                level.setBlockAndUpdate(pos, BannerBlock.byColor(faction.baseColor).defaultBlockState())
+                level.setBlockAndUpdate(pos, BannerBlock.byColor(faction.baseDyeColor()).defaultBlockState())
                 placed++
             }
         }

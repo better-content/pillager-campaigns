@@ -37,9 +37,9 @@ object PillagerCampaignDirector {
 
     private fun maybeDispatchCampaigns(level: ServerLevel, data: PillagerWorldData, now: Long) {
         data.bases.values.filter { it.isActive() }.forEach { base ->
-            val active = data.campaigns.values.count { it.originBaseId == base.id && it.state != CampaignState.DISBANDED }
+            val active = PillagerCampaignRules.activeCampaignsForBase(data, base.id)
             if (active >= PillagerPressureConfig.maxCampaignsPerBase.get()) return@forEach
-            val intel = base.intel.maxByOrNull { it.confidence - ((now - it.lastSeenTick) / 24000L).toInt() }
+            val intel = PillagerCampaignRules.bestIntel(base, now)
             if (intel != null && intel.confidence > 0 && base.manpower >= 8 && base.supplies >= 12) {
                 dispatch(level, data, base, CampaignState.APPROACHING_INTEL, intel.lastSeenChunk, 7 + base.aggression / 20, 1)
                 base.manpower -= 8; base.supplies -= 12
@@ -69,11 +69,7 @@ object PillagerCampaignDirector {
         val dead = mutableListOf<UUID>()
         data.campaigns.values.forEach { campaign ->
             if (campaign.state == CampaignState.DISBANDED) { dead += campaign.id; return@forEach }
-            campaign.tickDebt += PillagerPressureConfig.campaignTickInterval.get()
-            while (campaign.tickDebt >= campaign.speedTicksPerChunk && campaign.current != campaign.target) {
-                campaign.current = campaign.current.stepToward(campaign.target)
-                campaign.tickDebt -= campaign.speedTicksPerChunk
-            }
+            PillagerCampaignRules.advanceTravel(campaign, PillagerPressureConfig.campaignTickInterval.get())
             if (campaign.current == campaign.target) {
                 when (campaign.state) {
                     CampaignState.EXPANDING -> {
@@ -86,7 +82,7 @@ object PillagerCampaignDirector {
                 }
             }
             spawned += materializeIfNearPlayer(server, data, campaign, now)
-            if (now - campaign.createdTick > 240000L) campaign.state = CampaignState.DISBANDED
+            if (PillagerCampaignRules.isExpired(campaign, now)) campaign.state = CampaignState.DISBANDED
         }
         dead.forEach { data.campaigns.remove(it) }
         if (dead.isNotEmpty() || spawned > 0) data.markChanged()

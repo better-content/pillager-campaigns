@@ -21,7 +21,7 @@ object PillagerIdentity {
     private val names = listOf("Ghor", "Brakk", "Narl", "Vesh", "Krag", "Rusk", "Mauk", "Drenn", "Skath", "Orvek", "Harr", "Torg")
     private val titles = listOf("the Finder", "the Red Hand", "the Crow-Eye", "the Banner-Biter", "the Gate-Hater", "the Ash Caller", "the Longshot", "the Taxman")
     private val factionNames = listOf("Blackroot Standard", "Red Ash Compact", "Broken Bell Host", "Crow-Tithe Banner", "Iron Bramble Company", "Mudspire Levy", "Hollow Pike Host")
-    private val colors = listOf(DyeColor.BLACK, DyeColor.RED, DyeColor.GRAY, DyeColor.BROWN, DyeColor.ORANGE, DyeColor.WHITE, DyeColor.BLUE, DyeColor.GREEN, DyeColor.PURPLE)
+    private val colors = listOf("black", "red", "gray", "brown", "orange", "white", "blue", "green", "purple")
 
     fun makeFaction(seed: Long): PillagerFaction {
         val id = UUID.nameUUIDFromBytes("pillagerpressure:faction:$seed".toByteArray())
@@ -38,13 +38,13 @@ object PillagerIdentity {
     }
 
     fun bannerStack(faction: PillagerFaction): ItemStack {
-        val stack = ItemStack(BannerBlock.byColor(faction.baseColor).asItem())
+        val stack = ItemStack(BannerBlock.byColor(faction.baseDyeColor()).asItem())
         stack.hoverName = Component.literal(faction.name).withStyle(ChatFormatting.RED)
         val tag = CompoundTag()
         val patterns = ListTag()
-        patterns.add(pattern("mr", faction.accentColor))
-        patterns.add(pattern("bs", faction.accentColor))
-        patterns.add(pattern("hh", faction.baseColor))
+        patterns.add(pattern("mr", faction.accentDyeColor()))
+        patterns.add(pattern("bs", faction.accentDyeColor()))
+        patterns.add(pattern("hh", faction.baseDyeColor()))
         tag.put(BannerBlockEntity.TAG_PATTERNS, patterns)
         net.minecraft.world.item.BlockItem.setBlockEntityData(stack, net.minecraft.world.level.block.entity.BlockEntityType.BANNER, tag)
         return stack
