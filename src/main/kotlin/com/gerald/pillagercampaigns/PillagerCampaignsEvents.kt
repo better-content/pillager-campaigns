@@ -2,6 +2,7 @@ package com.gerald.pillagercampaigns
 
 import com.gerald.pillagercampaigns.data.CampaignState
 import com.gerald.pillagercampaigns.data.PillagerWorldData
+import com.gerald.pillagercampaigns.system.CampaignMath
 import com.gerald.pillagercampaigns.system.PillagerCampaignEngine
 import com.gerald.pillagercampaigns.system.PillagerRuntime
 import com.mojang.brigadier.Command
@@ -201,13 +202,37 @@ object PillagerCampaignsEvents {
         val active = data.campaigns.values.filter { it.state != CampaignState.RESOLVED }
         source.sendSuccess({ Component.literal("Campaigns (${active.size})") }, false)
         active.forEach { campaign ->
+            val eta = when (campaign.state) {
+                CampaignState.TRAVELING -> {
+                    val remainingChunks = CampaignMath.manhattan(
+                        campaign.currentChunkX,
+                        campaign.currentChunkZ,
+                        campaign.targetChunkX,
+                        campaign.targetChunkZ
+                    )
+                    val ticksPerChunk = PillagerCampaignsConfig.campaignSpeedTicksPerChunk.get().coerceAtLeast(1)
+                    val remainingTicks = (remainingChunks * ticksPerChunk - campaign.tickDebt).coerceAtLeast(0)
+                    formatEta(remainingTicks)
+                }
+                CampaignState.READY_TO_MATERIALIZE -> "ready"
+                CampaignState.ACTIVE -> "active"
+                CampaignState.RESOLVED -> "resolved"
+            }
             source.sendSuccess({
                 Component.literal(
-                    "  ${campaign.id.toString().take(8)} state=${campaign.state.name.lowercase()} chunk=${campaign.currentChunkX},${campaign.currentChunkZ} target=${campaign.targetChunkX},${campaign.targetChunkZ}"
+                    "  ${campaign.id.toString().take(8)} state=${campaign.state.name.lowercase()} chunk=${campaign.currentChunkX},${campaign.currentChunkZ} target=${campaign.targetChunkX},${campaign.targetChunkZ} eta=$eta"
                 )
             }, false)
         }
         return Command.SINGLE_SUCCESS
+    }
+
+    private fun formatEta(totalTicks: Int): String {
+        val totalSeconds = (totalTicks / 20).coerceAtLeast(0)
+        val hours = totalSeconds / 3600
+        val minutes = (totalSeconds % 3600) / 60
+        val seconds = totalSeconds % 60
+        return "%02d:%02d:%02d".format(hours, minutes, seconds)
     }
 
     private fun listOfficers(source: CommandSourceStack): Int {
