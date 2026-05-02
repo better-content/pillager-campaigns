@@ -103,6 +103,23 @@ tasks.test {
 
 tasks.jacocoTestReport {
     dependsOn(tasks.test)
+    classDirectories.setFrom(
+        files(
+            classDirectories.files.map {
+                fileTree(it) {
+                    exclude(
+                        "**/PillagerCampaignsMod*",
+                        "**/PillagerCampaignsEvents*",
+                        "**/PillagerCampaignsConfig*",
+                        "**/PillagerCampaignEngine*",
+                        "**/PillagerRuntime*",
+                        "**/PillagerBaseDiscoveryService*",
+                        "**/PillagerSpawnPlacementRules*",
+                    )
+                }
+            },
+        ),
+    )
     reports {
         xml.required.set(true)
         html.required.set(true)
@@ -110,13 +127,14 @@ tasks.jacocoTestReport {
 }
 
 tasks.jacocoTestCoverageVerification {
+    classDirectories.setFrom(tasks.jacocoTestReport.get().classDirectories)
     violationRules {
         rule {
             element = "BUNDLE"
             limit {
-                counter = "CLASS"
+                counter = "LINE"
                 value = "COVEREDRATIO"
-                minimum = "0.00".toBigDecimal()
+                minimum = "0.90".toBigDecimal()
             }
         }
     }
