@@ -38,6 +38,23 @@ object PillagerRuntime {
     const val RANK_TAG = "PillagerOfficerRank"
     const val SCALE_TAG = "PillagerOfficerScale"
 
+    fun hasLiveOfficerLeader(level: ServerLevel, officerId: UUID): Boolean {
+        return level.getEntitiesOfClass(Mob::class.java, AABB.ofSize(Vec3.ZERO, 60_000_000.0, 4096.0, 60_000_000.0)) { candidate ->
+            candidate.isAlive &&
+                candidate.persistentData.hasUUID(OFFICER_TAG) &&
+                candidate.persistentData.getUUID(OFFICER_TAG) == officerId &&
+                candidate.persistentData.getBoolean(LEADER_TAG)
+        }.isNotEmpty()
+    }
+
+    fun hasLiveCampaignMember(level: ServerLevel, campaignId: UUID): Boolean {
+        return level.getEntitiesOfClass(Mob::class.java, AABB.ofSize(Vec3.ZERO, 60_000_000.0, 4096.0, 60_000_000.0)) { candidate ->
+            candidate.isAlive &&
+                candidate.persistentData.hasUUID(CAMPAIGN_TAG) &&
+                candidate.persistentData.getUUID(CAMPAIGN_TAG) == campaignId
+        }.isNotEmpty()
+    }
+
     fun materializeFixedSquad(level: ServerLevel, campaign: PillagerCampaign, base: PillagerBase, officerRecord: PillagerOfficer, player: ServerPlayer, x: Double, y: Double, z: Double): Int {
         val random = Random(campaign.loadoutSeed)
         val officer = createOfficerEntity(level, officerRecord.officerClass) ?: return 0
@@ -78,13 +95,7 @@ object PillagerRuntime {
     }
 
     fun ensureBossAtBase(level: ServerLevel, base: PillagerBase, faction: PillagerFaction, bossOfficer: PillagerOfficer) {
-        val existing = level.getEntitiesOfClass(Mob::class.java, AABB.ofSize(Vec3.atCenterOf(base.center), 48.0, 24.0, 48.0)) { candidate ->
-            candidate.isAlive &&
-                candidate.persistentData.hasUUID(OFFICER_TAG) &&
-                candidate.persistentData.getUUID(OFFICER_TAG) == bossOfficer.id &&
-                candidate.persistentData.getBoolean(BOSS_TAG)
-        }
-        if (existing.isNotEmpty()) return
+        if (hasLiveOfficerLeader(level, bossOfficer.id)) return
         val boss = EntityType.VINDICATOR.create(level) ?: return
         boss.moveTo(base.center.x + 0.5, base.center.y.toDouble(), base.center.z + 0.5, boss.yRot, boss.xRot)
         boss.setPersistenceRequired()

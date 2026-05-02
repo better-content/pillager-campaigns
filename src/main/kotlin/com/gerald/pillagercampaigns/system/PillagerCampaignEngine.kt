@@ -112,6 +112,11 @@ object PillagerCampaignEngine {
     }
 
     private fun tryMaterialize(level: ServerLevel, campaign: PillagerCampaign, player: ServerPlayer, distanceChunks: Int, data: PillagerWorldData) {
+        if (PillagerRuntime.hasLiveOfficerLeader(level, campaign.officerId) || PillagerRuntime.hasLiveCampaignMember(level, campaign.id)) {
+            campaign.state = CampaignState.ACTIVE
+            data.markChanged()
+            return
+        }
         val pos = PillagerSpawnPlacementRules.findMaterializationPos(level, player, campaign.currentChunkX, campaign.currentChunkZ, distanceChunks) ?: return
         val base = data.bases[campaign.originBaseId] ?: return
         val officer = data.officers[campaign.officerId] ?: return
