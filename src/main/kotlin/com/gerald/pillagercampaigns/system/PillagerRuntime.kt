@@ -1,468 +1,352 @@
 package com.gerald.pillagercampaigns.system
 
-import com.gerald.pillagercampaigns.PillagerCampaignsConfig
-import com.gerald.pillagercampaigns.PillagerCampaignsMod
-import com.gerald.pillagercampaigns.data.*
-import com.gerald.pillagercampaigns.util.PillagerIdentity
-import net.minecraft.core.BlockPos
-import net.minecraft.ChatFormatting
-import net.minecraft.core.Direction
+import com.gerald.pillagercampaigns.data.PillagerCampaign
+import com.gerald.pillagercampaigns.data.PillagerBase
+import com.gerald.pillagercampaigns.data.PillagerFaction
+import com.gerald.pillagercampaigns.data.PillagerOfficer
+import com.gerald.pillagercampaigns.data.OfficerClass
+import net.minecraft.nbt.CompoundTag
 import net.minecraft.network.chat.Component
-import net.minecraft.resources.ResourceLocation
+import net.minecraft.network.chat.MutableComponent
+import net.minecraft.ChatFormatting
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.server.level.ServerPlayer
-import net.minecraft.core.particles.ParticleTypes
-import net.minecraft.world.effect.MobEffectInstance
-import net.minecraft.world.effect.MobEffects
+import net.minecraft.core.particles.DustParticleOptions
+import net.minecraft.world.InteractionHand
 import net.minecraft.world.entity.EquipmentSlot
+import net.minecraft.world.entity.EntityType
+import net.minecraft.world.entity.LivingEntity
 import net.minecraft.world.entity.Mob
-import net.minecraft.world.entity.MobSpawnType
-import net.minecraft.world.entity.ai.attributes.Attributes
-import net.minecraft.world.entity.monster.PatrollingMonster
+import net.minecraft.world.entity.monster.Pillager
+import net.minecraft.world.entity.monster.Vindicator
 import net.minecraft.world.item.ItemStack
+import net.minecraft.world.item.Item
 import net.minecraft.world.item.Items
-import net.minecraft.world.item.MapItem
-import net.minecraft.world.level.Level
-import net.minecraft.world.level.block.BannerBlock
-import net.minecraft.world.level.block.Blocks
-import net.minecraft.world.level.block.LadderBlock
-import net.minecraft.world.level.block.state.BlockState
-import net.minecraft.world.level.levelgen.Heightmap
+import net.minecraft.world.item.enchantment.Enchantments
 import net.minecraft.world.phys.AABB
-import net.minecraftforge.registries.ForgeRegistries
-import kotlin.math.cos
-import kotlin.math.max
-import kotlin.math.min
-import kotlin.math.sin
+import net.minecraft.world.phys.Vec3
+import org.joml.Vector3f
+import java.util.Random
+import java.util.UUID
 
 object PillagerRuntime {
-    const val FACTION_TAG = "PillagerCampaignsFaction"
-    const val BASE_TAG = "PillagerCampaignsBase"
-    const val CAMPAIGN_TAG = "PillagerCampaignsCampaign"
-    const val OFFICER_TAG = "PillagerCampaignsOfficer"
-    const val OBJECTIVE_KIND_TAG = "PillagerCampaignsObjective"
-    const val OBJECTIVE_X_TAG = "PillagerCampaignsObjectiveX"
-    const val OBJECTIVE_Y_TAG = "PillagerCampaignsObjectiveY"
-    const val OBJECTIVE_Z_TAG = "PillagerCampaignsObjectiveZ"
-    const val ENGINEER_NEXT_TICK_TAG = "PillagerCampaignsEngineerNextTick"
-    const val ENGINEER_PLACED_COUNT_TAG = "PillagerCampaignsEngineerPlaced"
-    const val SQUAD_LEADER_TAG = "PillagerCampaignsSquadLeader"
+    const val CAMPAIGN_TAG = "PillagerCampaignId"
+    const val OFFICER_TAG = "PillagerOfficerId"
+    const val LEADER_TAG = "PillagerOfficerLeader"
+    const val FACTION_TAG = "PillagerFactionId"
+    const val BOSS_TAG = "PillagerFactionBoss"
+    const val RANK_TAG = "PillagerOfficerRank"
+    const val SCALE_TAG = "PillagerOfficerScale"
 
-    fun eligible(player: ServerPlayer): Boolean {
-        if (PillagerCampaignsConfig.skipSpectatorPlayers.get() && player.isSpectator) return false
-        if (!PillagerCampaignsConfig.allowCreativePlayers.get() && player.isCreative) return false
-        if (PillagerCampaignsConfig.overworldOnly.get() && player.serverLevel().dimension() != Level.OVERWORLD) return false
-        return true
-    }
+    fun materializeFixedSquad(level: ServerLevel, campaign: PillagerCampaign, base: PillagerBase, officerRecord: PillagerOfficer, player: ServerPlayer, x: Double, y: Double, z: Double): Int {
+        val random = Random(campaign.loadoutSeed)
+        val officer = createOfficerEntity(level, officerRecord.officerClass) ?: return 0
+        prepareOfficer(officer, campaign, base, officerRecord, x, y, z, random, campaign.difficultySnapshot)
+        level.addFreshEntity(officer)
 
-    fun chooseSpecial(level: ServerLevel): String? {
-        val candidates = PillagerCampaignsConfig.specialIllagers.get()
-            .mapNotNull { it as? String }
-            .filter { ForgeRegistries.ENTITY_TYPES.containsKey(ResourceLocation.parse(it)) }
-        if (candidates.isEmpty()) return null
-        return candidates[level.random.nextInt(candidates.size)]
-    }
-
-    fun spawnSquad(
-        level: ServerLevel,
-        data: PillagerWorldData,
-        pos: BlockPos,
-        target: ServerPlayer?,
-        base: PillagerBase?,
-        faction: PillagerFaction?,
-        campaign: PillagerCampaign?,
-        officer: PillagerOfficer?,
-        pillagers: Int,
-        specials: Int,
-        leader: Boolean,
-    ): Int {
-        var spawned = 0
-        val objective = PillagerObjectiveRules.objectiveFor(campaign, target, pos)
-        var leaderEntity: Mob? = null
-        if (leader) {
-            leaderEntity = createMob(level, "minecraft:pillager", jitter(pos, level, 3), target, objective, base, faction, campaign, officer, true, null)
-            if (leaderEntity != null && level.addFreshEntity(leaderEntity)) spawned++
+        var spawned = 1
+        val memberCount = CampaignDifficultyRules.memberCountForDifficulty(campaign.difficultySnapshot)
+        repeat(memberCount) {
+            val memberType = CampaignDifficultyRules.chooseMemberType(campaign.difficultySnapshot, officerRecord.preferenceGraph, random)
+            val mob: Mob = when (memberType) {
+                "vindicator" -> EntityType.VINDICATOR.create(level)
+                else -> EntityType.PILLAGER.create(level)
+            } ?: return@repeat
+            prepareFollower(mob, campaign, officerRecord, x + level.random.nextDouble() * 3.0 - 1.5, y, z + level.random.nextDouble() * 3.0 - 1.5, random, campaign.difficultySnapshot)
+            mob.target = player
+            level.addFreshEntity(mob)
+            spawned++
         }
-        val leaderId = leaderEntity?.uuid
-        val manifest = squadManifest(level, officer, pillagers, specials)
-        manifest.forEach { (entityId, count) ->
-            repeat(count.coerceAtLeast(0)) {
-                if (spawnMob(level, entityId, jitter(pos, level, 6), target, objective, base, faction, campaign, officer, false, leaderId)) spawned++
-            }
-        }
-        if (spawned > 0) data.markChanged()
         return spawned
     }
 
-    fun spawnMob(
-        level: ServerLevel,
-        entityId: String,
-        pos: BlockPos,
-        target: ServerPlayer?,
-        objective: PillagerObjectiveRules.Objective,
-        base: PillagerBase?,
-        faction: PillagerFaction?,
-        campaign: PillagerCampaign?,
-        officer: PillagerOfficer?,
-        leader: Boolean,
-        squadLeaderId: java.util.UUID? = null,
-    ): Boolean {
-        val entity = createMob(level, entityId, pos, target, objective, base, faction, campaign, officer, leader, squadLeaderId) ?: return false
-        return level.addFreshEntity(entity)
+    fun keepSquadCohesive(level: ServerLevel, mob: Mob) {
+        val tag = mob.persistentData
+        if (!tag.hasUUID(CAMPAIGN_TAG) || tag.getBoolean(LEADER_TAG) || mob.target != null) return
+        val officerId = tag.getUUID(OFFICER_TAG)
+        val officer = level.getEntitiesOfClass(Mob::class.java, mob.boundingBox.inflate(40.0)) { candidate ->
+            candidate.persistentData.hasUUID(OFFICER_TAG) &&
+                candidate.persistentData.getUUID(OFFICER_TAG) == officerId &&
+                candidate.persistentData.getBoolean(LEADER_TAG)
+        }.firstOrNull() ?: return
+        val dist = mob.distanceToSqr(officer)
+        if (dist > 48.0 * 48.0) {
+            mob.moveTo(officer.x + 0.5, officer.y, officer.z + 0.5, mob.yRot, mob.xRot)
+            return
+        }
+        mob.navigation.moveTo(officer, 1.15)
     }
 
-    private fun createMob(
-        level: ServerLevel,
-        entityId: String,
-        pos: BlockPos,
-        target: ServerPlayer?,
-        objective: PillagerObjectiveRules.Objective,
-        base: PillagerBase?,
-        faction: PillagerFaction?,
-        campaign: PillagerCampaign?,
-        officer: PillagerOfficer?,
-        leader: Boolean,
-        squadLeaderId: java.util.UUID?,
-    ): Mob? {
-        val id = ResourceLocation.tryParse(entityId) ?: return null
-        val type = ForgeRegistries.ENTITY_TYPES.getValue(id) ?: return null
-        val entity = type.create(level) as? Mob ?: return null
-        entity.moveTo(pos.x + 0.5, pos.y.toDouble(), pos.z + 0.5, level.random.nextFloat() * 360.0f, 0.0f)
-        runCatching { entity.finalizeSpawn(level, level.getCurrentDifficultyAt(pos), MobSpawnType.EVENT, null, null) }
-            .onFailure { PillagerCampaignsMod.LOGGER.debug("finalizeSpawn failed for {} at {}", entityId, pos, it) }
-        entity.persistentData.putBoolean(PillagerCampaignsMod.PATROL_TAG, true)
-        faction?.let { entity.persistentData.putUUID(FACTION_TAG, it.id) }
-        base?.let { entity.persistentData.putUUID(BASE_TAG, it.id) }
-        campaign?.let { entity.persistentData.putUUID(CAMPAIGN_TAG, it.id) }
-        entity.persistentData.putString(OBJECTIVE_KIND_TAG, objective.kind)
-        entity.persistentData.putInt(OBJECTIVE_X_TAG, objective.pos.x)
-        entity.persistentData.putInt(OBJECTIVE_Y_TAG, objective.pos.y)
-        entity.persistentData.putInt(OBJECTIVE_Z_TAG, objective.pos.z)
-        if (leader) officer?.let {
-            entity.persistentData.putUUID(OFFICER_TAG, it.id)
-            entity.customName = Component.literal(it.displayName()).withStyle(nameColor(it))
-            entity.isCustomNameVisible = true
-            applyOfficerSignal(level, entity, it, faction)
+    fun ensureBossAtBase(level: ServerLevel, base: PillagerBase, faction: PillagerFaction, bossOfficer: PillagerOfficer) {
+        val existing = level.getEntitiesOfClass(Mob::class.java, AABB.ofSize(Vec3.atCenterOf(base.center), 48.0, 24.0, 48.0)) { candidate ->
+            candidate.isAlive &&
+                candidate.persistentData.hasUUID(OFFICER_TAG) &&
+                candidate.persistentData.getUUID(OFFICER_TAG) == bossOfficer.id &&
+                candidate.persistentData.getBoolean(BOSS_TAG)
         }
-        if (!leader && squadLeaderId != null) entity.persistentData.putUUID(SQUAD_LEADER_TAG, squadLeaderId)
-        target?.let {
-            entity.persistentData.putUUID("BoundToMatterPressureTarget", it.uuid)
-            if (PillagerCampaignsConfig.targetPlayerImmediately.get()) entity.target = it
-        }
-        if (PillagerCampaignsConfig.persistentPatrolMobs.get()) entity.setPersistenceRequired()
-        if (entity is PatrollingMonster) {
-            entity.patrolTarget = objective.pos
-        }
-        return entity
+        if (existing.isNotEmpty()) return
+        val boss = EntityType.VINDICATOR.create(level) ?: return
+        boss.moveTo(base.center.x + 0.5, base.center.y.toDouble(), base.center.z + 0.5, boss.yRot, boss.xRot)
+        boss.setPersistenceRequired()
+        boss.persistentData.putBoolean(BOSS_TAG, true)
+        boss.persistentData.putBoolean(LEADER_TAG, true)
+        boss.persistentData.putUUID(OFFICER_TAG, bossOfficer.id)
+        boss.persistentData.putUUID(FACTION_TAG, faction.id)
+        boss.persistentData.putString(RANK_TAG, bossOfficer.rank.name)
+        boss.setItemSlot(EquipmentSlot.HEAD, makeBaseBanner(base.bannerSeed))
+        boss.setItemSlot(EquipmentSlot.MAINHAND, ItemStack(Items.IRON_AXE))
+        applyOfficerVisuals(boss, bossOfficer)
+        level.addFreshEntity(boss)
     }
 
-    private fun squadManifest(level: ServerLevel, officer: PillagerOfficer?, pillagers: Int, specials: Int): Map<String, Int> {
-        if (officer == null) {
-            val fallback = linkedMapOf(SquadCompositionRules.PILLAGER to pillagers.coerceAtLeast(0))
-            repeat(specials.coerceAtLeast(0)) { chooseSpecial(level)?.let { fallback[it] = (fallback[it] ?: 0) + 1 } }
-            return fallback
+    fun pushOfficerTowardPlayer(level: ServerLevel, mob: Mob) {
+        val tag = mob.persistentData
+        if (!tag.getBoolean(LEADER_TAG)) return
+        val nearest = level.players().minByOrNull { it.distanceToSqr(mob) } ?: return
+        mob.target = nearest
+        mob.navigation.moveTo(nearest, 1.15)
+    }
+
+    fun tickOfficerVisuals(level: ServerLevel, mob: Mob) {
+        val tag = mob.persistentData
+        if (!tag.hasUUID(OFFICER_TAG)) return
+        if (tag.getBoolean(LEADER_TAG)) {
+            mob.isCustomNameVisible = true
         }
-        val planned = SquadCompositionRules.plan(
-            doctrine = officer.doctrine,
-            rank = officer.rank,
-            engineeringTalent = OfficerEngineeringRules.talentFor(officer),
-            pressure = SquadCompositionPressure.fromGenes(officer.genes),
+        val color = colorForOfficer(tag.getUUID(OFFICER_TAG))
+        level.sendParticles(
+            DustParticleOptions(color.vector, 1.0f),
+            mob.x,
+            mob.y + 1.4,
+            mob.z,
+            2,
+            0.18,
+            0.08,
+            0.18,
+            0.001,
         )
-        return SquadCompositionRules.fallbackManifest(planned.manifest, availableEntityIds()).manifest
     }
 
-    private fun availableEntityIds(): Set<String> = ForgeRegistries.ENTITY_TYPES.keys.map { it.toString() }.toSet()
+    private fun prepareOfficer(
+        mob: Mob,
+        campaign: PillagerCampaign,
+        base: PillagerBase,
+        officerRecord: PillagerOfficer,
+        x: Double,
+        y: Double,
+        z: Double,
+        random: Random,
+        difficulty: Int,
+    ) {
+        mob.moveTo(x, y, z, mob.yRot, mob.xRot)
+        mob.setPersistenceRequired()
+        mob.persistentData.applyCampaignTags(campaign)
+        mob.persistentData.putBoolean(LEADER_TAG, true)
+        mob.persistentData.putString(RANK_TAG, officerRecord.rank.name)
+        mob.setItemSlot(EquipmentSlot.HEAD, makeBaseBanner(base.bannerSeed))
+        equipWeaponByPreference(mob, officerRecord, random, difficulty)
+        applyArmorByPreference(mob, officerRecord, random, difficulty)
+        applyEnchantmentsByPreference(mob, officerRecord, random, difficulty)
+        applyOfficerVisuals(mob, officerRecord)
+    }
 
-    private fun applyOfficerSignal(level: ServerLevel, entity: Mob, officer: PillagerOfficer, faction: PillagerFaction?) {
-        val rankHealth = when (officer.rank) {
-            OfficerRank.SCOUT -> 1.0
-            OfficerRank.CAPTAIN -> 1.25
-            OfficerRank.LIEUTENANT -> 1.5
-            OfficerRank.WARLORD -> 1.9
-            OfficerRank.BANNERLORD -> 2.2
-        }
-        entity.getAttribute(Attributes.MAX_HEALTH)?.let {
-            it.baseValue *= rankHealth
-            entity.health = entity.maxHealth
-        }
-        applyOfficerLoadout(entity, officer, faction)
-        if (officer.rank == OfficerRank.WARLORD || officer.rank == OfficerRank.BANNERLORD) entity.setGlowingTag(true)
+    private fun prepareFollower(mob: Mob, campaign: PillagerCampaign, officerRecord: PillagerOfficer, x: Double, y: Double, z: Double, random: Random, difficulty: Int) {
+        mob.moveTo(x, y, z, mob.yRot, mob.xRot)
+        mob.setPersistenceRequired()
+        mob.persistentData.applyCampaignTags(campaign)
+        mob.persistentData.putBoolean(LEADER_TAG, false)
+        equipWeaponByPreference(mob, officerRecord, random, difficulty)
+        applyArmorByPreference(mob, officerRecord, random, difficulty)
+        applyEnchantmentsByPreference(mob, officerRecord, random, difficulty)
+    }
 
-        officer.affixes.forEach { affix ->
-            when (affix) {
-                OfficerAffix.SWIFT -> {
-                    entity.addEffect(MobEffectInstance(MobEffects.MOVEMENT_SPEED, 20 * 60 * 20, 2, true, true))
-                    entity.getAttribute(Attributes.MOVEMENT_SPEED)?.let { it.baseValue *= 1.45 }
-                    level.sendParticles(ParticleTypes.CLOUD, entity.x, entity.y + 1.0, entity.z, 16, 0.4, 0.7, 0.4, 0.05)
-                }
-                OfficerAffix.LONGSHOT -> {
-                    level.sendParticles(ParticleTypes.CRIT, entity.x, entity.y + 1.2, entity.z, 18, 0.5, 0.5, 0.5, 0.08)
-                }
-                OfficerAffix.IRONBOUND -> {
-                    entity.addEffect(MobEffectInstance(MobEffects.DAMAGE_RESISTANCE, 20 * 60 * 20, 1, true, true))
-                    entity.getAttribute(Attributes.KNOCKBACK_RESISTANCE)?.let { it.baseValue = (it.baseValue + 0.6).coerceAtMost(1.0) }
-                    level.sendParticles(ParticleTypes.ASH, entity.x, entity.y + 1.0, entity.z, 20, 0.5, 0.8, 0.5, 0.02)
-                }
-                OfficerAffix.WITCH_TOUCHED -> {
-                    entity.addEffect(MobEffectInstance(MobEffects.REGENERATION, 20 * 60 * 20, 0, true, true))
-                    level.sendParticles(ParticleTypes.WITCH, entity.x, entity.y + 1.0, entity.z, 24, 0.5, 0.9, 0.5, 0.05)
-                }
-                OfficerAffix.BANNERED -> {
-                    faction?.let { entity.setItemSlot(EquipmentSlot.HEAD, PillagerIdentity.bannerStack(it)) }
-                    entity.addEffect(MobEffectInstance(MobEffects.GLOWING, 20 * 60 * 20, 0, true, false))
-                    level.sendParticles(ParticleTypes.HAPPY_VILLAGER, entity.x, entity.y + 1.5, entity.z, 12, 0.5, 0.5, 0.5, 0.02)
-                }
-                OfficerAffix.ASHEN -> {
-                    entity.addEffect(MobEffectInstance(MobEffects.FIRE_RESISTANCE, 20 * 60 * 20, 0, true, true))
-                    level.sendParticles(ParticleTypes.FLAME, entity.x, entity.y + 1.0, entity.z, 18, 0.5, 0.8, 0.5, 0.03)
-                    level.sendParticles(ParticleTypes.SMOKE, entity.x, entity.y + 1.0, entity.z, 18, 0.5, 0.8, 0.5, 0.02)
-                }
-                OfficerAffix.BEAST_CALLER -> {
-                    level.sendParticles(ParticleTypes.ANGRY_VILLAGER, entity.x, entity.y + 1.4, entity.z, 10, 0.5, 0.5, 0.5, 0.02)
-                }
-                OfficerAffix.GRAVE_MARKED -> {
-                    entity.addEffect(MobEffectInstance(MobEffects.DAMAGE_BOOST, 20 * 60 * 20, 0, true, true))
-                    level.sendParticles(ParticleTypes.SOUL_FIRE_FLAME, entity.x, entity.y + 1.0, entity.z, 24, 0.5, 0.8, 0.5, 0.02)
-                }
+    private fun CompoundTag.applyCampaignTags(campaign: PillagerCampaign) {
+        putUUID(CAMPAIGN_TAG, campaign.id)
+        putUUID(OFFICER_TAG, campaign.officerId)
+        putUUID(FACTION_TAG, campaign.factionId)
+    }
+
+    private fun applyOfficerVisuals(entity: LivingEntity, officer: PillagerOfficer) {
+        val color = colorForOfficer(officer.id)
+        entity.customName = Component.literal("${officer.name} ${officer.title}").withStyle(color.formatting)
+        entity.isCustomNameVisible = true
+        val scale = 1.2 + (officer.rank.ordinal * 0.1)
+        entity.persistentData.putDouble(SCALE_TAG, scale)
+    }
+
+    private fun createOfficerEntity(level: ServerLevel, officerClass: OfficerClass): Mob? = when (officerClass) {
+        OfficerClass.PILLAGER -> EntityType.PILLAGER.create(level)
+        OfficerClass.VINDICATOR -> EntityType.VINDICATOR.create(level)
+        OfficerClass.WITCH -> EntityType.WITCH.create(level)
+        OfficerClass.EVOKER -> EntityType.EVOKER.create(level)
+        OfficerClass.ILLUSIONER -> EntityType.ILLUSIONER.create(level)
+    }
+
+    private fun equipWeaponByPreference(mob: Mob, officer: PillagerOfficer, random: Random, difficulty: Int) {
+        val allowed = mutableListOf("weapon_crossbow", "weapon_bow", "weapon_sword", "weapon_axe")
+        if (difficulty >= 2) allowed += "weapon_trident"
+        val chosen = CampaignDifficultyRules.weightedChoice(officer.preferenceGraph, random, allowed)
+        val stack = when (chosen) {
+            "weapon_bow" -> ItemStack(Items.BOW)
+            "weapon_sword" -> ItemStack(tieredSword(difficulty, random))
+            "weapon_axe" -> ItemStack(tieredAxe(difficulty, random))
+            "weapon_trident" -> ItemStack(Items.TRIDENT)
+            else -> ItemStack(Items.CROSSBOW)
+        }
+        mob.setItemSlot(EquipmentSlot.MAINHAND, stack)
+        mob.setItemInHand(InteractionHand.MAIN_HAND, stack)
+    }
+
+    private fun applyArmorByPreference(mob: Mob, officer: PillagerOfficer, random: Random, difficulty: Int) {
+        val piecePlan = mutableListOf<String>()
+        repeat(CampaignDifficultyRules.armorPieceCountForTier(difficulty, 3)) { piecePlan += "leather" }
+        repeat(CampaignDifficultyRules.armorPieceCountForTier(difficulty, 6)) { piecePlan += "gold" }
+        repeat(CampaignDifficultyRules.armorPieceCountForTier(difficulty, 9)) { piecePlan += "iron" }
+        repeat(CampaignDifficultyRules.armorPieceCountForTier(difficulty, 12)) { piecePlan += "diamond" }
+
+        piecePlan.forEach { tier ->
+            val slot = CampaignDifficultyRules.weightedChoice(officer.preferenceGraph, random, listOf("slot_head", "slot_chest", "slot_legs", "slot_feet"))
+            val equipmentSlot = when (slot) {
+                "slot_chest" -> EquipmentSlot.CHEST
+                "slot_legs" -> EquipmentSlot.LEGS
+                "slot_feet" -> EquipmentSlot.FEET
+                else -> EquipmentSlot.HEAD
+            }
+            val piece = armorForTierAndSlot(tier, equipmentSlot)
+            if (equipmentSlot == EquipmentSlot.HEAD && mob.getItemBySlot(EquipmentSlot.HEAD).item != Items.AIR && mob.getItemBySlot(EquipmentSlot.HEAD).item.toString().contains("banner")) {
+                val fallback = listOf(EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET).firstOrNull { mob.getItemBySlot(it).isEmpty } ?: equipmentSlot
+                mob.setItemSlot(fallback, piece)
+            } else {
+                mob.setItemSlot(equipmentSlot, piece)
             }
         }
     }
 
-    private fun applyOfficerLoadout(entity: Mob, officer: PillagerOfficer, faction: PillagerFaction?) {
-        val loadout = OfficerLoadoutRules.forOfficer(officer)
-        itemStack(loadout.armor.helmet)?.let { entity.setItemSlot(EquipmentSlot.HEAD, it) }
-        itemStack(loadout.armor.chestplate)?.let { entity.setItemSlot(EquipmentSlot.CHEST, it) }
-        itemStack(loadout.armor.leggings)?.let { entity.setItemSlot(EquipmentSlot.LEGS, it) }
-        itemStack(loadout.armor.boots)?.let { entity.setItemSlot(EquipmentSlot.FEET, it) }
-        itemStack(loadout.mainhand)?.let { entity.setItemSlot(EquipmentSlot.MAINHAND, it) }
-        val offhand = if (loadout.offhand?.endsWith("_banner") == true && faction != null) PillagerIdentity.bannerStack(faction) else loadout.offhand?.let { itemStack(it) }
-        offhand?.let { entity.setItemSlot(EquipmentSlot.OFFHAND, it) }
-        if (offhand?.item !is net.minecraft.world.item.BannerItem) faction?.let { entity.setItemSlot(EquipmentSlot.HEAD, PillagerIdentity.bannerStack(it)) }
-    }
-
-    private fun itemStack(itemId: String): ItemStack? {
-        val id = ResourceLocation.tryParse(itemId) ?: return null
-        val item = ForgeRegistries.ITEMS.getValue(id) ?: return null
-        if (item == Items.AIR) return null
-        return ItemStack(item)
-    }
-
-    private fun nameColor(officer: PillagerOfficer): ChatFormatting = when {
-        OfficerAffix.GRAVE_MARKED in officer.affixes -> ChatFormatting.DARK_RED
-        OfficerAffix.WITCH_TOUCHED in officer.affixes -> ChatFormatting.DARK_PURPLE
-        OfficerAffix.SWIFT in officer.affixes -> ChatFormatting.AQUA
-        OfficerAffix.IRONBOUND in officer.affixes -> ChatFormatting.GRAY
-        OfficerAffix.BANNERED in officer.affixes -> ChatFormatting.GOLD
-        officer.rank == OfficerRank.BANNERLORD -> ChatFormatting.RED
-        officer.rank == OfficerRank.WARLORD -> ChatFormatting.DARK_RED
-        else -> ChatFormatting.YELLOW
-    }
-
-    fun chooseSpawnPos(level: ServerLevel, center: BlockPos): BlockPos? {
-        val minRadius = min(PillagerCampaignsConfig.minRadius.get(), PillagerCampaignsConfig.maxRadius.get()).coerceAtLeast(8)
-        val maxRadius = max(PillagerCampaignsConfig.minRadius.get(), PillagerCampaignsConfig.maxRadius.get()).coerceAtLeast(minRadius)
-        return PillagerSpawnPlacementRules.chooseFarthest(
-            center = center,
-            minRadius = minRadius,
-            maxRadius = maxRadius,
-            isLoaded = { probe -> level.hasChunkAt(probe) },
-            isValid = { probe ->
-                val y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, probe.x, probe.z)
-                validSpawnSurface(level, BlockPos(probe.x, y, probe.z))
-            },
-        )?.let { probe ->
-            val y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, probe.x, probe.z)
-            BlockPos(probe.x, y, probe.z)
+    private fun applyEnchantmentsByPreference(mob: Mob, officer: PillagerOfficer, random: Random, difficulty: Int) {
+        val tier = CampaignDifficultyRules.enchantTierForDifficulty(difficulty)
+        if (tier <= 0) return
+        val enchantChoices = listOf(
+            "enchant_sharpness" to Enchantments.SHARPNESS,
+            "enchant_smite" to Enchantments.SMITE,
+            "enchant_bane" to Enchantments.BANE_OF_ARTHROPODS,
+            "enchant_protection" to Enchantments.ALL_DAMAGE_PROTECTION,
+            "enchant_proj_prot" to Enchantments.PROJECTILE_PROTECTION,
+            "enchant_blast_prot" to Enchantments.BLAST_PROTECTION,
+            "enchant_fire_prot" to Enchantments.FIRE_PROTECTION,
+            "enchant_unbreaking" to Enchantments.UNBREAKING,
+            "enchant_power" to Enchantments.POWER_ARROWS,
+            "enchant_quick_charge" to Enchantments.QUICK_CHARGE,
+        )
+        val stacks = listOf(
+            mob.getItemBySlot(EquipmentSlot.MAINHAND),
+            mob.getItemBySlot(EquipmentSlot.HEAD),
+            mob.getItemBySlot(EquipmentSlot.CHEST),
+            mob.getItemBySlot(EquipmentSlot.LEGS),
+            mob.getItemBySlot(EquipmentSlot.FEET),
+        ).filter { !it.isEmpty }
+        stacks.forEach { stack ->
+            val key = CampaignDifficultyRules.weightedChoice(officer.preferenceGraph, random, enchantChoices.map { it.first })
+            val enchant = enchantChoices.first { it.first == key }.second
+            if (enchant.canEnchant(stack)) stack.enchant(enchant, tier) else stack.enchant(Enchantments.UNBREAKING, tier)
         }
     }
 
-    fun chooseForcedSpawnPos(level: ServerLevel, center: BlockPos): BlockPos? =
-        PillagerSpawnPlacementRules.chooseForced(
-            center = center,
-            normalMinRadius = min(PillagerCampaignsConfig.minRadius.get(), PillagerCampaignsConfig.maxRadius.get()).coerceAtLeast(8),
-            normalMaxRadius = max(PillagerCampaignsConfig.minRadius.get(), PillagerCampaignsConfig.maxRadius.get()).coerceAtLeast(8),
-            fallbackMinRadius = 8,
-            fallbackMaxRadius = 32,
-            isLoaded = { probe -> level.hasChunkAt(probe) },
-            isValid = { probe ->
-                val y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, probe.x, probe.z)
-                validSpawnSurface(level, BlockPos(probe.x, y, probe.z))
-            },
-        )?.let { probe ->
-            val y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, probe.x, probe.z)
-            BlockPos(probe.x, y, probe.z)
+    private fun tieredSword(difficulty: Int, random: Random): Item = when {
+        difficulty >= 12 -> pick(random, Items.DIAMOND_SWORD, Items.IRON_SWORD, Items.GOLDEN_SWORD, Items.STONE_SWORD)
+        difficulty >= 9 -> pick(random, Items.IRON_SWORD, Items.GOLDEN_SWORD, Items.STONE_SWORD)
+        difficulty >= 6 -> pick(random, Items.GOLDEN_SWORD, Items.STONE_SWORD)
+        difficulty >= 2 -> Items.STONE_SWORD
+        else -> Items.WOODEN_SWORD
+    }
+
+    private fun tieredAxe(difficulty: Int, random: Random): Item = when {
+        difficulty >= 12 -> pick(random, Items.DIAMOND_AXE, Items.IRON_AXE, Items.GOLDEN_AXE, Items.STONE_AXE)
+        difficulty >= 9 -> pick(random, Items.IRON_AXE, Items.GOLDEN_AXE, Items.STONE_AXE)
+        difficulty >= 6 -> pick(random, Items.GOLDEN_AXE, Items.STONE_AXE)
+        difficulty >= 2 -> Items.STONE_AXE
+        else -> Items.WOODEN_AXE
+    }
+
+    private fun pick(random: Random, vararg items: Item): Item = items[random.nextInt(items.size)]
+
+    private fun armorForTierAndSlot(tier: String, slot: EquipmentSlot): ItemStack = when (tier) {
+        "diamond" -> when (slot) {
+            EquipmentSlot.HEAD -> ItemStack(Items.DIAMOND_HELMET)
+            EquipmentSlot.CHEST -> ItemStack(Items.DIAMOND_CHESTPLATE)
+            EquipmentSlot.LEGS -> ItemStack(Items.DIAMOND_LEGGINGS)
+            else -> ItemStack(Items.DIAMOND_BOOTS)
         }
-
-    fun validSpawnSurface(level: ServerLevel, pos: BlockPos): Boolean {
-        if (pos.y <= level.minBuildHeight + 1 || pos.y >= level.maxBuildHeight - 2) return false
-        val state = level.getBlockState(pos)
-        val above = level.getBlockState(pos.above())
-        val below = level.getBlockState(pos.below())
-        if (!isOpen(level, pos, state) || !isOpen(level, pos.above(), above)) return false
-        if (below.isAir || below.fluidState.isSource) return false
-        if (state.fluidState.isSource || above.fluidState.isSource) return false
-        return below.isCollisionShapeFullBlock(level, pos.below())
-    }
-
-    fun countActivePatrolMobs(level: ServerLevel, center: BlockPos): Int {
-        val radius = PillagerCampaignsConfig.activeCheckRadius.get().toDouble()
-        val box = AABB(center).inflate(radius, 96.0, radius)
-        return level.getEntitiesOfClass(Mob::class.java, box) { it.isAlive && it.persistentData.getBoolean(PillagerCampaignsMod.PATROL_TAG) }.size
-    }
-
-    fun pullFollowerTowardOfficer(level: ServerLevel, mob: Mob): Boolean {
-        val tag = mob.persistentData
-        if (!tag.hasUUID(SQUAD_LEADER_TAG) || tag.hasUUID(OFFICER_TAG)) return false
-        val leaderId = tag.getUUID(SQUAD_LEADER_TAG)
-        val box = AABB(mob.blockPosition()).inflate(64.0, 32.0, 64.0)
-        val leader = level.getEntitiesOfClass(Mob::class.java, box) { it.uuid == leaderId && it.isAlive }.firstOrNull() ?: return false
-        val dist = mob.distanceToSqr(leader)
-        if (mob.target == null) mob.target = leader.target
-        if (SquadCohesionRules.shouldPullToLeader(dist)) {
-            mob.navigation.moveTo(leader, SquadCohesionRules.moveSpeed(dist))
-            return true
+        "iron" -> when (slot) {
+            EquipmentSlot.HEAD -> ItemStack(Items.IRON_HELMET)
+            EquipmentSlot.CHEST -> ItemStack(Items.IRON_CHESTPLATE)
+            EquipmentSlot.LEGS -> ItemStack(Items.IRON_LEGGINGS)
+            else -> ItemStack(Items.IRON_BOOTS)
         }
-        return false
-    }
-
-    fun placeFactionFlags(level: ServerLevel, faction: PillagerFaction, center: BlockPos, count: Int): Int {
-        if (count <= 0) return 0
-        var placed = 0
-        repeat(count) {
-            val angle = level.random.nextDouble() * Math.PI * 2.0
-            val r = 2 + level.random.nextInt(6)
-            val x = center.x + (cos(angle) * r).toInt()
-            val z = center.z + (sin(angle) * r).toInt()
-            val y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z)
-            val pos = BlockPos(x, y, z)
-            if (level.getBlockState(pos).isAir && !level.getBlockState(pos.below()).isAir) {
-                level.setBlockAndUpdate(pos, BannerBlock.byColor(faction.baseDyeColor()).defaultBlockState())
-                placed++
-            }
+        "gold" -> when (slot) {
+            EquipmentSlot.HEAD -> ItemStack(Items.GOLDEN_HELMET)
+            EquipmentSlot.CHEST -> ItemStack(Items.GOLDEN_CHESTPLATE)
+            EquipmentSlot.LEGS -> ItemStack(Items.GOLDEN_LEGGINGS)
+            else -> ItemStack(Items.GOLDEN_BOOTS)
         }
-        return placed
-    }
-
-    fun baseMap(level: ServerLevel, base: PillagerBase, faction: PillagerFaction): ItemStack {
-        val stack = MapItem.create(level, base.center.x, base.center.z, 2.toByte(), true, true)
-        stack.hoverName = Component.literal("Map to ${faction.name}")
-        return stack
-    }
-
-    fun tryOfficerEngineering(level: ServerLevel, data: PillagerWorldData, mob: Mob): Boolean {
-        if (!PillagerCampaignsConfig.officerEngineeringEnabled.get()) return false
-        val tag = mob.persistentData
-        if (!tag.hasUUID(OFFICER_TAG)) return false
-        val now = level.gameTime
-        if (tag.getLong(ENGINEER_NEXT_TICK_TAG) > now) return false
-        if (tag.getInt(ENGINEER_PLACED_COUNT_TAG) >= PillagerCampaignsConfig.officerEngineeringMaxBlocks.get()) return false
-        val officer = data.officers[tag.getUUID(OFFICER_TAG)] ?: return false
-        val talent = OfficerEngineeringRules.talentFor(officer)
-        if (talent == OfficerEngineeringTalent.NONE) return false
-        val objective = objectiveFromTag(tag) ?: return false
-        val direction = directionToward(mob.blockPosition(), objective) ?: return false
-        val placed = tryBridge(level, data, mob.blockPosition(), direction, talent, now) ||
-            tryLadder(level, data, mob.blockPosition(), direction, talent, now)
-        tag.putLong(ENGINEER_NEXT_TICK_TAG, now + PillagerCampaignsConfig.officerEngineeringCooldownTicks.get())
-        if (placed) tag.putInt(ENGINEER_PLACED_COUNT_TAG, tag.getInt(ENGINEER_PLACED_COUNT_TAG) + 1)
-        return placed
-    }
-
-    fun cleanupEngineeredBlocks(level: ServerLevel, data: PillagerWorldData): Int {
-        val ttl = PillagerCampaignsConfig.officerEngineeringTtlTicks.get().toLong()
-        val now = level.gameTime
-        var removed = 0
-        val iter = data.engineeredBlocks.iterator()
-        while (iter.hasNext()) {
-            val marker = iter.next()
-            if (marker.dimension != level.dimension().location()) continue
-            if (now - marker.placedTick < ttl) continue
-            if (!level.hasChunkAt(marker.pos)) {
-                if (++marker.attempts > 20) iter.remove()
-                continue
-            }
-            val currentState = level.getBlockState(marker.pos)
-            val currentId = ForgeRegistries.BLOCKS.getKey(currentState.block)
-            if (currentId == marker.blockId && blockStateSnapshot(currentState) == marker.blockState) {
-                level.setBlockAndUpdate(marker.pos, Blocks.AIR.defaultBlockState())
-                removed++
-            }
-            iter.remove()
-        }
-        if (removed > 0) data.markChanged()
-        return removed
-    }
-
-    private fun isOpen(level: ServerLevel, pos: BlockPos, state: BlockState): Boolean = state.isAir || state.getCollisionShape(level, pos).isEmpty
-
-    private fun objectiveFromTag(tag: net.minecraft.nbt.CompoundTag): BlockPos? {
-        if (!tag.contains(OBJECTIVE_X_TAG) || !tag.contains(OBJECTIVE_Y_TAG) || !tag.contains(OBJECTIVE_Z_TAG)) return null
-        return BlockPos(tag.getInt(OBJECTIVE_X_TAG), tag.getInt(OBJECTIVE_Y_TAG), tag.getInt(OBJECTIVE_Z_TAG))
-    }
-
-    private fun directionToward(from: BlockPos, to: BlockPos): Direction? {
-        val dx = to.x - from.x
-        val dz = to.z - from.z
-        return when {
-            kotlin.math.abs(dx) >= kotlin.math.abs(dz) && dx > 2 -> Direction.EAST
-            kotlin.math.abs(dx) >= kotlin.math.abs(dz) && dx < -2 -> Direction.WEST
-            dz > 2 -> Direction.SOUTH
-            dz < -2 -> Direction.NORTH
-            else -> null
+        else -> when (slot) {
+            EquipmentSlot.HEAD -> ItemStack(Items.LEATHER_HELMET)
+            EquipmentSlot.CHEST -> ItemStack(Items.LEATHER_CHESTPLATE)
+            EquipmentSlot.LEGS -> ItemStack(Items.LEATHER_LEGGINGS)
+            else -> ItemStack(Items.LEATHER_BOOTS)
         }
     }
 
-    private fun tryBridge(level: ServerLevel, data: PillagerWorldData, origin: BlockPos, direction: Direction, talent: OfficerEngineeringTalent, now: Long): Boolean {
-        if (!OfficerEngineeringRules.canBridge(talent)) return false
-        val forward = origin.relative(direction)
-        val bridge = forward.below()
-        if (!level.hasChunkAt(bridge)) return false
-        if (!level.getBlockState(forward).isAir || !level.getBlockState(forward.above()).isAir) return false
-        if (!level.getBlockState(bridge).isAir) return false
-        return placeEngineeredBlock(level, data, bridge, Blocks.SCAFFOLDING.defaultBlockState(), now)
-    }
-
-    private fun tryLadder(level: ServerLevel, data: PillagerWorldData, origin: BlockPos, direction: Direction, talent: OfficerEngineeringTalent, now: Long): Boolean {
-        if (!OfficerEngineeringRules.canLadder(talent)) return false
-        val support = origin.relative(direction).above()
-        val ladder = origin.above()
-        if (!level.hasChunkAt(ladder)) return false
-        if (!level.getBlockState(ladder).isAir) return false
-        if (!level.getBlockState(support).isCollisionShapeFullBlock(level, support)) return false
-        val state = Blocks.LADDER.defaultBlockState().setValue(LadderBlock.FACING, direction.opposite)
-        if (!state.canSurvive(level, ladder)) return false
-        return placeEngineeredBlock(level, data, ladder, state, now)
-    }
-
-    private fun placeEngineeredBlock(level: ServerLevel, data: PillagerWorldData, pos: BlockPos, state: BlockState, now: Long): Boolean {
-        if (!level.getBlockState(pos).isAir) return false
-        level.setBlockAndUpdate(pos, state)
-        ForgeRegistries.BLOCKS.getKey(state.block)?.let { id ->
-            data.engineeredBlocks.add(EngineeredBlockMarker(level.dimension().location(), pos.immutable(), id, blockStateSnapshot(state), now, 0))
+    private fun makeBaseBanner(seed: Int): ItemStack {
+        val random = Random(seed.toLong())
+        val baseColor = random.nextInt(16)
+        val banner = ItemStack(baseBannerItem(baseColor))
+        val patterns = listOf("bs", "ts", "ls", "rs", "cs", "ms", "drs", "dls", "cr", "sc", "mc")
+        val list = net.minecraft.nbt.ListTag()
+        repeat(3 + random.nextInt(3)) {
+            val pattern = net.minecraft.nbt.CompoundTag()
+            pattern.putString("Pattern", patterns[random.nextInt(patterns.size)])
+            pattern.putInt("Color", random.nextInt(16))
+            list.add(pattern)
         }
-        data.markChanged()
-        return true
+        val blockEntityTag = banner.orCreateTag.getCompound("BlockEntityTag")
+        blockEntityTag.put("Patterns", list)
+        banner.orCreateTag.put("BlockEntityTag", blockEntityTag)
+        return banner
     }
 
-    private fun blockStateSnapshot(state: BlockState): String {
-        val id = ForgeRegistries.BLOCKS.getKey(state.block).toString()
-        val properties = state.values.entries
-            .sortedBy { it.key.name }
-            .joinToString(",") { (property, value) -> "${property.name}=${valueName(property, value)}" }
-        return if (properties.isBlank()) id else "$id[$properties]"
+    private fun baseBannerItem(id: Int): Item = when (id and 15) {
+        0 -> Items.WHITE_BANNER
+        1 -> Items.ORANGE_BANNER
+        2 -> Items.MAGENTA_BANNER
+        3 -> Items.LIGHT_BLUE_BANNER
+        4 -> Items.YELLOW_BANNER
+        5 -> Items.LIME_BANNER
+        6 -> Items.PINK_BANNER
+        7 -> Items.GRAY_BANNER
+        8 -> Items.LIGHT_GRAY_BANNER
+        9 -> Items.CYAN_BANNER
+        10 -> Items.PURPLE_BANNER
+        11 -> Items.BLUE_BANNER
+        12 -> Items.BROWN_BANNER
+        13 -> Items.GREEN_BANNER
+        14 -> Items.RED_BANNER
+        else -> Items.BLACK_BANNER
     }
 
-    private fun <T : Comparable<T>> valueName(property: net.minecraft.world.level.block.state.properties.Property<T>, value: Comparable<*>): String =
-        @Suppress("UNCHECKED_CAST")
-        property.getName(value as T)
+    private data class OfficerColor(val formatting: ChatFormatting, val vector: Vector3f)
 
-    private fun jitter(pos: BlockPos, level: ServerLevel, radius: Int): BlockPos {
-        val dx = level.random.nextInt(radius * 2 + 1) - radius
-        val dz = level.random.nextInt(radius * 2 + 1) - radius
-        val x = pos.x + dx
-        val z = pos.z + dz
-        val y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z)
-        val candidate = BlockPos(x, y, z)
-        return if (validSpawnSurface(level, candidate)) candidate else pos
+    private fun colorForOfficer(id: UUID): OfficerColor {
+        val palette = listOf(
+            OfficerColor(ChatFormatting.RED, Vector3f(1.0f, 0.2f, 0.2f)),
+            OfficerColor(ChatFormatting.GOLD, Vector3f(1.0f, 0.75f, 0.1f)),
+            OfficerColor(ChatFormatting.YELLOW, Vector3f(0.95f, 0.95f, 0.25f)),
+            OfficerColor(ChatFormatting.GREEN, Vector3f(0.2f, 0.9f, 0.2f)),
+            OfficerColor(ChatFormatting.AQUA, Vector3f(0.2f, 0.85f, 0.95f)),
+            OfficerColor(ChatFormatting.BLUE, Vector3f(0.3f, 0.45f, 1.0f)),
+            OfficerColor(ChatFormatting.LIGHT_PURPLE, Vector3f(0.95f, 0.35f, 1.0f)),
+            OfficerColor(ChatFormatting.WHITE, Vector3f(0.95f, 0.95f, 0.95f)),
+        )
+        val idx = ((id.mostSignificantBits xor id.leastSignificantBits).toInt() and Int.MAX_VALUE) % palette.size
+        return palette[idx]
     }
 }
