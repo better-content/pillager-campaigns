@@ -215,6 +215,7 @@ object PillagerCampaignsEvents {
                     formatEta(remainingTicks)
                 }
                 CampaignState.READY_TO_MATERIALIZE -> "ready"
+                CampaignState.MATERIALIZING -> "materializing"
                 CampaignState.ACTIVE -> "active"
                 CampaignState.RESOLVED -> "resolved"
             }

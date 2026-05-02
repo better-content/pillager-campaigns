@@ -55,13 +55,22 @@ object PillagerRuntime {
         }.isNotEmpty()
     }
 
-    fun materializeFixedSquad(level: ServerLevel, campaign: PillagerCampaign, base: PillagerBase, officerRecord: PillagerOfficer, player: ServerPlayer, x: Double, y: Double, z: Double): Int {
+    fun countLiveMembers(level: ServerLevel, memberIds: Collection<UUID>): Int {
+        if (memberIds.isEmpty()) return 0
+        val idSet = memberIds.toHashSet()
+        return level.getEntitiesOfClass(Mob::class.java, AABB.ofSize(Vec3.ZERO, 60_000_000.0, 4096.0, 60_000_000.0)) { candidate ->
+            candidate.isAlive && candidate.uuid in idSet
+        }.size
+    }
+
+    fun materializeFixedSquad(level: ServerLevel, campaign: PillagerCampaign, base: PillagerBase, officerRecord: PillagerOfficer, player: ServerPlayer, x: Double, y: Double, z: Double): List<UUID> {
         val random = Random(campaign.loadoutSeed)
-        val officer = createOfficerEntity(level, officerRecord.officerClass) ?: return 0
+        val officer = createOfficerEntity(level, officerRecord.officerClass) ?: return emptyList()
         prepareOfficer(officer, campaign, base, officerRecord, x, y, z, random, campaign.difficultySnapshot)
         level.addFreshEntity(officer)
+        val spawnedIds = mutableListOf<UUID>()
+        spawnedIds += officer.uuid
 
-        var spawned = 1
         val memberCount = CampaignDifficultyRules.memberCountForDifficulty(campaign.difficultySnapshot)
         repeat(memberCount) {
             val memberType = CampaignDifficultyRules.chooseMemberType(campaign.difficultySnapshot, officerRecord.preferenceGraph, random)
@@ -72,9 +81,9 @@ object PillagerRuntime {
             prepareFollower(mob, campaign, officerRecord, x + level.random.nextDouble() * 3.0 - 1.5, y, z + level.random.nextDouble() * 3.0 - 1.5, random, campaign.difficultySnapshot)
             mob.target = player
             level.addFreshEntity(mob)
-            spawned++
+            spawnedIds += mob.uuid
         }
-        return spawned
+        return spawnedIds
     }
 
     fun keepSquadCohesive(level: ServerLevel, mob: Mob) {

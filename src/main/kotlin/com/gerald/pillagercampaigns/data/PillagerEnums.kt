@@ -23,6 +23,7 @@ enum class OfficerClass {
 enum class CampaignState {
     TRAVELING,
     READY_TO_MATERIALIZE,
+    MATERIALIZING,
     ACTIVE,
     RESOLVED,
 }

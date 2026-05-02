@@ -16,10 +16,13 @@ import java.util.UUID
 import java.util.concurrent.ThreadLocalRandom
 
 object PillagerCampaignEngine {
+    private const val MATERIALIZE_LEASE_TICKS: Long = 200L
+    private const val MIN_ACTIVE_LIVE_MEMBERS: Int = 1
+
     fun tick(server: MinecraftServer, data: PillagerWorldData, now: Long) {
         discover(server, data, now)
         dispatch(server, data)
-        advance(server, data)
+        advance(server, data, now)
     }
 
     private fun discover(server: MinecraftServer, data: PillagerWorldData, now: Long) {
@@ -65,6 +68,9 @@ object PillagerCampaignEngine {
                 loadoutSeed = ThreadLocalRandom.current().nextLong(),
                 tickDebt = 0,
                 state = CampaignState.TRAVELING,
+                materializeAttemptId = null,
+                materializingUntilTick = 0L,
+                squadMemberIds = mutableListOf(),
             )
             officer.state = OfficerState.DEPLOYED
             data.campaigns[campaign.id] = campaign
@@ -72,17 +78,46 @@ object PillagerCampaignEngine {
         }
     }
 
-    private fun advance(server: MinecraftServer, data: PillagerWorldData) {
+    private fun advance(server: MinecraftServer, data: PillagerWorldData, now: Long) {
         val speed = PillagerCampaignsConfig.campaignSpeedTicksPerChunk.get()
         val dt = PillagerCampaignsConfig.campaignTickInterval.get()
         val materializeDistance = PillagerCampaignsConfig.materializeDistanceChunks.get()
         val toResolve = mutableListOf<UUID>()
 
         data.campaigns.values.forEach { campaign ->
-            if (campaign.state == CampaignState.RESOLVED || campaign.state == CampaignState.ACTIVE) return@forEach
+            if (campaign.state == CampaignState.RESOLVED) return@forEach
             val player = server.playerList.players.firstOrNull { it.uuid == campaign.targetPlayerId } ?: run {
                 toResolve.add(campaign.id)
                 return@forEach
+            }
+            val level = player.serverLevel()
+            when (campaign.state) {
+                CampaignState.ACTIVE -> {
+                    val alive = PillagerRuntime.countLiveMembers(level, campaign.squadMemberIds)
+                    if (alive < MIN_ACTIVE_LIVE_MEMBERS) {
+                        toResolve.add(campaign.id)
+                    }
+                    return@forEach
+                }
+                CampaignState.MATERIALIZING -> {
+                    val alive = PillagerRuntime.countLiveMembers(level, campaign.squadMemberIds)
+                    if (alive >= MIN_ACTIVE_LIVE_MEMBERS) {
+                        campaign.state = CampaignState.ACTIVE
+                        campaign.materializeAttemptId = null
+                        campaign.materializingUntilTick = 0L
+                        data.markChanged()
+                        return@forEach
+                    }
+                    if (now >= campaign.materializingUntilTick) {
+                        campaign.state = CampaignState.READY_TO_MATERIALIZE
+                        campaign.materializeAttemptId = null
+                        campaign.materializingUntilTick = 0L
+                        campaign.squadMemberIds.clear()
+                        data.markChanged()
+                    }
+                    return@forEach
+                }
+                else -> {}
             }
             if (player.level().dimension().location() != campaign.targetDimension) {
                 campaign.targetDimension = player.level().dimension().location()
@@ -101,8 +136,7 @@ object PillagerCampaignEngine {
                 }
             }
             if (campaign.state == CampaignState.READY_TO_MATERIALIZE) {
-                val level = player.serverLevel()
-                tryMaterialize(level, campaign, player, materializeDistance, data)
+                tryMaterialize(level, campaign, player, materializeDistance, data, now)
             }
         }
         if (toResolve.isNotEmpty()) {
@@ -111,26 +145,42 @@ object PillagerCampaignEngine {
         }
     }
 
-    private fun tryMaterialize(level: ServerLevel, campaign: PillagerCampaign, player: ServerPlayer, distanceChunks: Int, data: PillagerWorldData) {
+    private fun tryMaterialize(level: ServerLevel, campaign: PillagerCampaign, player: ServerPlayer, distanceChunks: Int, data: PillagerWorldData, now: Long) {
+        if (campaign.state == CampaignState.MATERIALIZING && now < campaign.materializingUntilTick) {
+            return
+        }
         if (PillagerRuntime.hasLiveOfficerLeader(level, campaign.officerId) || PillagerRuntime.hasLiveCampaignMember(level, campaign.id)) {
             campaign.state = CampaignState.ACTIVE
             data.markChanged()
             return
         }
+        campaign.state = CampaignState.MATERIALIZING
+        campaign.materializeAttemptId = UUID.randomUUID()
+        campaign.materializingUntilTick = now + MATERIALIZE_LEASE_TICKS
+        campaign.squadMemberIds.clear()
+        data.markChanged()
+
         val pos = PillagerSpawnPlacementRules.findMaterializationPos(level, player, campaign.currentChunkX, campaign.currentChunkZ, distanceChunks) ?: return
         val base = data.bases[campaign.originBaseId] ?: return
         val officer = data.officers[campaign.officerId] ?: return
-        val spawned = PillagerRuntime.materializeFixedSquad(level, campaign, base, officer, player, pos.x + 0.5, pos.y.toDouble(), pos.z + 0.5)
-        if (spawned > 0) {
+        val spawnedIds = PillagerRuntime.materializeFixedSquad(level, campaign, base, officer, player, pos.x + 0.5, pos.y.toDouble(), pos.z + 0.5)
+        if (spawnedIds.isNotEmpty()) {
+            campaign.squadMemberIds.clear()
+            campaign.squadMemberIds.addAll(spawnedIds)
             campaign.state = CampaignState.ACTIVE
+            campaign.materializeAttemptId = null
+            campaign.materializingUntilTick = 0L
             data.markChanged()
-            PillagerCampaignsMod.LOGGER.info("Materialized campaign {} with {} mobs at {},{}", campaign.id, spawned, pos.x, pos.z)
+            PillagerCampaignsMod.LOGGER.info("Materialized campaign {} with {} mobs at {},{}", campaign.id, spawnedIds.size, pos.x, pos.z)
         }
     }
 
     fun resolveCampaign(data: PillagerWorldData, campaignId: UUID) {
         val campaign = data.campaigns[campaignId] ?: return
         campaign.state = CampaignState.RESOLVED
+        campaign.materializeAttemptId = null
+        campaign.materializingUntilTick = 0L
+        campaign.squadMemberIds.clear()
         data.officers[campaign.officerId]?.state = OfficerState.AVAILABLE
         data.markChanged()
     }

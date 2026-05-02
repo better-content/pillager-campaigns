@@ -133,6 +133,9 @@ data class PillagerCampaign(
     var loadoutSeed: Long,
     var tickDebt: Int,
     var state: CampaignState,
+    var materializeAttemptId: UUID?,
+    var materializingUntilTick: Long,
+    var squadMemberIds: MutableList<UUID>,
 ) {
     fun save(): CompoundTag = CompoundTag().also {
         it.putUUID("id", id)
@@ -149,6 +152,15 @@ data class PillagerCampaign(
         it.putLong("loadoutSeed", loadoutSeed)
         it.putInt("tickDebt", tickDebt)
         it.putString("state", state.name)
+        materializeAttemptId?.let { attempt -> it.putUUID("materializeAttemptId", attempt) }
+        it.putLong("materializingUntilTick", materializingUntilTick)
+        val members = ListTag()
+        squadMemberIds.forEach { member ->
+            val entry = CompoundTag()
+            entry.putUUID("id", member)
+            members.add(entry)
+        }
+        it.put("squadMemberIds", members)
     }
 
     companion object {
@@ -167,6 +179,16 @@ data class PillagerCampaign(
             loadoutSeed = if (tag.contains("loadoutSeed")) tag.getLong("loadoutSeed") else tag.getUUID("id").mostSignificantBits xor tag.getUUID("id").leastSignificantBits,
             tickDebt = tag.getInt("tickDebt"),
             state = runCatching { CampaignState.valueOf(tag.getString("state")) }.getOrDefault(CampaignState.TRAVELING),
+            materializeAttemptId = if (tag.hasUUID("materializeAttemptId")) tag.getUUID("materializeAttemptId") else null,
+            materializingUntilTick = if (tag.contains("materializingUntilTick")) tag.getLong("materializingUntilTick") else 0L,
+            squadMemberIds = mutableListOf<UUID>().also { ids ->
+                if (tag.contains("squadMemberIds", Tag.TAG_LIST.toInt())) {
+                    tag.getList("squadMemberIds", Tag.TAG_COMPOUND.toInt()).forEach { raw ->
+                        val entry = raw as CompoundTag
+                        if (entry.hasUUID("id")) ids += entry.getUUID("id")
+                    }
+                }
+            },
         )
     }
 }
