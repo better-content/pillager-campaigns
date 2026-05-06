@@ -20,6 +20,7 @@ import net.minecraft.world.level.chunk.LevelChunk
 import net.minecraftforge.event.RegisterCommandsEvent
 import net.minecraftforge.event.TickEvent
 import net.minecraftforge.event.entity.EntityEvent
+import net.minecraftforge.event.entity.EntityJoinLevelEvent
 import net.minecraftforge.event.entity.living.LivingDeathEvent
 import net.minecraftforge.event.entity.living.LivingEvent
 import net.minecraftforge.event.level.ChunkEvent
@@ -33,6 +34,7 @@ object PillagerCampaignsEvents {
         if (PillagerCampaignsConfig.disableVanillaPatrolSpawning.get()) {
             event.server.gameRules.getRule(GameRules.RULE_DO_PATROL_SPAWNING).set(false, event.server)
         }
+        PillagerRuntime.resetLiveIndexes()
         PillagerWorldData.get(event.server)
     }
 
@@ -79,6 +81,14 @@ object PillagerCampaignsEvents {
     }
 
     @SubscribeEvent
+    fun onEntityJoinLevel(event: EntityJoinLevelEvent) {
+        val mob = event.entity as? Mob ?: return
+        if (!mob.persistentData.hasUUID(PillagerRuntime.OFFICER_TAG)) return
+        PillagerRuntime.registerLiveMob(mob)
+        PillagerRuntime.syncOfficerVisuals(mob)
+    }
+
+    @SubscribeEvent
     fun onLivingDeath(event: LivingDeathEvent) {
         val level = event.entity.level() as? ServerLevel ?: return
         val data = PillagerWorldData.get(level.server)
@@ -98,6 +108,7 @@ object PillagerCampaignsEvents {
 
         val mob = event.entity as? Mob ?: return
         val tag = mob.persistentData
+        PillagerRuntime.forgetLiveMob(mob)
         if (tag.hasUUID(PillagerRuntime.OFFICER_TAG)) {
             val officer = data.officers[tag.getUUID(PillagerRuntime.OFFICER_TAG)]
             val base = officer?.let { data.bases[it.homeBaseId] }
@@ -160,7 +171,14 @@ object PillagerCampaignsEvents {
                 .then(Commands.literal("status").executes { status(it.source) })
                 .then(Commands.literal("tick_once").executes { tickOnce(it.source) })
                 .then(Commands.literal("list").then(Commands.literal("bases").executes { listBases(it.source) }))
-                .then(Commands.literal("list").then(Commands.literal("campaigns").executes { listCampaigns(it.source) }))
+                .then(
+                    Commands.literal("list")
+                        .then(
+                            Commands.literal("campaigns")
+                                .executes { listCampaigns(it.source) }
+                                .then(Commands.literal("closed").executes { listClosedCampaigns(it.source) }),
+                        ),
+                )
                 .then(Commands.literal("list").then(Commands.literal("officers").executes { listOfficers(it.source) }))
                 .then(Commands.literal("reset").executes { reset(it.source) }),
         )
@@ -222,6 +240,20 @@ object PillagerCampaignsEvents {
             source.sendSuccess({
                 Component.literal(
                     "  ${campaign.id.toString().take(8)} state=${campaign.state.name.lowercase()} chunk=${campaign.currentChunkX},${campaign.currentChunkZ} target=${campaign.targetChunkX},${campaign.targetChunkZ} eta=$eta"
+                )
+            }, false)
+        }
+        return Command.SINGLE_SUCCESS
+    }
+
+    private fun listClosedCampaigns(source: CommandSourceStack): Int {
+        val data = PillagerWorldData.get(source.server)
+        val closed = data.campaigns.values.filter { it.state == CampaignState.RESOLVED }
+        source.sendSuccess({ Component.literal("Closed Campaigns (${closed.size})") }, false)
+        closed.forEach { campaign ->
+            source.sendSuccess({
+                Component.literal(
+                    "  ${campaign.id.toString().take(8)} state=${campaign.state.name.lowercase()} chunk=${campaign.currentChunkX},${campaign.currentChunkZ} target=${campaign.targetChunkX},${campaign.targetChunkZ}"
                 )
             }, false)
         }

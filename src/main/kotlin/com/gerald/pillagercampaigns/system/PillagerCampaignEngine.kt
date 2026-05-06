@@ -198,6 +198,7 @@ object PillagerCampaignEngine {
     fun collapseBase(data: PillagerWorldData, baseId: UUID) {
         val base = data.bases[baseId] ?: return
         base.defeated = true
+        data.factions[base.factionId]?.bossEntityId = null
         val campaignIds = data.campaigns.values
             .filter { it.originBaseId == baseId && it.state != CampaignState.RESOLVED }
             .map { it.id }

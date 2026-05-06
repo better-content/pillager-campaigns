@@ -10,6 +10,7 @@ object PillagerCampaignsConfig {
     val baseDiscoveryIntervalTicks: ForgeConfigSpec.IntValue
     val baseDiscoveryRadiusChunks: ForgeConfigSpec.IntValue
     val maxBaseDiscoveriesPerTick: ForgeConfigSpec.IntValue
+    val maxBaseDiscoveryProbePointsPerPlayer: ForgeConfigSpec.IntValue
     val structureBaseIds: ForgeConfigSpec.ConfigValue<List<out String>>
     val campaignTickInterval: ForgeConfigSpec.IntValue
     val campaignSpeedTicksPerChunk: ForgeConfigSpec.IntValue
@@ -23,8 +24,9 @@ object PillagerCampaignsConfig {
         enabled = b.define("enabled", true)
         disableVanillaPatrolSpawning = b.define("disable_vanilla_patrol_spawning", true)
         baseDiscoveryIntervalTicks = b.defineInRange("base_discovery_interval_ticks", 200, 20, 12000)
-        baseDiscoveryRadiusChunks = b.defineInRange("base_discovery_radius_chunks", 512, 8, 4096)
+        baseDiscoveryRadiusChunks = b.defineInRange("base_discovery_radius_chunks", 1000, 8, 4096)
         maxBaseDiscoveriesPerTick = b.defineInRange("max_base_discoveries_per_tick", 2, 1, 32)
+        maxBaseDiscoveryProbePointsPerPlayer = b.defineInRange("max_base_discovery_probe_points_per_player", 6, 1, 16)
         b.pop()
 
         b.push("campaigns")

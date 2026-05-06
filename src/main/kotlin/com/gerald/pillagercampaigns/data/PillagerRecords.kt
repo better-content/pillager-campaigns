@@ -12,12 +12,14 @@ data class PillagerFaction(
     var name: String,
     var bannerSeed: Int,
     var bossOfficerId: UUID?,
+    var bossEntityId: UUID? = null,
 ) {
     fun save(): CompoundTag = CompoundTag().also {
         it.putUUID("id", id)
         it.putString("name", name)
         it.putInt("bannerSeed", bannerSeed)
         bossOfficerId?.let { boss -> it.putUUID("bossOfficerId", boss) }
+        bossEntityId?.let { boss -> it.putUUID("bossEntityId", boss) }
     }
 
     companion object {
@@ -26,6 +28,7 @@ data class PillagerFaction(
             name = tag.getString("name"),
             bannerSeed = tag.getInt("bannerSeed"),
             bossOfficerId = if (tag.hasUUID("bossOfficerId")) tag.getUUID("bossOfficerId") else null,
+            bossEntityId = if (tag.hasUUID("bossEntityId")) tag.getUUID("bossEntityId") else null,
         )
     }
 }

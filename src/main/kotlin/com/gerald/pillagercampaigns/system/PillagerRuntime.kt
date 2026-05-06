@@ -36,31 +36,84 @@ object PillagerRuntime {
     const val FACTION_TAG = "PillagerFactionId"
     const val BOSS_TAG = "PillagerFactionBoss"
     const val RANK_TAG = "PillagerOfficerRank"
+    const val OFFICER_NAME_TAG = "PillagerOfficerName"
+    const val OFFICER_TITLE_TAG = "PillagerOfficerTitle"
     const val SCALE_TAG = "PillagerOfficerScale"
 
+    private val liveOfficerLeaderEntityIds: MutableMap<UUID, UUID> = linkedMapOf()
+    private val liveCampaignMemberEntityIds: MutableMap<UUID, MutableSet<UUID>> = linkedMapOf()
+
+    fun resetLiveIndexes() {
+        liveOfficerLeaderEntityIds.clear()
+        liveCampaignMemberEntityIds.clear()
+    }
+
+    fun registerLiveMob(mob: Mob) {
+        val tag = mob.persistentData
+        if (tag.hasUUID(CAMPAIGN_TAG)) {
+            liveCampaignMemberEntityIds.getOrPut(tag.getUUID(CAMPAIGN_TAG)) { linkedSetOf() }.add(mob.uuid)
+        }
+        if (tag.hasUUID(OFFICER_TAG) && tag.getBoolean(LEADER_TAG)) {
+            liveOfficerLeaderEntityIds[tag.getUUID(OFFICER_TAG)] = mob.uuid
+        }
+    }
+
+    fun forgetLiveMob(mob: Mob) {
+        val tag = mob.persistentData
+        if (tag.hasUUID(CAMPAIGN_TAG)) {
+            val members = liveCampaignMemberEntityIds[tag.getUUID(CAMPAIGN_TAG)]
+            members?.remove(mob.uuid)
+            if (members.isNullOrEmpty()) {
+                liveCampaignMemberEntityIds.remove(tag.getUUID(CAMPAIGN_TAG))
+            }
+        }
+        if (tag.hasUUID(OFFICER_TAG) && tag.getBoolean(LEADER_TAG)) {
+            val officerId = tag.getUUID(OFFICER_TAG)
+            if (liveOfficerLeaderEntityIds[officerId] == mob.uuid) {
+                liveOfficerLeaderEntityIds.remove(officerId)
+            }
+        }
+    }
+
     fun hasLiveOfficerLeader(level: ServerLevel, officerId: UUID): Boolean {
-        return level.getEntitiesOfClass(Mob::class.java, AABB.ofSize(Vec3.ZERO, 60_000_000.0, 4096.0, 60_000_000.0)) { candidate ->
-            candidate.isAlive &&
-                candidate.persistentData.hasUUID(OFFICER_TAG) &&
-                candidate.persistentData.getUUID(OFFICER_TAG) == officerId &&
-                candidate.persistentData.getBoolean(LEADER_TAG)
-        }.isNotEmpty()
+        val entityId = liveOfficerLeaderEntityIds[officerId] ?: return false
+        val mob = level.getEntity(entityId) as? Mob ?: run {
+            liveOfficerLeaderEntityIds.remove(officerId)
+            return false
+        }
+        return mob.isAlive &&
+            mob.persistentData.hasUUID(OFFICER_TAG) &&
+            mob.persistentData.getUUID(OFFICER_TAG) == officerId &&
+            mob.persistentData.getBoolean(LEADER_TAG)
     }
 
     fun hasLiveCampaignMember(level: ServerLevel, campaignId: UUID): Boolean {
-        return level.getEntitiesOfClass(Mob::class.java, AABB.ofSize(Vec3.ZERO, 60_000_000.0, 4096.0, 60_000_000.0)) { candidate ->
-            candidate.isAlive &&
-                candidate.persistentData.hasUUID(CAMPAIGN_TAG) &&
-                candidate.persistentData.getUUID(CAMPAIGN_TAG) == campaignId
-        }.isNotEmpty()
+        val members = liveCampaignMemberEntityIds[campaignId] ?: return false
+        val iterator = members.iterator()
+        while (iterator.hasNext()) {
+            val entityId = iterator.next()
+            val mob = level.getEntity(entityId) as? Mob
+            if (mob != null && mob.isAlive && mob.persistentData.hasUUID(CAMPAIGN_TAG) && mob.persistentData.getUUID(CAMPAIGN_TAG) == campaignId) {
+                return true
+            }
+            iterator.remove()
+        }
+        if (members.isEmpty()) {
+            liveCampaignMemberEntityIds.remove(campaignId)
+        }
+        return false
     }
 
     fun countLiveMembers(level: ServerLevel, memberIds: Collection<UUID>): Int {
         if (memberIds.isEmpty()) return 0
-        val idSet = memberIds.toHashSet()
-        return level.getEntitiesOfClass(Mob::class.java, AABB.ofSize(Vec3.ZERO, 60_000_000.0, 4096.0, 60_000_000.0)) { candidate ->
-            candidate.isAlive && candidate.uuid in idSet
-        }.size
+        var count = 0
+        memberIds.forEach { entityId ->
+            val mob = level.getEntity(entityId) as? Mob
+            if (mob != null && mob.isAlive) {
+                count++
+            }
+        }
+        return count
     }
 
     fun materializeFixedSquad(level: ServerLevel, campaign: PillagerCampaign, base: PillagerBase, officerRecord: PillagerOfficer, player: ServerPlayer, x: Double, y: Double, z: Double): List<UUID> {
@@ -68,6 +121,7 @@ object PillagerRuntime {
         val officer = createOfficerEntity(level, officerRecord.officerClass) ?: return emptyList()
         prepareOfficer(officer, campaign, base, officerRecord, x, y, z, random, campaign.difficultySnapshot)
         level.addFreshEntity(officer)
+        registerLiveMob(officer)
         val spawnedIds = mutableListOf<UUID>()
         spawnedIds += officer.uuid
 
@@ -81,6 +135,7 @@ object PillagerRuntime {
             prepareFollower(mob, campaign, officerRecord, x + level.random.nextDouble() * 3.0 - 1.5, y, z + level.random.nextDouble() * 3.0 - 1.5, random, campaign.difficultySnapshot)
             mob.target = player
             level.addFreshEntity(mob)
+            registerLiveMob(mob)
             spawnedIds += mob.uuid
         }
         return spawnedIds
@@ -90,11 +145,8 @@ object PillagerRuntime {
         val tag = mob.persistentData
         if (!tag.hasUUID(CAMPAIGN_TAG) || tag.getBoolean(LEADER_TAG) || mob.target != null) return
         val officerId = tag.getUUID(OFFICER_TAG)
-        val officer = level.getEntitiesOfClass(Mob::class.java, mob.boundingBox.inflate(40.0)) { candidate ->
-            candidate.persistentData.hasUUID(OFFICER_TAG) &&
-                candidate.persistentData.getUUID(OFFICER_TAG) == officerId &&
-                candidate.persistentData.getBoolean(LEADER_TAG)
-        }.firstOrNull() ?: return
+        val officerEntityId = liveOfficerLeaderEntityIds[officerId] ?: return
+        val officer = level.getEntity(officerEntityId) as? Mob ?: return
         val dist = mob.distanceToSqr(officer)
         if (dist > 48.0 * 48.0) {
             mob.moveTo(officer.x + 0.5, officer.y, officer.z + 0.5, mob.yRot, mob.xRot)
@@ -104,6 +156,18 @@ object PillagerRuntime {
     }
 
     fun ensureBossAtBase(level: ServerLevel, base: PillagerBase, faction: PillagerFaction, bossOfficer: PillagerOfficer) {
+        faction.bossEntityId?.let { cachedId ->
+            val cachedBoss = level.getEntity(cachedId) as? Mob
+            if (cachedBoss != null &&
+                cachedBoss.isAlive &&
+                cachedBoss.persistentData.hasUUID(OFFICER_TAG) &&
+                cachedBoss.persistentData.getUUID(OFFICER_TAG) == bossOfficer.id &&
+                cachedBoss.persistentData.getBoolean(BOSS_TAG)
+            ) {
+                registerLiveMob(cachedBoss)
+                return
+            }
+        }
         if (hasLiveOfficerLeader(level, bossOfficer.id)) return
         val boss = EntityType.VINDICATOR.create(level) ?: return
         boss.moveTo(base.center.x + 0.5, base.center.y.toDouble(), base.center.z + 0.5, boss.yRot, boss.xRot)
@@ -117,6 +181,9 @@ object PillagerRuntime {
         boss.setItemSlot(EquipmentSlot.MAINHAND, ItemStack(Items.IRON_AXE))
         applyOfficerVisuals(boss, bossOfficer)
         level.addFreshEntity(boss)
+        faction.bossEntityId = boss.uuid
+        registerLiveMob(boss)
+        syncOfficerVisuals(boss)
     }
 
     fun pushOfficerTowardPlayer(level: ServerLevel, mob: Mob) {
@@ -188,10 +255,24 @@ object PillagerRuntime {
 
     private fun applyOfficerVisuals(entity: LivingEntity, officer: PillagerOfficer) {
         val color = colorForOfficer(officer.id)
+        entity.persistentData.putString(OFFICER_NAME_TAG, officer.name)
+        entity.persistentData.putString(OFFICER_TITLE_TAG, officer.title)
         entity.customName = Component.literal("${officer.name} ${officer.title}").withStyle(color.formatting)
         entity.isCustomNameVisible = true
         val scale = 1.2 + (officer.rank.ordinal * 0.1)
         entity.persistentData.putDouble(SCALE_TAG, scale)
+    }
+
+    fun syncOfficerVisuals(entity: LivingEntity) {
+        val tag = entity.persistentData
+        if (!tag.hasUUID(OFFICER_TAG)) return
+        val name = tag.getString(OFFICER_NAME_TAG)
+        val title = tag.getString(OFFICER_TITLE_TAG)
+        if (name.isBlank() && title.isBlank()) return
+        val color = colorForOfficer(tag.getUUID(OFFICER_TAG))
+        val display = if (title.isBlank()) name else "$name $title"
+        entity.customName = Component.literal(display).withStyle(color.formatting)
+        entity.isCustomNameVisible = true
     }
 
     private fun createOfficerEntity(level: ServerLevel, officerClass: OfficerClass): Mob? = when (officerClass) {
