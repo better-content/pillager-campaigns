@@ -45,6 +45,7 @@ minecraft {
             workingDirectory(project.file("run"))
             property("forge.logging.markers", "REGISTRIES")
             property("forge.logging.console.level", "info")
+            property("forge.enabledGameTestNamespaces", "$modId,minecraft")
             mods {
                 create(modId) {
                     source(sourceSets.main.get())
@@ -53,6 +54,7 @@ minecraft {
         }
         create("client")
         create("server") { arg("--nogui") }
+        create("gameTestServer")
     }
 }
 
@@ -88,6 +90,25 @@ tasks.processResources {
     }
 }
 
+tasks.jar {
+    from("src/compat/resources")
+}
+
+tasks.named<Jar>("sourcesJar") {
+    from("src/compat/resources")
+}
+
+val syncGameTestStructures by tasks.registering(Copy::class) {
+    from("gameteststructures")
+    into(layout.projectDirectory.dir("run/gameteststructures"))
+}
+
+tasks.withType<JavaExec>().configureEach {
+    if (name == "runGameTestServer") {
+        dependsOn(syncGameTestStructures)
+    }
+}
+
 tasks.withType<JavaCompile>().configureEach {
     options.release.set(17)
 }
@@ -114,7 +135,12 @@ tasks.jacocoTestReport {
                         "**/PillagerCampaignEngine*",
                         "**/PillagerRuntime*",
                         "**/PillagerBaseDiscoveryService*",
+                        "**/PillagerBaseMaterializer*",
+                        "**/PillagerDiscoveryCoordinator*",
+                        "**/PillagerSettlementScheduler*",
                         "**/PillagerSpawnPlacementRules*",
+                        "**/gametest/**",
+                        "**/sam/api/**",
                     )
                 }
             },

@@ -2,6 +2,7 @@ package com.gerald.pillagercampaigns.system
 
 import com.gerald.pillagercampaigns.PillagerCampaignsConfig
 import com.gerald.pillagercampaigns.PillagerCampaignsMod
+import com.gerald.pillagercampaigns.data.BaseState
 import com.gerald.pillagercampaigns.data.CampaignState
 import com.gerald.pillagercampaigns.data.OfficerRank
 import com.gerald.pillagercampaigns.data.OfficerState
@@ -18,18 +19,17 @@ import java.util.concurrent.ThreadLocalRandom
 object PillagerCampaignEngine {
     private const val MATERIALIZE_LEASE_TICKS: Long = 200L
     private const val MIN_ACTIVE_LIVE_MEMBERS: Int = 1
+    private var dispatchCursor: Int = 0
 
     fun tick(server: MinecraftServer, data: PillagerWorldData, now: Long) {
-        discover(server, data, now)
         dispatch(server, data)
         advance(server, data, now)
     }
 
-    private fun discover(server: MinecraftServer, data: PillagerWorldData, now: Long) {
-        if (now - data.lastDiscoveryTick < PillagerCampaignsConfig.baseDiscoveryIntervalTicks.get()) return
-        data.lastDiscoveryTick = now
-        val level = server.overworld()
-        val added = PillagerBaseDiscoveryService.discoverAroundPlayers(level, data, server.playerList.players, now)
+    fun discoveryTick(server: MinecraftServer, data: PillagerWorldData, now: Long) {
+        val before = data.bases.size
+        PillagerDiscoveryCoordinator.tick(server, data, now)
+        val added = data.bases.size - before
         if (added > 0) {
             PillagerCampaignsMod.LOGGER.info("Discovered {} pillager base(s)", added)
         }
@@ -39,18 +39,30 @@ object PillagerCampaignEngine {
         val maxPerBase = PillagerCampaignsConfig.maxCampaignsPerBase.get()
         val maxRange = PillagerCampaignsConfig.maxCampaignDistanceChunks.get()
         val players = server.playerList.players
-        data.bases.values.forEach { base ->
-            if (base.defeated) return@forEach
-            val existing = data.campaigns.values.count { it.originBaseId == base.id && it.state != CampaignState.RESOLVED }
-            if (existing >= maxPerBase) return@forEach
-            val level = server.allLevels.firstOrNull { it.dimension().location() == base.dimension } ?: return@forEach
-            val target = nearestPlayer(level, players, base.chunkX, base.chunkZ, maxRange) ?: return@forEach
-            val alreadyTargetingPlayer = data.campaigns.values.any {
-                it.originBaseId == base.id &&
-                    it.targetPlayerId == target.uuid &&
-                    it.state != CampaignState.RESOLVED
-            }
-            if (alreadyTargetingPlayer) return@forEach
+        val bases = data.bases.values.toList()
+        if (bases.isEmpty()) return
+        val activeCampaignsByBase = data.campaigns.values
+            .asSequence()
+            .filter { it.state != CampaignState.RESOLVED }
+            .groupingBy { it.originBaseId }
+            .eachCount()
+        val targetedPlayersByBase = data.campaigns.values
+            .asSequence()
+            .filter { it.state != CampaignState.RESOLVED }
+            .groupBy({ it.originBaseId }, { it.targetPlayerId })
+        val budget = PillagerCampaignsConfig.campaignDispatchBasesPerTick.get().coerceAtLeast(1)
+        var inspected = 0
+        while (inspected < budget && inspected < bases.size) {
+            val base = bases[Math.floorMod(dispatchCursor, bases.size)]
+            dispatchCursor++
+            inspected++
+            if (base.defeated || base.state == BaseState.DEFEATED) continue
+            val existing = activeCampaignsByBase[base.id] ?: 0
+            if (existing >= maxPerBase) continue
+            val level = server.allLevels.firstOrNull { it.dimension().location() == base.dimension } ?: continue
+            val target = nearestPlayer(level, players, base.chunkX, base.chunkZ, maxRange) ?: continue
+            val alreadyTargetingPlayer = targetedPlayersByBase[base.id]?.contains(target.uuid) == true
+            if (alreadyTargetingPlayer) continue
             val officer = obtainOfficer(data, base.factionId, base.id, base.difficulty)
             val difficultySnapshot = base.difficulty.coerceAtLeast(0)
             val campaign = PillagerCampaign(
@@ -198,6 +210,7 @@ object PillagerCampaignEngine {
     fun collapseBase(data: PillagerWorldData, baseId: UUID) {
         val base = data.bases[baseId] ?: return
         base.defeated = true
+        base.state = BaseState.DEFEATED
         data.factions[base.factionId]?.bossEntityId = null
         val campaignIds = data.campaigns.values
             .filter { it.originBaseId == baseId && it.state != CampaignState.RESOLVED }

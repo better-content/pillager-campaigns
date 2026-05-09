@@ -9,6 +9,53 @@ import java.util.UUID
 
 class PillagerCampaignSerializationTest {
     @Test
+    fun `base save load roundtrip preserves planned base fields`() {
+        val base = PillagerBase(
+            id = UUID.randomUUID(),
+            factionId = UUID.randomUUID(),
+            dimension = ResourceLocation("minecraft", "overworld"),
+            structureId = ResourceLocation("minecraft", "pillager_outpost"),
+            bannerSeed = 12,
+            difficulty = 3,
+            defeated = false,
+            state = BaseState.PLANNED,
+            form = BaseForm.UNKNOWN,
+            anchorChunkX = 40,
+            anchorChunkZ = -16,
+            chunkX = 40,
+            chunkZ = -16,
+            center = net.minecraft.core.BlockPos(648, 65, -248),
+            lastSeenTick = 123L,
+            materializationAttempts = 4,
+            materializationFailure = BaseMaterializationFailure.NO_SITE,
+            lastMaterializationAttemptTick = 120L,
+            materializationSearchRadius = 12,
+            materializationCursorIndex = 99,
+            materializationBestChunkX = 41,
+            materializationBestChunkZ = -15,
+            materializationBestX = 664,
+            materializationBestY = 72,
+            materializationBestZ = -232,
+            materializationBestScore = 88,
+        )
+
+        val loaded = PillagerBase.load(base.save())
+
+        assertEquals(base.id, loaded.id)
+        assertEquals(BaseState.PLANNED, loaded.state)
+        assertEquals(BaseForm.UNKNOWN, loaded.form)
+        assertEquals(ResourceLocation("minecraft", "pillager_outpost"), loaded.structureId)
+        assertEquals(40, loaded.anchorChunkX)
+        assertEquals(-16, loaded.anchorChunkZ)
+        assertEquals(4, loaded.materializationAttempts)
+        assertEquals(BaseMaterializationFailure.NO_SITE, loaded.materializationFailure)
+        assertEquals(120L, loaded.lastMaterializationAttemptTick)
+        assertEquals(12, loaded.materializationSearchRadius)
+        assertEquals(99, loaded.materializationCursorIndex)
+        assertEquals(88, loaded.materializationBestScore)
+    }
+
+    @Test
     fun `campaign save load roundtrip preserves transactional materialization fields`() {
         val campaignId = UUID.randomUUID()
         val factionId = UUID.randomUUID()

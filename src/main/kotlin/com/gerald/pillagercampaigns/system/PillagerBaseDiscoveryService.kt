@@ -1,159 +1,109 @@
 package com.gerald.pillagercampaigns.system
 
-import com.gerald.pillagercampaigns.PillagerCampaignsConfig
+import com.gerald.pillagercampaigns.data.BaseForm
+import com.gerald.pillagercampaigns.data.BaseMaterializationFailure
+import com.gerald.pillagercampaigns.data.BaseState
 import com.gerald.pillagercampaigns.data.OfficerRank
 import com.gerald.pillagercampaigns.data.OfficerState
 import com.gerald.pillagercampaigns.data.PillagerBase
 import com.gerald.pillagercampaigns.data.PillagerWorldData
 import com.gerald.pillagercampaigns.util.PillagerIdentity
 import net.minecraft.core.BlockPos
-import net.minecraft.core.HolderSet
-import net.minecraft.core.registries.Registries
-import net.minecraft.resources.ResourceKey
-import net.minecraft.resources.ResourceLocation
 import net.minecraft.server.level.ServerLevel
-import net.minecraft.server.level.ServerPlayer
 import net.minecraft.world.level.ChunkPos
-import net.minecraft.world.level.levelgen.Heightmap
-import java.util.UUID
 
 object PillagerBaseDiscoveryService {
-    fun discoverAroundPlayers(level: ServerLevel, data: PillagerWorldData, players: List<ServerPlayer>, now: Long): Int {
-        val radius = effectiveDiscoveryRadius(
-            baseDiscoveryRadiusChunks = PillagerCampaignsConfig.baseDiscoveryRadiusChunks.get(),
-            maxCampaignDistanceChunks = PillagerCampaignsConfig.maxCampaignDistanceChunks.get(),
+    fun registerPlannedBase(level: ServerLevel, data: PillagerWorldData, candidate: PillagerBasePlacementRules.Candidate, now: Long): Boolean {
+        if (data.bases.containsKey(candidate.id)) return false
+        if (!PillagerBaseMaterializer.canMaterialize(level, candidate.structureId)) return false
+        val existsAtAnchor = data.bases.values.any {
+            it.dimension == candidate.dimension &&
+                it.anchorChunkX == candidate.chunkX &&
+                it.anchorChunkZ == candidate.chunkZ &&
+                it.state != BaseState.DEFEATED
+        }
+        if (existsAtAnchor) return false
+
+        val faction = PillagerIdentity.makeFaction(level.seed xor ChunkPos.asLong(candidate.chunkX, candidate.chunkZ))
+        data.factions.putIfAbsent(faction.id, faction)
+        data.bases[candidate.id] = PillagerBase(
+            id = candidate.id,
+            factionId = faction.id,
+            dimension = candidate.dimension,
+            structureId = candidate.structureId,
+            bannerSeed = (level.seed xor candidate.id.mostSignificantBits xor candidate.id.leastSignificantBits).toInt(),
+            difficulty = 0,
+            defeated = false,
+            state = BaseState.PLANNED,
+            form = BaseForm.UNKNOWN,
+            anchorChunkX = candidate.chunkX,
+            anchorChunkZ = candidate.chunkZ,
+            chunkX = candidate.chunkX,
+            chunkZ = candidate.chunkZ,
+            center = approximateCenter(level, candidate.chunkX, candidate.chunkZ),
+            lastSeenTick = now,
+            materializationAttempts = 0,
+            materializationFailure = BaseMaterializationFailure.NONE,
+            lastMaterializationAttemptTick = 0L,
+            materializationSearchRadius = -1,
+            materializationCursorIndex = 0,
+            materializationBestChunkX = 0,
+            materializationBestChunkZ = 0,
+            materializationBestX = 0,
+            materializationBestY = 0,
+            materializationBestZ = 0,
+            materializationBestScore = Int.MIN_VALUE,
         )
-        val maxAdds = PillagerCampaignsConfig.maxBaseDiscoveriesPerTick.get()
-        val maxProbePoints = PillagerCampaignsConfig.maxBaseDiscoveryProbePointsPerPlayer.get()
-        val structureIds = PillagerCampaignsConfig.structureBaseIds.get().mapNotNull { ResourceLocation.tryParse(it as String) }
-        if (structureIds.isEmpty()) return 0
-        val registry = level.registryAccess().registryOrThrow(Registries.STRUCTURE)
-        val structures = structureIds.mapNotNull { id ->
-            val key = ResourceKey.create(Registries.STRUCTURE, id)
-            registry.getHolder(key).orElse(null)
-        }
-        if (structures.isEmpty()) return 0
-        val holderSet = HolderSet.direct(structures)
-
-        var added = 0
-        for (player in players) {
-            if (added >= maxAdds) break
-            val probes = buildProbePoints(player.blockPosition(), radius, maxProbePoints)
-            val seenChunkKeys = HashSet<String>()
-            for (probe in probes) {
-                if (added >= maxAdds) break
-                val found = level.chunkSource.generator.findNearestMapStructure(level, holderSet, probe, radius, false) ?: continue
-                val chunk = ChunkPos(found.first)
-                val key = "${level.dimension().location()}:${chunk.x},${chunk.z}"
-                if (!seenChunkKeys.add(key)) continue
-                val exists = data.bases.values.any { it.dimension == level.dimension().location() && it.chunkX == chunk.x && it.chunkZ == chunk.z }
-                if (exists) continue
-                val faction = PillagerIdentity.makeFaction(level.seed xor ChunkPos.asLong(chunk.x, chunk.z))
-                data.factions.putIfAbsent(faction.id, faction)
-                val baseId = UUID.nameUUIDFromBytes("pillagercampaigns:base:$key".toByteArray())
-                data.bases.putIfAbsent(
-                    baseId,
-                    PillagerBase(
-                        id = baseId,
-                        factionId = faction.id,
-                        dimension = level.dimension().location(),
-                        bannerSeed = (level.seed xor baseId.mostSignificantBits xor baseId.leastSignificantBits).toInt(),
-                        difficulty = 0,
-                        defeated = false,
-                        chunkX = chunk.x,
-                        chunkZ = chunk.z,
-                        center = BlockPos(
-                            chunk.middleBlockX,
-                            level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, chunk.middleBlockX, chunk.middleBlockZ),
-                            chunk.middleBlockZ,
-                        ),
-                        lastSeenTick = now,
-                    ),
-                )
-                val liveFaction = data.factions[faction.id] ?: faction
-                if (liveFaction.bossOfficerId == null || data.officers[liveFaction.bossOfficerId] == null) {
-                    val boss = PillagerIdentity.makeOfficer(liveFaction, baseId, level.seed xor baseId.mostSignificantBits, rank = OfficerRank.WARLORD)
-                    boss.title = "the Warlord"
-                    boss.state = OfficerState.AVAILABLE
-                    boss.officerClass = CampaignDifficultyRules.officerClassForDifficulty(0)
-                    boss.preferenceGraph.putAll(CampaignDifficultyRules.defaultPreferenceGraph(level.seed xor baseId.mostSignificantBits))
-                    data.officers[boss.id] = boss
-                    liveFaction.bossOfficerId = boss.id
-                }
-                added++
-            }
-        }
-        if (added > 0) data.markChanged()
-        return added
+        ensureBossOfficer(level, data, candidate.id, faction.id)
+        PillagerSettlementScheduler.onBaseRegistered(data.bases.getValue(candidate.id))
+        data.markChanged()
+        return true
     }
 
-    internal fun buildProbePoints(origin: BlockPos, radiusChunks: Int, maxProbes: Int): List<BlockPos> {
-        val maxR = radiusChunks.coerceAtLeast(1)
-        val candidateOffsets = generateCandidateOffsets(maxR, maxProbes)
-        val orderedOffsets = orderByFarthestFromExisting(candidateOffsets, maxProbes)
-        return orderedOffsets.map { (dx, dz) ->
-            BlockPos(
-                origin.x + dx * 16,
-                origin.y,
-                origin.z + dz * 16,
-            )
-        }
+    fun markMaterialized(data: PillagerWorldData, base: PillagerBase, site: PillagerBaseMaterializer.Site, now: Long) {
+        base.state = BaseState.MATERIALIZED
+        base.form = BaseForm.JIGSAW_OUTPOST
+        base.chunkX = site.chunkX
+        base.chunkZ = site.chunkZ
+        base.center = site.center
+        base.lastSeenTick = now
+        base.materializationAttempts = 0
+        base.materializationFailure = BaseMaterializationFailure.NONE
+        base.lastMaterializationAttemptTick = now
+        resetMaterializationSearch(base)
+        PillagerSettlementScheduler.onBaseMaterialized(base)
+        data.markChanged()
     }
 
-    internal fun generateCandidateOffsets(maxR: Int, budget: Int): List<Pair<Int, Int>> {
-        val offsets = LinkedHashSet<Pair<Int, Int>>()
-        val ringCount = budget.coerceAtLeast(1).coerceAtMost(12)
-        val ringStep = (maxR / (ringCount + 1)).coerceAtLeast(1)
-        offsets.add(0 to 0)
-        for (ring in 1..ringCount) {
-            val r = ring * ringStep
-            val axisStep = kotlin.math.max(1, r / 4)
-            for (dx in -r..r step axisStep) {
-                offsets.add(dx to r)
-                offsets.add(dx to -r)
-            }
-            for (dz in (-r + axisStep) until r step axisStep) {
-                offsets.add(r to dz)
-                offsets.add(-r to dz)
-            }
-        }
-        return offsets.toList()
-    }
-
-    internal fun orderByFarthestFromExisting(points: List<Pair<Int, Int>>, maxPoints: Int): List<Pair<Int, Int>> {
-        if (points.isEmpty()) {
-            return emptyList()
-        }
-        val remaining = points.toMutableList()
-        val ordered = ArrayList<Pair<Int, Int>>(maxPoints)
-        var current = remaining.removeAt(0)
-        ordered.add(current)
-        while (ordered.size < maxPoints && remaining.isNotEmpty()) {
-            var bestIndex = 0
-            var bestScore = -1L
-            for (i in remaining.indices) {
-                val candidate = remaining[i]
-                var score = 0L
-                for (visited in ordered) {
-                    score += manhattan(candidate, visited)
-                }
-                if (score > bestScore) {
-                    bestScore = score
-                    bestIndex = i
-                }
-            }
-            current = remaining.removeAt(bestIndex)
-            ordered.add(current)
-        }
-        return ordered
-    }
-
-    internal fun manhattan(a: Pair<Int, Int>, b: Pair<Int, Int>): Long {
-        return (a.first - b.first).let { if (it < 0) -it else it } +
-            (a.second - b.second).let { if (it < 0) -it else it }.toLong()
+    fun resetMaterializationSearch(base: PillagerBase) {
+        base.materializationSearchRadius = -1
+        base.materializationCursorIndex = 0
+        base.materializationBestChunkX = 0
+        base.materializationBestChunkZ = 0
+        base.materializationBestX = 0
+        base.materializationBestY = 0
+        base.materializationBestZ = 0
+        base.materializationBestScore = Int.MIN_VALUE
     }
 
     internal fun effectiveDiscoveryRadius(baseDiscoveryRadiusChunks: Int, maxCampaignDistanceChunks: Int): Int {
-        return maxOf(baseDiscoveryRadiusChunks, maxCampaignDistanceChunks)
+        return maxOf(baseDiscoveryRadiusChunks, maxCampaignDistanceChunks).coerceAtLeast(1)
+    }
+
+    private fun ensureBossOfficer(level: ServerLevel, data: PillagerWorldData, baseId: java.util.UUID, factionId: java.util.UUID) {
+        val faction = data.factions[factionId] ?: return
+        if (faction.bossOfficerId != null && data.officers[faction.bossOfficerId] != null) return
+        val boss = PillagerIdentity.makeOfficer(faction, baseId, level.seed xor baseId.mostSignificantBits, rank = OfficerRank.WARLORD)
+        boss.title = "the Warlord"
+        boss.state = OfficerState.AVAILABLE
+        boss.officerClass = CampaignDifficultyRules.officerClassForDifficulty(0)
+        boss.preferenceGraph.putAll(CampaignDifficultyRules.defaultPreferenceGraph(level.seed xor baseId.mostSignificantBits))
+        data.officers[boss.id] = boss
+        faction.bossOfficerId = boss.id
+    }
+
+    private fun approximateCenter(level: ServerLevel, chunkX: Int, chunkZ: Int): BlockPos {
+        val chunk = ChunkPos(chunkX, chunkZ)
+        return BlockPos(chunk.middleBlockX, level.seaLevel + 1, chunk.middleBlockZ)
     }
 }

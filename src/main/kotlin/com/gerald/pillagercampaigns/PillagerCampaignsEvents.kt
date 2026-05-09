@@ -4,12 +4,19 @@ import com.gerald.pillagercampaigns.data.CampaignState
 import com.gerald.pillagercampaigns.data.PillagerWorldData
 import com.gerald.pillagercampaigns.system.CampaignMath
 import com.gerald.pillagercampaigns.system.PillagerCampaignEngine
+import com.gerald.pillagercampaigns.system.PillagerDiscoveryCoordinator
+import com.gerald.pillagercampaigns.system.PillagerLocateGuard
 import com.gerald.pillagercampaigns.system.PillagerRuntime
+import com.gerald.pillagercampaigns.system.PillagerSettlementScheduler
 import com.mojang.brigadier.Command
 import com.mojang.brigadier.CommandDispatcher
+import com.mojang.brigadier.arguments.StringArgumentType
+import net.minecraft.ChatFormatting
 import net.minecraft.commands.CommandSourceStack
 import net.minecraft.commands.Commands
+import net.minecraft.network.chat.ClickEvent
 import net.minecraft.network.chat.Component
+import net.minecraft.network.chat.HoverEvent
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.world.entity.player.Player
 import net.minecraft.world.entity.Mob
@@ -18,6 +25,7 @@ import net.minecraft.world.item.MapItem
 import net.minecraft.world.level.GameRules
 import net.minecraft.world.level.chunk.LevelChunk
 import net.minecraftforge.event.RegisterCommandsEvent
+import net.minecraftforge.event.CommandEvent
 import net.minecraftforge.event.TickEvent
 import net.minecraftforge.event.entity.EntityEvent
 import net.minecraftforge.event.entity.EntityJoinLevelEvent
@@ -29,13 +37,26 @@ import net.minecraftforge.eventbus.api.SubscribeEvent
 
 object PillagerCampaignsEvents {
     private var lastBossEnsureTick: Long = 0L
+    private var lastMaterializationTick: Long = 0L
+    private const val METRIC_LOG_INTERVAL_TICKS: Long = 200L
+    private const val MATERIALIZATION_INTERVAL_TICKS: Long = 1L
+    private const val PHASE_WARN_THRESHOLD_MS: Double = 25.0
+    private var metricsWindowStartTick: Long = 0L
+    private var metricsSamples: Int = 0
+    private var discoveryTotalMs: Double = 0.0
+    private var campaignTotalMs: Double = 0.0
+    private var bossEnsureTotalMs: Double = 0.0
+    private var discoveryMaxMs: Double = 0.0
+    private var campaignMaxMs: Double = 0.0
+    private var bossEnsureMaxMs: Double = 0.0
     @SubscribeEvent
     fun onServerStarted(event: ServerStartedEvent) {
         if (PillagerCampaignsConfig.disableVanillaPatrolSpawning.get()) {
             event.server.gameRules.getRule(GameRules.RULE_DO_PATROL_SPAWNING).set(false, event.server)
         }
+        PillagerDiscoveryCoordinator.reset()
+        PillagerSettlementScheduler.rebuild(PillagerWorldData.get(event.server))
         PillagerRuntime.resetLiveIndexes()
-        PillagerWorldData.get(event.server)
     }
 
     @SubscribeEvent
@@ -44,14 +65,28 @@ object PillagerCampaignsEvents {
         val server = event.server
         val data = PillagerWorldData.get(server)
         val now = server.overworld().gameTime
+        if (metricsWindowStartTick == 0L) metricsWindowStartTick = now
+
+        val discoveryMs = measureMs { PillagerCampaignEngine.discoveryTick(server, data, now) }
+        recordDiscovery(discoveryMs)
         if (now - data.lastCampaignTick >= PillagerCampaignsConfig.campaignTickInterval.get()) {
             data.lastCampaignTick = now
-            PillagerCampaignEngine.tick(server, data, now)
+            val campaignMs = measureMs { PillagerCampaignEngine.tick(server, data, now) }
+            recordCampaign(campaignMs)
             data.markChanged()
         }
         if (now - lastBossEnsureTick >= 100L) {
             lastBossEnsureTick = now
-            ensureBossPresence(server, data)
+            val ensureMs = measureMs { PillagerSettlementScheduler.ensureBossPresenceSlice(server, data) }
+            recordBossEnsure(ensureMs)
+        }
+        if (now - lastMaterializationTick >= MATERIALIZATION_INTERVAL_TICKS) {
+            lastMaterializationTick = now
+            PillagerSettlementScheduler.tickMaterialization(server, data, now)
+        }
+        if (now - metricsWindowStartTick >= METRIC_LOG_INTERVAL_TICKS) {
+            flushMetricsWindow()
+            metricsWindowStartTick = now
         }
     }
 
@@ -60,14 +95,7 @@ object PillagerCampaignsEvents {
         val level = event.level as? ServerLevel ?: return
         val chunk = event.chunk as? LevelChunk ?: return
         val data = PillagerWorldData.get(level.server)
-        data.bases.values
-            .filter { !it.defeated && it.dimension == level.dimension().location() && it.chunkX == chunk.pos.x && it.chunkZ == chunk.pos.z }
-            .forEach { base ->
-                val faction = data.factions[base.factionId] ?: return@forEach
-                val bossOfficerId = faction.bossOfficerId ?: return@forEach
-                val bossOfficer = data.officers[bossOfficerId] ?: return@forEach
-                PillagerRuntime.ensureBossAtBase(level, base, faction, bossOfficer)
-            }
+        PillagerSettlementScheduler.onChunkLoad(level, data, chunk.pos.x, chunk.pos.z)
     }
 
     @SubscribeEvent
@@ -164,6 +192,21 @@ object PillagerCampaignsEvents {
         register(event.dispatcher)
     }
 
+    @SubscribeEvent
+    fun onCommand(event: CommandEvent) {
+        val blockedTarget = PillagerLocateGuard.blockedTarget(
+            event.parseResults.reader.string,
+            PillagerCampaignsConfig.structureBaseIds.get().map { it.toString() },
+        ) ?: return
+        val source = event.parseResults.context.source
+        source.sendFailure(
+            Component.literal(
+                "Vanilla /locate is disabled for SAM-owned pillager base '$blockedTarget' because it can synchronously probe ungenerated jigsaw structures. Use /sam settlements list instead.",
+            ),
+        )
+        event.isCanceled = true
+    }
+
     private fun register(dispatcher: CommandDispatcher<CommandSourceStack>) {
         dispatcher.register(
             Commands.literal("pillagercampaigns")
@@ -180,7 +223,30 @@ object PillagerCampaignsEvents {
                         ),
                 )
                 .then(Commands.literal("list").then(Commands.literal("officers").executes { listOfficers(it.source) }))
+                .then(
+                    Commands.literal("force_materialize")
+                        .then(
+                            Commands.argument("base", StringArgumentType.word())
+                                .executes { forceMaterialize(it.source, StringArgumentType.getString(it, "base")) }
+                        )
+                )
                 .then(Commands.literal("reset").executes { reset(it.source) }),
+        )
+        dispatcher.register(
+            Commands.literal("sam")
+                .requires { it.hasPermission(2) }
+                .then(Commands.literal("status").executes { status(it.source) })
+                .then(Commands.literal("settlements").then(Commands.literal("list").executes { listBases(it.source) }))
+                .then(
+                    Commands.literal("settlements")
+                        .then(
+                            Commands.literal("materialize")
+                                .then(
+                                    Commands.argument("base", StringArgumentType.word())
+                                        .executes { forceMaterialize(it.source, StringArgumentType.getString(it, "base")) },
+                                ),
+                        ),
+                ),
         )
     }
 
@@ -190,6 +256,8 @@ object PillagerCampaignsEvents {
             Component.literal(
                 "enabled=${PillagerCampaignsConfig.enabled.get()} bases=${data.bases.size} factions=${data.factions.size} officers=${data.officers.size} campaigns=${data.campaigns.values.count { it.state != CampaignState.RESOLVED }}"
             )
+                .append(" ")
+                .append(Component.literal(PillagerSettlementScheduler.statusLine()))
         }, false)
         return Command.SINGLE_SUCCESS
     }
@@ -209,9 +277,29 @@ object PillagerCampaignsEvents {
         source.sendSuccess({ Component.literal("Bases (${data.bases.size})") }, false)
         data.bases.values.forEach { base ->
             source.sendSuccess({
-                Component.literal("  ${base.id.toString().take(8)} dim=${base.dimension} chunk=${base.chunkX},${base.chunkZ} defeated=${base.defeated}")
+                Component.literal(formatBaseLine(base))
+                    .append(" ")
+                    .append(tpLink(base.dimension.toString(), base.center.x, base.center.y, base.center.z))
             }, false)
         }
+        return Command.SINGLE_SUCCESS
+    }
+
+    private fun forceMaterialize(source: CommandSourceStack, basePrefix: String): Int {
+        val data = PillagerWorldData.get(source.server)
+        val matches = data.bases.values.filter { it.id.toString().startsWith(basePrefix, ignoreCase = true) }
+        if (matches.isEmpty()) {
+            source.sendFailure(Component.literal("No base matches prefix '$basePrefix'"))
+            return 0
+        }
+        if (matches.size > 1) {
+            source.sendFailure(Component.literal("Ambiguous base prefix '$basePrefix' (${matches.size} matches)"))
+            return 0
+        }
+        val base = matches.first()
+        PillagerSettlementScheduler.requestMaterialization(base, force = true)
+        data.markChanged()
+        source.sendSuccess({ Component.literal("Queued forced materialization for base ${base.id.toString().take(8)}. Use /sam status to watch progress.") }, true)
         return Command.SINGLE_SUCCESS
     }
 
@@ -238,9 +326,15 @@ object PillagerCampaignsEvents {
                 CampaignState.RESOLVED -> "resolved"
             }
             source.sendSuccess({
+                val currentBlockX = campaign.currentChunkX shl 4
+                val currentBlockZ = campaign.currentChunkZ shl 4
+                val targetBlockX = campaign.targetChunkX shl 4
+                val targetBlockZ = campaign.targetChunkZ shl 4
+                val y = source.position.y.toInt().coerceAtLeast(64)
+                val dim = source.level.dimension().location().toString()
                 Component.literal(
-                    "  ${campaign.id.toString().take(8)} state=${campaign.state.name.lowercase()} chunk=${campaign.currentChunkX},${campaign.currentChunkZ} target=${campaign.targetChunkX},${campaign.targetChunkZ} eta=$eta"
-                )
+                    "  ${campaign.id.toString().take(8)} state=${campaign.state.name.lowercase()} chunk=${campaign.currentChunkX},${campaign.currentChunkZ} current_xz=$currentBlockX,$currentBlockZ target_chunk=${campaign.targetChunkX},${campaign.targetChunkZ} target_xz=$targetBlockX,$targetBlockZ eta=$eta"
+                ).append(" ").append(tpLink(dim, targetBlockX, y, targetBlockZ))
             }, false)
         }
         return Command.SINGLE_SUCCESS
@@ -252,9 +346,15 @@ object PillagerCampaignsEvents {
         source.sendSuccess({ Component.literal("Closed Campaigns (${closed.size})") }, false)
         closed.forEach { campaign ->
             source.sendSuccess({
+                val currentBlockX = campaign.currentChunkX shl 4
+                val currentBlockZ = campaign.currentChunkZ shl 4
+                val targetBlockX = campaign.targetChunkX shl 4
+                val targetBlockZ = campaign.targetChunkZ shl 4
+                val y = source.position.y.toInt().coerceAtLeast(64)
+                val dim = source.level.dimension().location().toString()
                 Component.literal(
-                    "  ${campaign.id.toString().take(8)} state=${campaign.state.name.lowercase()} chunk=${campaign.currentChunkX},${campaign.currentChunkZ} target=${campaign.targetChunkX},${campaign.targetChunkZ}"
-                )
+                    "  ${campaign.id.toString().take(8)} state=${campaign.state.name.lowercase()} chunk=${campaign.currentChunkX},${campaign.currentChunkZ} current_xz=$currentBlockX,$currentBlockZ target_chunk=${campaign.targetChunkX},${campaign.targetChunkZ} target_xz=$targetBlockX,$targetBlockZ"
+                ).append(" ").append(tpLink(dim, targetBlockX, y, targetBlockZ))
             }, false)
         }
         return Command.SINGLE_SUCCESS
@@ -272,11 +372,34 @@ object PillagerCampaignsEvents {
         val data = PillagerWorldData.get(source.server)
         source.sendSuccess({ Component.literal("Officers (${data.officers.size})") }, false)
         data.officers.values.forEach { officer ->
+            val homeBase = data.bases[officer.homeBaseId]
+            val homePos = homeBase?.center?.let { "${it.x},${it.y},${it.z}" } ?: "unknown"
             source.sendSuccess({
-                Component.literal("  ${officer.id.toString().take(8)} ${officer.name} ${officer.title} rank=${officer.rank.name.lowercase()} state=${officer.state.name.lowercase()}")
+                val line = Component.literal(
+                    "  ${officer.id.toString().take(8)} ${officer.name} ${officer.title} rank=${officer.rank.name.lowercase()} state=${officer.state.name.lowercase()} home_base_xyz=$homePos"
+                )
+                if (homeBase != null) {
+                    line.append(" ").append(tpLink(homeBase.dimension.toString(), homeBase.center.x, homeBase.center.y, homeBase.center.z))
+                }
+                line
             }, false)
         }
         return Command.SINGLE_SUCCESS
+    }
+
+    private fun tpLink(dimensionId: String, x: Int, y: Int, z: Int): Component {
+        val command = "/execute in $dimensionId run tp @s $x $y $z"
+        return Component.literal("[tp]").withStyle { style ->
+            style.withColor(ChatFormatting.AQUA)
+                .withUnderlined(true)
+                .withClickEvent(ClickEvent(ClickEvent.Action.RUN_COMMAND, command))
+                .withHoverEvent(HoverEvent(HoverEvent.Action.SHOW_TEXT, Component.literal(command)))
+        }
+    }
+
+    internal fun formatBaseLine(base: com.gerald.pillagercampaigns.data.PillagerBase): String {
+        val center = "${base.center.x},${base.center.y},${base.center.z}"
+        return "  ${base.id.toString().take(8)} dim=${base.dimension} state=${base.state.name.lowercase()} form=${base.form.name.lowercase()} anchor_chunk=${base.anchorChunkX},${base.anchorChunkZ} chunk=${base.chunkX},${base.chunkZ} center_xyz=$center attempts=${base.materializationAttempts} failure=${base.materializationFailure.name.lowercase()}"
     }
 
     private fun reset(source: CommandSourceStack): Int {
@@ -287,27 +410,69 @@ object PillagerCampaignsEvents {
         data.campaigns.clear()
         data.lastCampaignTick = 0L
         data.lastDiscoveryTick = 0L
+        PillagerDiscoveryCoordinator.reset()
+        PillagerSettlementScheduler.reset()
         data.markChanged()
         source.sendSuccess({ Component.literal("Pillager Campaigns state reset") }, true)
         return Command.SINGLE_SUCCESS
-    }
-
-    private fun ensureBossPresence(server: net.minecraft.server.MinecraftServer, data: PillagerWorldData) {
-        server.allLevels.forEach { level ->
-            data.bases.values
-                .filter { !it.defeated && it.dimension == level.dimension().location() && level.hasChunk(it.chunkX, it.chunkZ) }
-                .forEach { base ->
-                    val faction = data.factions[base.factionId] ?: return@forEach
-                    val bossOfficerId = faction.bossOfficerId ?: return@forEach
-                    val bossOfficer = data.officers[bossOfficerId] ?: return@forEach
-                    PillagerRuntime.ensureBossAtBase(level, base, faction, bossOfficer)
-                }
-        }
     }
 
     private fun createBaseIntelMap(level: ServerLevel, x: Int, z: Int): ItemStack {
         val map = MapItem.create(level, x, z, 2, true, true)
         MapItem.renderBiomePreviewMap(level, map)
         return map
+    }
+
+    private inline fun measureMs(block: () -> Unit): Double {
+        val start = System.nanoTime()
+        block()
+        val elapsedNs = System.nanoTime() - start
+        return elapsedNs / 1_000_000.0
+    }
+
+    private fun recordDiscovery(ms: Double) {
+        metricsSamples++
+        discoveryTotalMs += ms
+        if (ms > discoveryMaxMs) discoveryMaxMs = ms
+        if (ms >= PHASE_WARN_THRESHOLD_MS) {
+            PillagerCampaignsMod.LOGGER.warn("Discovery tick took {} ms", "%.3f".format(ms))
+        }
+    }
+
+    private fun recordCampaign(ms: Double) {
+        campaignTotalMs += ms
+        if (ms > campaignMaxMs) campaignMaxMs = ms
+        if (ms >= PHASE_WARN_THRESHOLD_MS) {
+            PillagerCampaignsMod.LOGGER.warn("Campaign tick took {} ms", "%.3f".format(ms))
+        }
+    }
+
+    private fun recordBossEnsure(ms: Double) {
+        bossEnsureTotalMs += ms
+        if (ms > bossEnsureMaxMs) bossEnsureMaxMs = ms
+        if (ms >= PHASE_WARN_THRESHOLD_MS) {
+            PillagerCampaignsMod.LOGGER.warn("Boss ensure pass took {} ms", "%.3f".format(ms))
+        }
+    }
+
+    private fun flushMetricsWindow() {
+        if (metricsSamples <= 0) return
+        val samples = metricsSamples.coerceAtLeast(1)
+        PillagerCampaignsMod.LOGGER.info(
+            "Perf window: discovery avg={}ms max={}ms | campaign avg={}ms max={}ms | bossEnsure avg={}ms max={}ms",
+            "%.3f".format(discoveryTotalMs / samples),
+            "%.3f".format(discoveryMaxMs),
+            "%.3f".format(campaignTotalMs / samples),
+            "%.3f".format(campaignMaxMs),
+            "%.3f".format(bossEnsureTotalMs / samples),
+            "%.3f".format(bossEnsureMaxMs),
+        )
+        metricsSamples = 0
+        discoveryTotalMs = 0.0
+        campaignTotalMs = 0.0
+        bossEnsureTotalMs = 0.0
+        discoveryMaxMs = 0.0
+        campaignMaxMs = 0.0
+        bossEnsureMaxMs = 0.0
     }
 }

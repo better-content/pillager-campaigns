@@ -27,3 +27,23 @@ enum class CampaignState {
     ACTIVE,
     RESOLVED,
 }
+
+enum class BaseState {
+    PLANNED,
+    MATERIALIZED,
+    DEFEATED,
+}
+
+enum class BaseForm {
+    UNKNOWN,
+    JIGSAW_OUTPOST,
+}
+
+enum class BaseMaterializationFailure {
+    NONE,
+    IN_PROGRESS,
+    NO_SITE,
+    FOOTPRINT_NOT_LOADED,
+    POOL_MISSING,
+    JIGSAW_FAILED,
+}

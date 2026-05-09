@@ -37,27 +37,59 @@ data class PillagerBase(
     val id: UUID,
     val factionId: UUID,
     val dimension: ResourceLocation,
+    var structureId: ResourceLocation,
     var bannerSeed: Int,
     var difficulty: Int,
     var defeated: Boolean,
+    var state: BaseState,
+    var form: BaseForm,
+    var anchorChunkX: Int,
+    var anchorChunkZ: Int,
     var chunkX: Int,
     var chunkZ: Int,
     var center: BlockPos,
     var lastSeenTick: Long,
+    var materializationAttempts: Int,
+    var materializationFailure: BaseMaterializationFailure,
+    var lastMaterializationAttemptTick: Long,
+    var materializationSearchRadius: Int,
+    var materializationCursorIndex: Int,
+    var materializationBestChunkX: Int,
+    var materializationBestChunkZ: Int,
+    var materializationBestX: Int,
+    var materializationBestY: Int,
+    var materializationBestZ: Int,
+    var materializationBestScore: Int,
 ) {
     fun save(): CompoundTag = CompoundTag().also {
         it.putUUID("id", id)
         it.putUUID("factionId", factionId)
         it.putString("dimension", dimension.toString())
+        it.putString("structureId", structureId.toString())
         it.putInt("bannerSeed", bannerSeed)
         it.putInt("difficulty", difficulty)
         it.putBoolean("defeated", defeated)
+        it.putString("state", state.name)
+        it.putString("form", form.name)
+        it.putInt("anchorChunkX", anchorChunkX)
+        it.putInt("anchorChunkZ", anchorChunkZ)
         it.putInt("chunkX", chunkX)
         it.putInt("chunkZ", chunkZ)
         it.putInt("x", center.x)
         it.putInt("y", center.y)
         it.putInt("z", center.z)
         it.putLong("lastSeenTick", lastSeenTick)
+        it.putInt("materializationAttempts", materializationAttempts)
+        it.putString("materializationFailure", materializationFailure.name)
+        it.putLong("lastMaterializationAttemptTick", lastMaterializationAttemptTick)
+        it.putInt("materializationSearchRadius", materializationSearchRadius)
+        it.putInt("materializationCursorIndex", materializationCursorIndex)
+        it.putInt("materializationBestChunkX", materializationBestChunkX)
+        it.putInt("materializationBestChunkZ", materializationBestChunkZ)
+        it.putInt("materializationBestX", materializationBestX)
+        it.putInt("materializationBestY", materializationBestY)
+        it.putInt("materializationBestZ", materializationBestZ)
+        it.putInt("materializationBestScore", materializationBestScore)
     }
 
     companion object {
@@ -65,13 +97,31 @@ data class PillagerBase(
             id = tag.getUUID("id"),
             factionId = tag.getUUID("factionId"),
             dimension = ResourceLocation.tryParse(tag.getString("dimension")) ?: ResourceLocation.tryParse("minecraft:overworld")!!,
+            structureId = ResourceLocation.tryParse(tag.getString("structureId")) ?: ResourceLocation.tryParse("minecraft:pillager_outpost")!!,
             bannerSeed = if (tag.contains("bannerSeed")) tag.getInt("bannerSeed") else (tag.getUUID("id").mostSignificantBits xor tag.getUUID("id").leastSignificantBits).toInt(),
             difficulty = if (tag.contains("difficulty")) tag.getInt("difficulty") else 0,
             defeated = if (tag.contains("defeated")) tag.getBoolean("defeated") else false,
+            state = if (tag.contains("state")) runCatching { BaseState.valueOf(tag.getString("state")) }.getOrDefault(BaseState.PLANNED) else BaseState.MATERIALIZED,
+            form = if (tag.contains("form")) runCatching { BaseForm.valueOf(tag.getString("form")) }.getOrDefault(BaseForm.UNKNOWN) else BaseForm.UNKNOWN,
+            anchorChunkX = if (tag.contains("anchorChunkX")) tag.getInt("anchorChunkX") else tag.getInt("chunkX"),
+            anchorChunkZ = if (tag.contains("anchorChunkZ")) tag.getInt("anchorChunkZ") else tag.getInt("chunkZ"),
             chunkX = tag.getInt("chunkX"),
             chunkZ = tag.getInt("chunkZ"),
             center = BlockPos(tag.getInt("x"), tag.getInt("y"), tag.getInt("z")),
             lastSeenTick = tag.getLong("lastSeenTick"),
+            materializationAttempts = if (tag.contains("materializationAttempts")) tag.getInt("materializationAttempts") else 0,
+            materializationFailure = if (tag.contains("materializationFailure")) {
+                runCatching { BaseMaterializationFailure.valueOf(tag.getString("materializationFailure")) }.getOrDefault(BaseMaterializationFailure.NONE)
+            } else BaseMaterializationFailure.NONE,
+            lastMaterializationAttemptTick = if (tag.contains("lastMaterializationAttemptTick")) tag.getLong("lastMaterializationAttemptTick") else 0L,
+            materializationSearchRadius = if (tag.contains("materializationSearchRadius")) tag.getInt("materializationSearchRadius") else -1,
+            materializationCursorIndex = if (tag.contains("materializationCursorIndex")) tag.getInt("materializationCursorIndex") else 0,
+            materializationBestChunkX = if (tag.contains("materializationBestChunkX")) tag.getInt("materializationBestChunkX") else 0,
+            materializationBestChunkZ = if (tag.contains("materializationBestChunkZ")) tag.getInt("materializationBestChunkZ") else 0,
+            materializationBestX = if (tag.contains("materializationBestX")) tag.getInt("materializationBestX") else 0,
+            materializationBestY = if (tag.contains("materializationBestY")) tag.getInt("materializationBestY") else 0,
+            materializationBestZ = if (tag.contains("materializationBestZ")) tag.getInt("materializationBestZ") else 0,
+            materializationBestScore = if (tag.contains("materializationBestScore")) tag.getInt("materializationBestScore") else Int.MIN_VALUE,
         )
     }
 }
