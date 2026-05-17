@@ -4,6 +4,7 @@ import com.gerald.pillagercampaigns.data.PillagerCampaign
 import com.gerald.pillagercampaigns.data.PillagerBase
 import com.gerald.pillagercampaigns.data.PillagerFaction
 import com.gerald.pillagercampaigns.data.PillagerOfficer
+import com.gerald.pillagercampaigns.data.PillagerWarband
 import com.gerald.pillagercampaigns.data.OfficerClass
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.network.chat.Component
@@ -19,6 +20,7 @@ import net.minecraft.world.entity.LivingEntity
 import net.minecraft.world.entity.Mob
 import net.minecraft.world.entity.monster.Pillager
 import net.minecraft.world.entity.monster.Vindicator
+import net.minecraft.world.entity.vehicle.Boat
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Item
 import net.minecraft.world.item.Items
@@ -117,19 +119,27 @@ object PillagerRuntime {
     }
 
     fun materializeFixedSquad(level: ServerLevel, campaign: PillagerCampaign, base: PillagerBase, officerRecord: PillagerOfficer, player: ServerPlayer, x: Double, y: Double, z: Double): List<UUID> {
+        return materializeWarbandSquad(level, campaign, base.bannerSeed, officerRecord, player, x, y, z)
+    }
+
+    fun materializeWarbandSquad(level: ServerLevel, campaign: PillagerCampaign, bannerSeed: Int, officerRecord: PillagerOfficer, player: ServerPlayer, x: Double, y: Double, z: Double, useBoats: Boolean = false): List<UUID> {
         val random = Random(campaign.loadoutSeed)
-        val officer = createOfficerEntity(level, officerRecord.officerClass) ?: return emptyList()
-        prepareOfficer(officer, campaign, base, officerRecord, x, y, z, random, campaign.difficultySnapshot)
+        val officer = if (useBoats) EntityType.PILLAGER.create(level) else createOfficerEntity(level, officerRecord.officerClass)
+        officer ?: return emptyList()
+        prepareOfficer(officer, campaign, bannerSeed, officerRecord, x, y, z, random, campaign.difficultySnapshot)
         level.addFreshEntity(officer)
         registerLiveMob(officer)
         val spawnedIds = mutableListOf<UUID>()
+        val spawnedMobs = mutableListOf<Mob>()
         spawnedIds += officer.uuid
+        spawnedMobs += officer
 
         val memberCount = CampaignDifficultyRules.memberCountForDifficulty(campaign.difficultySnapshot)
         repeat(memberCount) {
             val memberType = CampaignDifficultyRules.chooseMemberType(campaign.difficultySnapshot, officerRecord.preferenceGraph, random)
-            val mob: Mob = when (memberType) {
-                "vindicator" -> EntityType.VINDICATOR.create(level)
+            val mob: Mob = when {
+                useBoats -> EntityType.PILLAGER.create(level)
+                memberType == "vindicator" -> EntityType.VINDICATOR.create(level)
                 else -> EntityType.PILLAGER.create(level)
             } ?: return@repeat
             prepareFollower(mob, campaign, officerRecord, x + level.random.nextDouble() * 3.0 - 1.5, y, z + level.random.nextDouble() * 3.0 - 1.5, random, campaign.difficultySnapshot)
@@ -137,8 +147,43 @@ object PillagerRuntime {
             level.addFreshEntity(mob)
             registerLiveMob(mob)
             spawnedIds += mob.uuid
+            spawnedMobs += mob
+        }
+        if (useBoats) {
+            putSquadInBoats(level, spawnedMobs, x, y, z)
         }
         return spawnedIds
+    }
+
+    fun materializeWarlord(level: ServerLevel, warband: PillagerWarband, faction: PillagerFaction, warlord: PillagerOfficer, x: Double, y: Double, z: Double): UUID? {
+        warband.warlordEntityId?.let { cachedId ->
+            val cached = level.getEntity(cachedId) as? Mob
+            if (cached != null &&
+                cached.isAlive &&
+                cached.persistentData.hasUUID(OFFICER_TAG) &&
+                cached.persistentData.getUUID(OFFICER_TAG) == warlord.id &&
+                cached.persistentData.getBoolean(BOSS_TAG)
+            ) {
+                registerLiveMob(cached)
+                return cached.uuid
+            }
+        }
+        if (hasLiveOfficerLeader(level, warlord.id)) return liveOfficerLeaderEntityIds[warlord.id]
+        val boss = createOfficerEntity(level, warlord.officerClass) ?: EntityType.VINDICATOR.create(level) ?: return null
+        boss.moveTo(x, y, z, boss.yRot, boss.xRot)
+        boss.setPersistenceRequired()
+        boss.persistentData.putBoolean(BOSS_TAG, true)
+        boss.persistentData.putBoolean(LEADER_TAG, true)
+        boss.persistentData.putUUID(OFFICER_TAG, warlord.id)
+        boss.persistentData.putUUID(FACTION_TAG, faction.id)
+        boss.persistentData.putString(RANK_TAG, warlord.rank.name)
+        boss.setItemSlot(EquipmentSlot.HEAD, makeBaseBanner(faction.bannerSeed))
+        boss.setItemSlot(EquipmentSlot.MAINHAND, ItemStack(Items.IRON_AXE))
+        applyOfficerVisuals(boss, warlord)
+        level.addFreshEntity(boss)
+        registerLiveMob(boss)
+        syncOfficerVisuals(boss)
+        return boss.uuid
     }
 
     fun keepSquadCohesive(level: ServerLevel, mob: Mob) {
@@ -153,6 +198,36 @@ object PillagerRuntime {
             return
         }
         mob.navigation.moveTo(officer, 1.15)
+    }
+
+    fun steerBoatAssault(level: ServerLevel, mob: Mob) {
+        val boat = mob.vehicle as? Boat ?: return
+        val tag = mob.persistentData
+        if (!tag.hasUUID(CAMPAIGN_TAG)) return
+        val target = mob.target as? ServerPlayer
+            ?: level.players().minByOrNull { it.distanceToSqr(boat) }
+            ?: return
+        mob.target = target
+
+        val dx = target.x - boat.x
+        val dz = target.z - boat.z
+        val distanceSq = dx * dx + dz * dz
+        if (distanceSq < 9.0) {
+            boat.deltaMovement = boat.deltaMovement.scale(0.6)
+            return
+        }
+
+        val distance = kotlin.math.sqrt(distanceSq)
+        val speed = if (distanceSq > 48.0 * 48.0) 0.22 else 0.13
+        val desiredX = dx / distance * speed
+        val desiredZ = dz / distance * speed
+        boat.deltaMovement = Vec3(
+            boat.deltaMovement.x * 0.65 + desiredX,
+            boat.deltaMovement.y,
+            boat.deltaMovement.z * 0.65 + desiredZ,
+        )
+        boat.yRot = (kotlin.math.atan2(dz, dx) * 180.0 / Math.PI).toFloat() - 90.0f
+        boat.hasImpulse = true
     }
 
     fun ensureBossAtBase(level: ServerLevel, base: PillagerBase, faction: PillagerFaction, bossOfficer: PillagerOfficer) {
@@ -217,7 +292,7 @@ object PillagerRuntime {
     private fun prepareOfficer(
         mob: Mob,
         campaign: PillagerCampaign,
-        base: PillagerBase,
+        bannerSeed: Int,
         officerRecord: PillagerOfficer,
         x: Double,
         y: Double,
@@ -230,7 +305,7 @@ object PillagerRuntime {
         mob.persistentData.applyCampaignTags(campaign)
         mob.persistentData.putBoolean(LEADER_TAG, true)
         mob.persistentData.putString(RANK_TAG, officerRecord.rank.name)
-        mob.setItemSlot(EquipmentSlot.HEAD, makeBaseBanner(base.bannerSeed))
+        mob.setItemSlot(EquipmentSlot.HEAD, makeBaseBanner(bannerSeed))
         equipWeaponByPreference(mob, officerRecord, random, difficulty)
         applyArmorByPreference(mob, officerRecord, random, difficulty)
         applyEnchantmentsByPreference(mob, officerRecord, random, difficulty)
@@ -245,6 +320,16 @@ object PillagerRuntime {
         equipWeaponByPreference(mob, officerRecord, random, difficulty)
         applyArmorByPreference(mob, officerRecord, random, difficulty)
         applyEnchantmentsByPreference(mob, officerRecord, random, difficulty)
+    }
+
+    private fun putSquadInBoats(level: ServerLevel, mobs: List<Mob>, x: Double, y: Double, z: Double) {
+        mobs.chunked(2).forEachIndexed { index, pair ->
+            val boat = EntityType.BOAT.create(level) ?: return@forEachIndexed
+            boat.moveTo(x + ((index % 3) - 1) * 2.0, y, z + (index / 3) * 2.0, boat.yRot, boat.xRot)
+            boat.variant = Boat.Type.DARK_OAK
+            level.addFreshEntity(boat)
+            pair.forEach { mob -> mob.startRiding(boat, true) }
+        }
     }
 
     private fun CompoundTag.applyCampaignTags(campaign: PillagerCampaign) {

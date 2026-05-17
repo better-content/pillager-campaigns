@@ -9,6 +9,91 @@ import java.util.UUID
 
 class PillagerCampaignSerializationTest {
     @Test
+    fun `warband save load roundtrip preserves pressure and presence fields`() {
+        val warband = PillagerWarband(
+            id = UUID.randomUUID(),
+            factionId = UUID.randomUUID(),
+            dimension = ResourceLocation("minecraft", "overworld"),
+            rallyChunkX = 12,
+            rallyChunkZ = -9,
+            strength = 5,
+            defeated = false,
+            warlordOfficerId = UUID.randomUUID(),
+            warlordEntityId = UUID.randomUUID(),
+            nextRaidTick = 200L,
+            cooldownUntilTick = 400L,
+            lastIntelTick = 123L,
+            lastPresenceFailure = PresenceMaterializationResult.NOT_LOADED,
+            lastPresenceAttemptTick = 111L,
+            activeCampaignLimit = 2,
+        )
+
+        val loaded = PillagerWarband.load(warband.save())
+
+        assertEquals(warband.id, loaded.id)
+        assertEquals(warband.factionId, loaded.factionId)
+        assertEquals(ResourceLocation("minecraft", "overworld"), loaded.dimension)
+        assertEquals(12, loaded.rallyChunkX)
+        assertEquals(-9, loaded.rallyChunkZ)
+        assertEquals(5, loaded.strength)
+        assertEquals(false, loaded.defeated)
+        assertEquals(warband.warlordOfficerId, loaded.warlordOfficerId)
+        assertEquals(warband.warlordEntityId, loaded.warlordEntityId)
+        assertEquals(200L, loaded.nextRaidTick)
+        assertEquals(400L, loaded.cooldownUntilTick)
+        assertEquals(123L, loaded.lastIntelTick)
+        assertEquals(PresenceMaterializationResult.NOT_LOADED, loaded.lastPresenceFailure)
+        assertEquals(111L, loaded.lastPresenceAttemptTick)
+        assertEquals(2, loaded.activeCampaignLimit)
+        assertEquals(200, loaded.rallyBlockPos(70).x)
+        assertEquals(-136, loaded.rallyBlockPos(70).z)
+    }
+
+    @Test
+    fun `old non defeated base migrates into warband at anchor chunk`() {
+        val base = PillagerBase(
+            id = UUID.randomUUID(),
+            factionId = UUID.randomUUID(),
+            dimension = ResourceLocation("minecraft", "overworld"),
+            structureId = ResourceLocation("minecraft", "pillager_outpost"),
+            bannerSeed = 12,
+            difficulty = 3,
+            defeated = false,
+            state = BaseState.MATERIALIZED,
+            form = BaseForm.JIGSAW_OUTPOST,
+            anchorChunkX = 40,
+            anchorChunkZ = -16,
+            chunkX = 41,
+            chunkZ = -15,
+            center = net.minecraft.core.BlockPos(648, 65, -248),
+            lastSeenTick = 123L,
+            materializationAttempts = 0,
+            materializationFailure = BaseMaterializationFailure.NONE,
+            lastMaterializationAttemptTick = 0L,
+            materializationSearchRadius = -1,
+            materializationCursorIndex = 0,
+            materializationBestChunkX = 0,
+            materializationBestChunkZ = 0,
+            materializationBestX = 0,
+            materializationBestY = 0,
+            materializationBestZ = 0,
+            materializationBestScore = Int.MIN_VALUE,
+        )
+        val warlordId = UUID.randomUUID()
+
+        val warband = PillagerWarband.migrate(base, warlordId)
+
+        assertEquals(base.id, warband.id)
+        assertEquals(40, warband.rallyChunkX)
+        assertEquals(-16, warband.rallyChunkZ)
+        assertEquals(6, warband.strength)
+        assertEquals(false, warband.defeated)
+        assertEquals(warlordId, warband.warlordOfficerId)
+        assertEquals(123L, warband.nextRaidTick)
+        assertEquals(PresenceMaterializationResult.SUCCESS, warband.lastPresenceFailure)
+    }
+
+    @Test
     fun `base save load roundtrip preserves planned base fields`() {
         val base = PillagerBase(
             id = UUID.randomUUID(),

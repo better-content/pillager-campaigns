@@ -47,3 +47,16 @@ enum class BaseMaterializationFailure {
     POOL_MISSING,
     JIGSAW_FAILED,
 }
+
+enum class PresenceType {
+    INVASION_SQUAD,
+    WARLORD,
+}
+
+enum class PresenceMaterializationResult {
+    NOT_LOADED,
+    NO_SAFE_SITE,
+    LIVE_ALREADY_PRESENT,
+    COOLDOWN,
+    SUCCESS,
+}

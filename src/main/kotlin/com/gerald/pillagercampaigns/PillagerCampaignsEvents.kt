@@ -5,9 +5,9 @@ import com.gerald.pillagercampaigns.data.PillagerWorldData
 import com.gerald.pillagercampaigns.system.CampaignMath
 import com.gerald.pillagercampaigns.system.PillagerCampaignEngine
 import com.gerald.pillagercampaigns.system.PillagerDiscoveryCoordinator
-import com.gerald.pillagercampaigns.system.PillagerLocateGuard
 import com.gerald.pillagercampaigns.system.PillagerRuntime
 import com.gerald.pillagercampaigns.system.PillagerSettlementScheduler
+import com.gerald.pillagercampaigns.system.PillagerWarbandPresenceSystem
 import com.mojang.brigadier.Command
 import com.mojang.brigadier.CommandDispatcher
 import com.mojang.brigadier.arguments.StringArgumentType
@@ -55,7 +55,8 @@ object PillagerCampaignsEvents {
             event.server.gameRules.getRule(GameRules.RULE_DO_PATROL_SPAWNING).set(false, event.server)
         }
         PillagerDiscoveryCoordinator.reset()
-        PillagerSettlementScheduler.rebuild(PillagerWorldData.get(event.server))
+        PillagerWorldData.get(event.server).migrateBasesToWarbands()
+        PillagerSettlementScheduler.reset()
         PillagerRuntime.resetLiveIndexes()
     }
 
@@ -77,12 +78,8 @@ object PillagerCampaignsEvents {
         }
         if (now - lastBossEnsureTick >= 100L) {
             lastBossEnsureTick = now
-            val ensureMs = measureMs { PillagerSettlementScheduler.ensureBossPresenceSlice(server, data) }
+            val ensureMs = measureMs { ensureWarlordPresenceSlice(server.allLevels.toList(), data, now) }
             recordBossEnsure(ensureMs)
-        }
-        if (now - lastMaterializationTick >= MATERIALIZATION_INTERVAL_TICKS) {
-            lastMaterializationTick = now
-            PillagerSettlementScheduler.tickMaterialization(server, data, now)
         }
         if (now - metricsWindowStartTick >= METRIC_LOG_INTERVAL_TICKS) {
             flushMetricsWindow()
@@ -95,7 +92,9 @@ object PillagerCampaignsEvents {
         val level = event.level as? ServerLevel ?: return
         val chunk = event.chunk as? LevelChunk ?: return
         val data = PillagerWorldData.get(level.server)
-        PillagerSettlementScheduler.onChunkLoad(level, data, chunk.pos.x, chunk.pos.z)
+        data.warbands.values
+            .filter { !it.defeated && it.dimension == level.dimension().location() && it.rallyChunkX == chunk.pos.x && it.rallyChunkZ == chunk.pos.z }
+            .forEach { PillagerWarbandPresenceSystem.materializeWarlord(level, data, it, level.gameTime) }
     }
 
     @SubscribeEvent
@@ -103,6 +102,7 @@ object PillagerCampaignsEvents {
         val mob = event.entity as? Mob ?: return
         val level = mob.level() as? ServerLevel ?: return
         if (!mob.isAlive || level.gameTime % 10L != 0L) return
+        PillagerRuntime.steerBoatAssault(level, mob)
         PillagerRuntime.keepSquadCohesive(level, mob)
         PillagerRuntime.pushOfficerTowardPlayer(level, mob)
         PillagerRuntime.tickOfficerVisuals(level, mob)
@@ -125,9 +125,9 @@ object PillagerCampaignsEvents {
             val killerTag = killerMob.persistentData
             if (killerTag.hasUUID(PillagerRuntime.CAMPAIGN_TAG)) {
                 val campaign = data.campaigns[killerTag.getUUID(PillagerRuntime.CAMPAIGN_TAG)]
-                val base = campaign?.let { data.bases[it.originBaseId] }
-                if (base != null) {
-                    base.difficulty = (base.difficulty - 1).coerceAtLeast(0)
+                val warband = campaign?.let { data.warbands[it.originWarbandId] }
+                if (warband != null) {
+                    warband.strength = (warband.strength - 1).coerceAtLeast(0)
                     data.markChanged()
                 }
             }
@@ -139,13 +139,14 @@ object PillagerCampaignsEvents {
         PillagerRuntime.forgetLiveMob(mob)
         if (tag.hasUUID(PillagerRuntime.OFFICER_TAG)) {
             val officer = data.officers[tag.getUUID(PillagerRuntime.OFFICER_TAG)]
-            val base = officer?.let { data.bases[it.homeBaseId] }
-            if (base != null) {
-                base.difficulty += 1
+            val warband = officer?.let { data.warbands[it.homeBaseId] }
+            if (warband != null) {
+                warband.lastIntelTick = level.gameTime
                 data.markChanged()
                 if (tag.getBoolean(PillagerRuntime.LEADER_TAG) || tag.getBoolean(PillagerRuntime.BOSS_TAG)) {
-                    val map = createBaseIntelMap(level, base.center.x, base.center.z)
-                    map.hoverName = Component.literal("Officer Orders: Base Location")
+                    val rally = warband.rallyBlockPos(level.seaLevel + 1)
+                    val map = createBaseIntelMap(level, rally.x, rally.z)
+                    map.hoverName = Component.literal("Officer Orders: Warband Rally")
                     mob.spawnAtLocation(map)
                 }
             }
@@ -155,8 +156,8 @@ object PillagerCampaignsEvents {
             val officerId = if (tag.hasUUID(PillagerRuntime.OFFICER_TAG)) tag.getUUID(PillagerRuntime.OFFICER_TAG) else null
             val baseId = officerId?.let { data.officers[it]?.homeBaseId }
             if (baseId != null) {
-                PillagerCampaignEngine.collapseBase(data, baseId)
-                PillagerCampaignsMod.LOGGER.info("Base {} defeated after boss death", baseId)
+                PillagerCampaignEngine.collapseWarband(data, baseId)
+                PillagerCampaignsMod.LOGGER.info("Warband {} defeated after warlord death", baseId)
             } else {
                 val factionId = tag.getUUID(PillagerRuntime.FACTION_TAG)
                 PillagerCampaignEngine.collapseFaction(data, factionId)
@@ -167,7 +168,7 @@ object PillagerCampaignsEvents {
         if (!tag.hasUUID(PillagerRuntime.CAMPAIGN_TAG)) return
         val campaign = data.campaigns[tag.getUUID(PillagerRuntime.CAMPAIGN_TAG)] ?: return
         if (tag.getBoolean(PillagerRuntime.LEADER_TAG)) {
-            PillagerCampaignEngine.resolveCampaign(data, campaign.id)
+            PillagerCampaignEngine.resolveCampaign(data, campaign.id, observedTick = level.gameTime)
         } else if (campaign.state == CampaignState.ACTIVE) {
             val survivors = level.getEntitiesOfClass(Mob::class.java, mob.boundingBox.inflate(80.0)) { candidate ->
                 candidate.persistentData.hasUUID(PillagerRuntime.CAMPAIGN_TAG) &&
@@ -175,7 +176,7 @@ object PillagerCampaignsEvents {
                     candidate.isAlive
             }
             if (survivors.isEmpty()) {
-                PillagerCampaignEngine.resolveCampaign(data, campaign.id)
+                PillagerCampaignEngine.resolveCampaign(data, campaign.id, observedTick = level.gameTime)
             }
         }
     }
@@ -193,18 +194,9 @@ object PillagerCampaignsEvents {
     }
 
     @SubscribeEvent
+    @Suppress("UNUSED_PARAMETER")
     fun onCommand(event: CommandEvent) {
-        val blockedTarget = PillagerLocateGuard.blockedTarget(
-            event.parseResults.reader.string,
-            PillagerCampaignsConfig.structureBaseIds.get().map { it.toString() },
-        ) ?: return
-        val source = event.parseResults.context.source
-        source.sendFailure(
-            Component.literal(
-                "Vanilla /locate is disabled for SAM-owned pillager base '$blockedTarget' because it can synchronously probe ungenerated jigsaw structures. Use /sam settlements list instead.",
-            ),
-        )
-        event.isCanceled = true
+        return
     }
 
     private fun register(dispatcher: CommandDispatcher<CommandSourceStack>) {
@@ -213,6 +205,14 @@ object PillagerCampaignsEvents {
                 .requires { it.hasPermission(2) }
                 .then(Commands.literal("status").executes { status(it.source) })
                 .then(Commands.literal("tick_once").executes { tickOnce(it.source) })
+                .then(Commands.literal("warbands").then(Commands.literal("list").executes { listWarbands(it.source) }))
+                .then(
+                    Commands.literal("warbands")
+                        .then(
+                            Commands.literal("materialize_warlord")
+                                .then(Commands.argument("warband", StringArgumentType.word()).executes { forceMaterializeWarlord(it.source, StringArgumentType.getString(it, "warband")) }),
+                        ),
+                )
                 .then(Commands.literal("list").then(Commands.literal("bases").executes { listBases(it.source) }))
                 .then(
                     Commands.literal("list")
@@ -223,30 +223,21 @@ object PillagerCampaignsEvents {
                         ),
                 )
                 .then(Commands.literal("list").then(Commands.literal("officers").executes { listOfficers(it.source) }))
-                .then(
-                    Commands.literal("force_materialize")
-                        .then(
-                            Commands.argument("base", StringArgumentType.word())
-                                .executes { forceMaterialize(it.source, StringArgumentType.getString(it, "base")) }
-                        )
-                )
                 .then(Commands.literal("reset").executes { reset(it.source) }),
         )
         dispatcher.register(
             Commands.literal("sam")
                 .requires { it.hasPermission(2) }
                 .then(Commands.literal("status").executes { status(it.source) })
-                .then(Commands.literal("settlements").then(Commands.literal("list").executes { listBases(it.source) }))
+                .then(Commands.literal("warbands").then(Commands.literal("list").executes { listWarbands(it.source) }))
                 .then(
-                    Commands.literal("settlements")
+                    Commands.literal("warbands")
                         .then(
-                            Commands.literal("materialize")
-                                .then(
-                                    Commands.argument("base", StringArgumentType.word())
-                                        .executes { forceMaterialize(it.source, StringArgumentType.getString(it, "base")) },
-                                ),
+                            Commands.literal("materialize_warlord")
+                                .then(Commands.argument("warband", StringArgumentType.word()).executes { forceMaterializeWarlord(it.source, StringArgumentType.getString(it, "warband")) }),
                         ),
-                ),
+                )
+                .then(Commands.literal("settlements").then(Commands.literal("list").executes { listWarbands(it.source) })),
         )
     }
 
@@ -258,6 +249,9 @@ object PillagerCampaignsEvents {
             )
                 .append(" ")
                 .append(Component.literal(PillagerSettlementScheduler.statusLine()))
+                .append(" ")
+                .append(Component.literal("warbands=${data.warbands.size} "))
+                .append(Component.literal(PillagerWarbandPresenceSystem.statusLine(data)))
         }, false)
         return Command.SINGLE_SUCCESS
     }
@@ -285,21 +279,46 @@ object PillagerCampaignsEvents {
         return Command.SINGLE_SUCCESS
     }
 
-    private fun forceMaterialize(source: CommandSourceStack, basePrefix: String): Int {
+    private fun listWarbands(source: CommandSourceStack): Int {
         val data = PillagerWorldData.get(source.server)
-        val matches = data.bases.values.filter { it.id.toString().startsWith(basePrefix, ignoreCase = true) }
+        val activeCampaigns = data.campaigns.values
+            .filter { it.state != CampaignState.RESOLVED }
+            .groupingBy { it.originWarbandId }
+            .eachCount()
+        source.sendSuccess({ Component.literal("Warbands (${data.warbands.size})") }, false)
+        data.warbands.values.forEach { warband ->
+            val rally = warband.rallyBlockPos(source.level.seaLevel + 1)
+            val cooldown = (warband.cooldownUntilTick - source.level.gameTime).coerceAtLeast(0L)
+            val warlordState = if (warband.defeated) "defeated" else if (warband.warlordEntityId != null) "live_or_cached" else "unseen"
+            source.sendSuccess({
+                Component.literal(
+                    "  ${warband.id.toString().take(8)} dim=${warband.dimension} rally_chunk=${warband.rallyChunkX},${warband.rallyChunkZ} rally_xyz=${rally.x},${rally.y},${rally.z} strength=${warband.strength} cooldown_ticks=$cooldown active=${activeCampaigns[warband.id] ?: 0}/${warband.activeCampaignLimit} warlord=$warlordState last_failure=${warband.lastPresenceFailure.name.lowercase()}"
+                ).append(" ").append(tpLink(warband.dimension.toString(), rally.x, rally.y, rally.z))
+            }, false)
+        }
+        return Command.SINGLE_SUCCESS
+    }
+
+    private fun forceMaterializeWarlord(source: CommandSourceStack, warbandPrefix: String): Int {
+        val data = PillagerWorldData.get(source.server)
+        val matches = data.warbands.values.filter { it.id.toString().startsWith(warbandPrefix, ignoreCase = true) }
         if (matches.isEmpty()) {
-            source.sendFailure(Component.literal("No base matches prefix '$basePrefix'"))
+            source.sendFailure(Component.literal("No warband matches prefix '$warbandPrefix'"))
             return 0
         }
         if (matches.size > 1) {
-            source.sendFailure(Component.literal("Ambiguous base prefix '$basePrefix' (${matches.size} matches)"))
+            source.sendFailure(Component.literal("Ambiguous warband prefix '$warbandPrefix' (${matches.size} matches)"))
             return 0
         }
-        val base = matches.first()
-        PillagerSettlementScheduler.requestMaterialization(base, force = true)
+        val warband = matches.first()
+        val level = source.server.allLevels.firstOrNull { it.dimension().location() == warband.dimension }
+        if (level == null) {
+            source.sendFailure(Component.literal("Warband dimension is not loaded"))
+            return 0
+        }
+        val result = PillagerWarbandPresenceSystem.materializeWarlord(level, data, warband, level.gameTime, force = true)
         data.markChanged()
-        source.sendSuccess({ Component.literal("Queued forced materialization for base ${base.id.toString().take(8)}. Use /sam status to watch progress.") }, true)
+        source.sendSuccess({ Component.literal("Warlord materialization result=${result.name.lowercase()}") }, true)
         return Command.SINGLE_SUCCESS
     }
 
@@ -372,14 +391,15 @@ object PillagerCampaignsEvents {
         val data = PillagerWorldData.get(source.server)
         source.sendSuccess({ Component.literal("Officers (${data.officers.size})") }, false)
         data.officers.values.forEach { officer ->
-            val homeBase = data.bases[officer.homeBaseId]
-            val homePos = homeBase?.center?.let { "${it.x},${it.y},${it.z}" } ?: "unknown"
+            val homeWarband = data.warbands[officer.homeBaseId]
+            val homePos = homeWarband?.rallyBlockPos(source.level.seaLevel + 1)?.let { "${it.x},${it.y},${it.z}" } ?: "unknown"
             source.sendSuccess({
                 val line = Component.literal(
-                    "  ${officer.id.toString().take(8)} ${officer.name} ${officer.title} rank=${officer.rank.name.lowercase()} state=${officer.state.name.lowercase()} home_base_xyz=$homePos"
+                    "  ${officer.id.toString().take(8)} ${officer.name} ${officer.title} rank=${officer.rank.name.lowercase()} state=${officer.state.name.lowercase()} home_rally_xyz=$homePos"
                 )
-                if (homeBase != null) {
-                    line.append(" ").append(tpLink(homeBase.dimension.toString(), homeBase.center.x, homeBase.center.y, homeBase.center.z))
+                if (homeWarband != null) {
+                    val rally = homeWarband.rallyBlockPos(source.level.seaLevel + 1)
+                    line.append(" ").append(tpLink(homeWarband.dimension.toString(), rally.x, rally.y, rally.z))
                 }
                 line
             }, false)
@@ -406,6 +426,7 @@ object PillagerCampaignsEvents {
         val data = PillagerWorldData.get(source.server)
         data.factions.clear()
         data.bases.clear()
+        data.warbands.clear()
         data.officers.clear()
         data.campaigns.clear()
         data.lastCampaignTick = 0L
@@ -415,6 +436,19 @@ object PillagerCampaignsEvents {
         data.markChanged()
         source.sendSuccess({ Component.literal("Pillager Campaigns state reset") }, true)
         return Command.SINGLE_SUCCESS
+    }
+
+    private fun ensureWarlordPresenceSlice(levels: List<ServerLevel>, data: PillagerWorldData, now: Long) {
+        data.warbands.values
+            .asSequence()
+            .filter { !it.defeated }
+            .take(16)
+            .forEach { warband ->
+                val level = levels.firstOrNull { it.dimension().location() == warband.dimension } ?: return@forEach
+                if (level.hasChunk(warband.rallyChunkX, warband.rallyChunkZ)) {
+                    PillagerWarbandPresenceSystem.materializeWarlord(level, data, warband, now)
+                }
+            }
     }
 
     private fun createBaseIntelMap(level: ServerLevel, x: Int, z: Int): ItemStack {

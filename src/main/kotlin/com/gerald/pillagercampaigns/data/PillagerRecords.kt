@@ -126,6 +126,82 @@ data class PillagerBase(
     }
 }
 
+data class PillagerWarband(
+    val id: UUID,
+    val factionId: UUID,
+    val dimension: ResourceLocation,
+    var rallyChunkX: Int,
+    var rallyChunkZ: Int,
+    var strength: Int,
+    var defeated: Boolean,
+    var warlordOfficerId: UUID,
+    var warlordEntityId: UUID?,
+    var nextRaidTick: Long,
+    var cooldownUntilTick: Long,
+    var lastIntelTick: Long,
+    var lastPresenceFailure: PresenceMaterializationResult,
+    var lastPresenceAttemptTick: Long = 0L,
+    var activeCampaignLimit: Int = 1,
+) {
+    fun save(): CompoundTag = CompoundTag().also {
+        it.putUUID("id", id)
+        it.putUUID("factionId", factionId)
+        it.putString("dimension", dimension.toString())
+        it.putInt("rallyChunkX", rallyChunkX)
+        it.putInt("rallyChunkZ", rallyChunkZ)
+        it.putInt("strength", strength)
+        it.putBoolean("defeated", defeated)
+        it.putUUID("warlordOfficerId", warlordOfficerId)
+        warlordEntityId?.let { entity -> it.putUUID("warlordEntityId", entity) }
+        it.putLong("nextRaidTick", nextRaidTick)
+        it.putLong("cooldownUntilTick", cooldownUntilTick)
+        it.putLong("lastIntelTick", lastIntelTick)
+        it.putString("lastPresenceFailure", lastPresenceFailure.name)
+        it.putLong("lastPresenceAttemptTick", lastPresenceAttemptTick)
+        it.putInt("activeCampaignLimit", activeCampaignLimit)
+    }
+
+    fun rallyBlockPos(y: Int = 64): BlockPos = BlockPos((rallyChunkX shl 4) + 8, y, (rallyChunkZ shl 4) + 8)
+
+    companion object {
+        fun load(tag: CompoundTag): PillagerWarband = PillagerWarband(
+            id = tag.getUUID("id"),
+            factionId = tag.getUUID("factionId"),
+            dimension = ResourceLocation.tryParse(tag.getString("dimension")) ?: ResourceLocation.tryParse("minecraft:overworld")!!,
+            rallyChunkX = tag.getInt("rallyChunkX"),
+            rallyChunkZ = tag.getInt("rallyChunkZ"),
+            strength = if (tag.contains("strength")) tag.getInt("strength") else 3,
+            defeated = if (tag.contains("defeated")) tag.getBoolean("defeated") else false,
+            warlordOfficerId = tag.getUUID("warlordOfficerId"),
+            warlordEntityId = if (tag.hasUUID("warlordEntityId")) tag.getUUID("warlordEntityId") else null,
+            nextRaidTick = if (tag.contains("nextRaidTick")) tag.getLong("nextRaidTick") else 0L,
+            cooldownUntilTick = if (tag.contains("cooldownUntilTick")) tag.getLong("cooldownUntilTick") else 0L,
+            lastIntelTick = if (tag.contains("lastIntelTick")) tag.getLong("lastIntelTick") else 0L,
+            lastPresenceFailure = if (tag.contains("lastPresenceFailure")) {
+                runCatching { PresenceMaterializationResult.valueOf(tag.getString("lastPresenceFailure")) }.getOrDefault(PresenceMaterializationResult.SUCCESS)
+            } else PresenceMaterializationResult.SUCCESS,
+            lastPresenceAttemptTick = if (tag.contains("lastPresenceAttemptTick")) tag.getLong("lastPresenceAttemptTick") else 0L,
+            activeCampaignLimit = if (tag.contains("activeCampaignLimit")) tag.getInt("activeCampaignLimit") else 1,
+        )
+
+        fun migrate(base: PillagerBase, warlordOfficerId: UUID): PillagerWarband = PillagerWarband(
+            id = base.id,
+            factionId = base.factionId,
+            dimension = base.dimension,
+            rallyChunkX = base.anchorChunkX,
+            rallyChunkZ = base.anchorChunkZ,
+            strength = (base.difficulty + 3).coerceAtLeast(1),
+            defeated = base.defeated || base.state == BaseState.DEFEATED,
+            warlordOfficerId = warlordOfficerId,
+            warlordEntityId = null,
+            nextRaidTick = base.lastSeenTick,
+            cooldownUntilTick = 0L,
+            lastIntelTick = base.lastSeenTick,
+            lastPresenceFailure = PresenceMaterializationResult.SUCCESS,
+        )
+    }
+}
+
 data class PillagerOfficer(
     val id: UUID,
     val factionId: UUID,
@@ -190,9 +266,13 @@ data class PillagerCampaign(
     var materializingUntilTick: Long,
     var squadMemberIds: MutableList<UUID>,
 ) {
+    val originWarbandId: UUID
+        get() = originBaseId
+
     fun save(): CompoundTag = CompoundTag().also {
         it.putUUID("id", id)
         it.putUUID("factionId", factionId)
+        it.putUUID("originWarbandId", originBaseId)
         it.putUUID("originBaseId", originBaseId)
         it.putUUID("officerId", officerId)
         it.putUUID("targetPlayerId", targetPlayerId)
@@ -220,7 +300,7 @@ data class PillagerCampaign(
         fun load(tag: CompoundTag): PillagerCampaign = PillagerCampaign(
             id = tag.getUUID("id"),
             factionId = tag.getUUID("factionId"),
-            originBaseId = tag.getUUID("originBaseId"),
+            originBaseId = if (tag.hasUUID("originWarbandId")) tag.getUUID("originWarbandId") else tag.getUUID("originBaseId"),
             officerId = tag.getUUID("officerId"),
             targetPlayerId = tag.getUUID("targetPlayerId"),
             targetDimension = ResourceLocation.tryParse(tag.getString("targetDimension")) ?: ResourceLocation.tryParse("minecraft:overworld")!!,

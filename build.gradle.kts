@@ -134,6 +134,7 @@ tasks.jacocoTestReport {
                         "**/PillagerCampaignsConfig*",
                         "**/PillagerCampaignEngine*",
                         "**/PillagerRuntime*",
+                        "**/PillagerWarbandPresenceSystem*",
                         "**/PillagerBaseDiscoveryService*",
                         "**/PillagerBaseMaterializer*",
                         "**/PillagerDiscoveryCoordinator*",

@@ -49,6 +49,7 @@ object PillagerCampaignsGameTests {
         helper.assertTrue(base.form == BaseForm.UNKNOWN, "base should not be marked as materialized")
         helper.assertTrue(data.factions.containsKey(base.factionId), "base faction should exist")
         helper.assertTrue(data.factions.getValue(base.factionId).bossOfficerId != null, "base faction should have a boss officer")
+        helper.assertTrue(data.warbands.containsKey(base.id), "planned base should migrate into a logical warband")
         helper.succeed()
     }
 
@@ -79,33 +80,44 @@ object PillagerCampaignsGameTests {
     fun samCommandsAreRegisteredAndNonBlocking(helper: GameTestHelper) {
         val data = resetWorldData(helper)
         val level = helper.level
-        val base = plannedBase(level.dimension().location(), ChunkPos(helper.absolutePos(BlockPos(2, 2, 2))).x, ChunkPos(helper.absolutePos(BlockPos(2, 2, 2))).z)
-        data.bases[base.id] = base
-        PillagerSettlementScheduler.rebuild(data)
+        val anchor = ChunkPos(helper.absolutePos(BlockPos(2, 2, 2)))
+        val candidate = PillagerBasePlacementRules.Candidate(
+            id = UUID.nameUUIDFromBytes("gametest:sam-warband-command".toByteArray()),
+            dimension = level.dimension().location(),
+            structureId = ResourceLocation("minecraft", "pillager_outpost"),
+            cellX = 0,
+            cellZ = 0,
+            chunkX = anchor.x,
+            chunkZ = anchor.z,
+        )
+        val registered = PillagerBaseDiscoveryService.registerPlannedBase(level, data, candidate, level.gameTime)
+        helper.assertTrue(registered, "planned warband should register")
         val source = level.server.createCommandSourceStack().withLevel(level).withPermission(4).withSuppressedOutput()
-        val prefix = base.id.toString().take(8)
+        val prefix = candidate.id.toString().take(8)
 
         val status = level.server.commands.performPrefixedCommand(source, "sam status")
         val list = level.server.commands.performPrefixedCommand(source, "sam settlements list")
-        val queued = level.server.commands.performPrefixedCommand(source, "sam settlements materialize $prefix")
-        val missing = level.server.commands.performPrefixedCommand(source, "sam settlements materialize does-not-exist")
+        val warbands = level.server.commands.performPrefixedCommand(source, "sam warbands list")
+        val materialized = level.server.commands.performPrefixedCommand(source, "sam warbands materialize_warlord $prefix")
+        val missing = level.server.commands.performPrefixedCommand(source, "sam warbands materialize_warlord does-not-exist")
 
         helper.assertTrue(status == 1, "sam status should succeed")
         helper.assertTrue(list == 1, "sam settlements list should succeed")
-        helper.assertTrue(queued == 1, "sam materialize should enqueue and return success")
-        helper.assertTrue(missing == 0, "unknown materialize target should fail without throwing")
+        helper.assertTrue(warbands == 1, "sam warbands list should succeed")
+        helper.assertTrue(materialized == 1, "sam warbands materialize_warlord should return a handled result")
+        helper.assertTrue(missing == 0, "unknown warband materialize target should fail without throwing")
         helper.succeed()
     }
 
     @JvmStatic
     @GameTest(templateNamespace = "minecraft", template = "empty", timeoutTicks = 40)
-    fun vanillaLocateForOwnedPillagerStructureIsBlocked(helper: GameTestHelper) {
+    fun vanillaLocateForOwnedPillagerStructureIsAllowed(helper: GameTestHelper) {
         resetWorldData(helper)
         val source = helper.level.server.createCommandSourceStack().withLevel(helper.level).withPermission(4).withSuppressedOutput()
 
         val result = helper.level.server.commands.performPrefixedCommand(source, "locate structure minecraft:pillager_outpost")
 
-        helper.assertTrue(result == 1, "blocked locate should be canceled before vanilla jigsaw probing and return handled success")
+        helper.assertTrue(result >= 0, "vanilla locate should not be canceled by pillager campaigns")
         helper.succeed()
     }
 
@@ -159,41 +171,29 @@ object PillagerCampaignsGameTests {
 
     @JvmStatic
     @GameTest(templateNamespace = "minecraft", template = "empty", timeoutTicks = 200)
-    fun samMaterializeCommandDrivesMaterializationThroughScheduler(helper: GameTestHelper) {
+    fun samMaterializeWarlordCommandRecordsExplicitPresenceResult(helper: GameTestHelper) {
         val data = resetWorldData(helper)
         val level = helper.level
         val anchor = ChunkPos(helper.absolutePos(BlockPos(2, 2, 2)))
-        val base = plannedBase(level.dimension().location(), anchor.x, anchor.z)
-        data.bases[base.id] = base
-        PillagerSettlementScheduler.rebuild(data)
-
-        for (dz in -3..3) {
-            for (dx in -3..3) {
-                level.getChunk(anchor.x + dx, anchor.z + dz)
-            }
-        }
+        val candidate = PillagerBasePlacementRules.Candidate(
+            id = UUID.nameUUIDFromBytes("gametest:materialize-warlord-command".toByteArray()),
+            dimension = level.dimension().location(),
+            structureId = ResourceLocation("minecraft", "pillager_outpost"),
+            cellX = 0,
+            cellZ = 0,
+            chunkX = anchor.x,
+            chunkZ = anchor.z,
+        )
+        val registered = PillagerBaseDiscoveryService.registerPlannedBase(level, data, candidate, level.gameTime)
+        helper.assertTrue(registered, "planned warband should register")
+        level.getChunk(anchor.x, anchor.z)
         val source = level.server.createCommandSourceStack().withLevel(level).withPermission(4).withSuppressedOutput()
-        val queued = level.server.commands.performPrefixedCommand(source, "sam settlements materialize ${base.id.toString().take(8)}")
-        helper.assertTrue(queued == 1, "sam settlements materialize should queue work")
+        val result = level.server.commands.performPrefixedCommand(source, "sam warbands materialize_warlord ${candidate.id.toString().take(8)}")
+        val warband = data.warbands[candidate.id]
 
-        // The force command resets search progress; seed deterministic best-site after queuing.
-        val anchorCenterX = (anchor.x shl 4) + 8
-        val anchorCenterZ = (anchor.z shl 4) + 8
-        val anchorY = 64
-        base.materializationSearchRadius = 16
-        base.materializationCursorIndex = PillagerMaterializationSearchPlan.totalChunks(16)
-        base.materializationBestChunkX = anchor.x
-        base.materializationBestChunkZ = anchor.z
-        base.materializationBestX = anchorCenterX
-        base.materializationBestY = anchorY
-        base.materializationBestZ = anchorCenterZ
-        base.materializationBestScore = 1
-
-        PillagerSettlementScheduler.tickMaterialization(level.server, data, level.gameTime)
-
-        helper.assertTrue(base.state == BaseState.MATERIALIZED, "queued forced materialization should execute on scheduler tick")
-        helper.assertTrue(base.form == BaseForm.JIGSAW_OUTPOST, "scheduler path should materialize as jigsaw outpost")
-        helper.assertTrue(base.materializationFailure == BaseMaterializationFailure.NONE, "scheduler success should clear failure state")
+        helper.assertTrue(result == 1, "sam warbands materialize_warlord should return a handled result")
+        helper.assertTrue(warband != null, "warband should exist after registration")
+        helper.assertTrue(warband!!.lastPresenceAttemptTick == level.gameTime, "warlord materialization should record an attempt tick")
         helper.succeed()
     }
 
@@ -294,6 +294,7 @@ object PillagerCampaignsGameTests {
         val data = PillagerWorldData.get(helper.level.server)
         data.factions.clear()
         data.bases.clear()
+        data.warbands.clear()
         data.officers.clear()
         data.campaigns.clear()
         data.lastCampaignTick = 0L

@@ -2,7 +2,6 @@ package com.gerald.pillagercampaigns.system
 
 import com.gerald.pillagercampaigns.PillagerCampaignsConfig
 import com.gerald.pillagercampaigns.PillagerCampaignsMod
-import com.gerald.pillagercampaigns.data.BaseState
 import com.gerald.pillagercampaigns.data.CampaignState
 import com.gerald.pillagercampaigns.data.OfficerRank
 import com.gerald.pillagercampaigns.data.OfficerState
@@ -19,6 +18,11 @@ import java.util.concurrent.ThreadLocalRandom
 object PillagerCampaignEngine {
     private const val MATERIALIZE_LEASE_TICKS: Long = 200L
     private const val MIN_ACTIVE_LIVE_MEMBERS: Int = 1
+    private const val RAID_COOLDOWN_TICKS: Long = 6_000L
+    private const val RAID_SETBACK_TICKS: Long = 12_000L
+    private const val INTEL_STABILITY_TICKS: Long = 24_000L
+    private const val RALLY_WINDOW_TICKS: Long = 12_000L
+    private const val RALLY_MAX_STEP_CHUNKS: Int = 3
     private var dispatchCursor: Int = 0
 
     fun tick(server: MinecraftServer, data: PillagerWorldData, now: Long) {
@@ -27,53 +31,56 @@ object PillagerCampaignEngine {
     }
 
     fun discoveryTick(server: MinecraftServer, data: PillagerWorldData, now: Long) {
-        val before = data.bases.size
+        val before = data.warbands.size
         PillagerDiscoveryCoordinator.tick(server, data, now)
-        val added = data.bases.size - before
+        data.migrateBasesToWarbands()
+        val added = data.warbands.size - before
         if (added > 0) {
-            PillagerCampaignsMod.LOGGER.info("Discovered {} pillager base(s)", added)
+            PillagerCampaignsMod.LOGGER.info("Discovered {} pillager warband(s)", added)
         }
     }
 
     private fun dispatch(server: MinecraftServer, data: PillagerWorldData) {
-        val maxPerBase = PillagerCampaignsConfig.maxCampaignsPerBase.get()
         val maxRange = PillagerCampaignsConfig.maxCampaignDistanceChunks.get()
         val players = server.playerList.players
-        val bases = data.bases.values.toList()
-        if (bases.isEmpty()) return
-        val activeCampaignsByBase = data.campaigns.values
+        val warbands = data.warbands.values.toList()
+        if (warbands.isEmpty()) return
+        val activeCampaignsByWarband = data.campaigns.values
             .asSequence()
             .filter { it.state != CampaignState.RESOLVED }
-            .groupingBy { it.originBaseId }
+            .groupingBy { it.originWarbandId }
             .eachCount()
-        val targetedPlayersByBase = data.campaigns.values
+        val targetedPlayersByWarband = data.campaigns.values
             .asSequence()
             .filter { it.state != CampaignState.RESOLVED }
-            .groupBy({ it.originBaseId }, { it.targetPlayerId })
+            .groupBy({ it.originWarbandId }, { it.targetPlayerId })
         val budget = PillagerCampaignsConfig.campaignDispatchBasesPerTick.get().coerceAtLeast(1)
         var inspected = 0
-        while (inspected < budget && inspected < bases.size) {
-            val base = bases[Math.floorMod(dispatchCursor, bases.size)]
+        while (inspected < budget && inspected < warbands.size) {
+            val warband = warbands[Math.floorMod(dispatchCursor, warbands.size)]
             dispatchCursor++
             inspected++
-            if (base.defeated || base.state == BaseState.DEFEATED) continue
-            val existing = activeCampaignsByBase[base.id] ?: 0
-            if (existing >= maxPerBase) continue
-            val level = server.allLevels.firstOrNull { it.dimension().location() == base.dimension } ?: continue
-            val target = nearestPlayer(level, players, base.chunkX, base.chunkZ, maxRange) ?: continue
-            val alreadyTargetingPlayer = targetedPlayersByBase[base.id]?.contains(target.uuid) == true
+            moveRallyIfDue(server, data, warband, server.overworld().gameTime)
+            if (warband.defeated || warband.strength <= 0) continue
+            val now = server.overworld().gameTime
+            if (now < warband.nextRaidTick || now < warband.cooldownUntilTick) continue
+            val existing = activeCampaignsByWarband[warband.id] ?: 0
+            if (existing >= warband.activeCampaignLimit) continue
+            val level = server.allLevels.firstOrNull { it.dimension().location() == warband.dimension } ?: continue
+            val target = nearestPlayer(level, players, warband.rallyChunkX, warband.rallyChunkZ, maxRange) ?: continue
+            val alreadyTargetingPlayer = targetedPlayersByWarband[warband.id]?.contains(target.uuid) == true
             if (alreadyTargetingPlayer) continue
-            val officer = obtainOfficer(data, base.factionId, base.id, base.difficulty)
-            val difficultySnapshot = base.difficulty.coerceAtLeast(0)
+            val officer = obtainOfficer(data, warband.factionId, warband.id, warband.strength)
+            val difficultySnapshot = warband.strength.coerceAtLeast(0)
             val campaign = PillagerCampaign(
                 id = UUID.randomUUID(),
-                factionId = base.factionId,
-                originBaseId = base.id,
+                factionId = warband.factionId,
+                originBaseId = warband.id,
                 officerId = officer.id,
                 targetPlayerId = target.uuid,
                 targetDimension = level.dimension().location(),
-                currentChunkX = base.chunkX,
-                currentChunkZ = base.chunkZ,
+                currentChunkX = warband.rallyChunkX,
+                currentChunkZ = warband.rallyChunkZ,
                 targetChunkX = target.chunkPosition().x,
                 targetChunkZ = target.chunkPosition().z,
                 difficultySnapshot = difficultySnapshot,
@@ -85,6 +92,7 @@ object PillagerCampaignEngine {
                 squadMemberIds = mutableListOf(),
             )
             officer.state = OfficerState.DEPLOYED
+            warband.nextRaidTick = now + RAID_COOLDOWN_TICKS
             data.campaigns[campaign.id] = campaign
             data.markChanged()
         }
@@ -152,7 +160,7 @@ object PillagerCampaignEngine {
             }
         }
         if (toResolve.isNotEmpty()) {
-            toResolve.forEach { id -> resolveCampaign(data, id) }
+            toResolve.forEach { id -> resolveCampaign(data, id, observedTick = now) }
             data.markChanged()
         }
     }
@@ -172,23 +180,29 @@ object PillagerCampaignEngine {
         campaign.squadMemberIds.clear()
         data.markChanged()
 
-        val pos = PillagerSpawnPlacementRules.findMaterializationPos(level, player, campaign.currentChunkX, campaign.currentChunkZ, distanceChunks) ?: return
-        val base = data.bases[campaign.originBaseId] ?: return
-        val officer = data.officers[campaign.officerId] ?: return
-        val spawnedIds = PillagerRuntime.materializeFixedSquad(level, campaign, base, officer, player, pos.x + 0.5, pos.y.toDouble(), pos.z + 0.5)
-        if (spawnedIds.isNotEmpty()) {
-            campaign.squadMemberIds.clear()
-            campaign.squadMemberIds.addAll(spawnedIds)
+        val warband = data.warbands[campaign.originWarbandId] ?: return
+        val result = PillagerWarbandPresenceSystem.materializeInvasionSquad(level, data, warband, campaign, player, distanceChunks, now)
+        if (result == com.gerald.pillagercampaigns.data.PresenceMaterializationResult.SUCCESS ||
+            result == com.gerald.pillagercampaigns.data.PresenceMaterializationResult.LIVE_ALREADY_PRESENT
+        ) {
             campaign.state = CampaignState.ACTIVE
             campaign.materializeAttemptId = null
             campaign.materializingUntilTick = 0L
             data.markChanged()
-            PillagerCampaignsMod.LOGGER.info("Materialized campaign {} with {} mobs at {},{}", campaign.id, spawnedIds.size, pos.x, pos.z)
+            PillagerCampaignsMod.LOGGER.info("Materialized campaign {} from warband {}", campaign.id, warband.id)
         }
     }
 
-    fun resolveCampaign(data: PillagerWorldData, campaignId: UUID) {
+    fun resolveCampaign(data: PillagerWorldData, campaignId: UUID, defeatedByPlayer: Boolean = true, observedTick: Long = -1L) {
         val campaign = data.campaigns[campaignId] ?: return
+        if (campaign.state != CampaignState.RESOLVED && defeatedByPlayer) {
+            data.warbands[campaign.originWarbandId]?.let { warband ->
+                warband.strength = (warband.strength - 1).coerceAtLeast(0)
+                warband.cooldownUntilTick = maxOf(warband.cooldownUntilTick, warband.nextRaidTick + RAID_SETBACK_TICKS)
+                if (observedTick >= 0L) warband.lastIntelTick = observedTick
+                if (warband.strength <= 0) warband.defeated = true
+            }
+        }
         campaign.state = CampaignState.RESOLVED
         campaign.materializeAttemptId = null
         campaign.materializingUntilTick = 0L
@@ -202,23 +216,44 @@ object PillagerCampaignEngine {
         campaignIds.forEach { id -> resolveCampaign(data, id) }
         data.campaigns.entries.removeIf { (_, campaign) -> campaign.factionId == factionId }
         data.officers.entries.removeIf { (_, officer) -> officer.factionId == factionId }
+        data.warbands.entries.removeIf { (_, warband) -> warband.factionId == factionId }
         data.bases.entries.removeIf { (_, base) -> base.factionId == factionId }
         data.factions.remove(factionId)
         data.markChanged()
     }
 
-    fun collapseBase(data: PillagerWorldData, baseId: UUID) {
-        val base = data.bases[baseId] ?: return
-        base.defeated = true
-        base.state = BaseState.DEFEATED
-        data.factions[base.factionId]?.bossEntityId = null
+    fun collapseWarband(data: PillagerWorldData, warbandId: UUID) {
+        val warband = data.warbands[warbandId] ?: return
+        warband.defeated = true
+        warband.strength = 0
+        warband.warlordEntityId = null
+        data.factions[warband.factionId]?.bossEntityId = null
         val campaignIds = data.campaigns.values
-            .filter { it.originBaseId == baseId && it.state != CampaignState.RESOLVED }
+            .filter { it.originWarbandId == warbandId && it.state != CampaignState.RESOLVED }
             .map { it.id }
-        campaignIds.forEach { id -> resolveCampaign(data, id) }
+        campaignIds.forEach { id -> resolveCampaign(data, id, defeatedByPlayer = false) }
         data.officers.values
-            .filter { it.homeBaseId == baseId }
+            .filter { it.homeBaseId == warbandId }
             .forEach { it.state = OfficerState.DEAD }
+        data.markChanged()
+    }
+
+    fun collapseBase(data: PillagerWorldData, baseId: UUID) = collapseWarband(data, baseId)
+
+    private fun moveRallyIfDue(server: MinecraftServer, data: PillagerWorldData, warband: com.gerald.pillagercampaigns.data.PillagerWarband, now: Long) {
+        if (warband.defeated || now - warband.lastIntelTick < INTEL_STABILITY_TICKS) return
+        warband.warlordEntityId?.let { id ->
+            server.allLevels.firstOrNull { it.dimension().location() == warband.dimension }?.getEntity(id)?.let { entity ->
+                if (entity.isAlive) return
+            }
+        }
+        val window = now / RALLY_WINDOW_TICKS
+        val seed = server.overworld().seed xor warband.id.mostSignificantBits xor warband.id.leastSignificantBits xor window
+        val dx = Math.floorMod(seed.toInt(), RALLY_MAX_STEP_CHUNKS * 2 + 1) - RALLY_MAX_STEP_CHUNKS
+        val dz = Math.floorMod((seed ushr 32).toInt(), RALLY_MAX_STEP_CHUNKS * 2 + 1) - RALLY_MAX_STEP_CHUNKS
+        if (dx == 0 && dz == 0) return
+        warband.rallyChunkX += dx
+        warband.rallyChunkZ += dz
         data.markChanged()
     }
 

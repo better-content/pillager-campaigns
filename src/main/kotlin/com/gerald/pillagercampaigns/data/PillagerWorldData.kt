@@ -8,6 +8,7 @@ import java.util.UUID
 class PillagerWorldData : SavedData() {
     val factions: MutableMap<UUID, PillagerFaction> = linkedMapOf()
     val bases: MutableMap<UUID, PillagerBase> = linkedMapOf()
+    val warbands: MutableMap<UUID, PillagerWarband> = linkedMapOf()
     val officers: MutableMap<UUID, PillagerOfficer> = linkedMapOf()
     val campaigns: MutableMap<UUID, PillagerCampaign> = linkedMapOf()
 
@@ -20,6 +21,7 @@ class PillagerWorldData : SavedData() {
         tag.putLong("lastCampaignTick", lastCampaignTick)
         tag.put("factions", saveRecordList(factions.values.map { it.save() }))
         tag.put("bases", saveRecordList(bases.values.map { it.save() }))
+        tag.put("warbands", saveRecordList(warbands.values.map { it.save() }))
         tag.put("officers", saveRecordList(officers.values.map { it.save() }))
         tag.put("campaigns", saveRecordList(campaigns.values.map { it.save() }))
         return tag
@@ -42,21 +44,38 @@ class PillagerWorldData : SavedData() {
             data.lastCampaignTick = tag.getLong("lastCampaignTick")
             loadRecordList(tag, "factions") { PillagerFaction.load(it).let { v -> data.factions[v.id] = v } }
             loadRecordList(tag, "bases") { PillagerBase.load(it).let { v -> data.bases[v.id] = v } }
+            loadRecordList(tag, "warbands") { PillagerWarband.load(it).let { v -> data.warbands[v.id] = v } }
             loadRecordList(tag, "officers") { PillagerOfficer.load(it).let { v -> data.officers[v.id] = v } }
+            data.migrateBasesToWarbands()
             loadRecordList(tag, "campaigns") { PillagerCampaign.load(it).let { v -> data.campaigns[v.id] = v } }
             data.repairReferences()
             return data
         }
     }
 
+    fun migrateBasesToWarbands() {
+        bases.values
+            .filter { !it.defeated && it.id !in warbands }
+            .forEach { base ->
+                val faction = factions[base.factionId] ?: return@forEach
+                val warlordId = faction.bossOfficerId
+                    ?: officers.values.firstOrNull { it.factionId == base.factionId && it.homeBaseId == base.id }?.id
+                    ?: officers.values.firstOrNull { it.factionId == base.factionId }?.id
+                    ?: return@forEach
+                faction.bossOfficerId = warlordId
+                warbands[base.id] = PillagerWarband.migrate(base, warlordId)
+            }
+    }
+
     private fun repairReferences() {
         val factionIds = factions.keys
-        val baseIds = bases.keys
+        val warbandIds = warbands.keys
         val officerIds = officers.keys
         bases.entries.removeIf { (_, base) -> base.factionId !in factionIds }
-        officers.entries.removeIf { (_, officer) -> officer.factionId !in factionIds || officer.homeBaseId !in baseIds }
+        warbands.entries.removeIf { (_, warband) -> warband.factionId !in factionIds || warband.warlordOfficerId !in officerIds }
+        officers.entries.removeIf { (_, officer) -> officer.factionId !in factionIds || officer.homeBaseId !in warbandIds }
         campaigns.entries.removeIf { (_, campaign) ->
-            campaign.factionId !in factionIds || campaign.originBaseId !in baseIds || campaign.officerId !in officerIds
+            campaign.factionId !in factionIds || campaign.originWarbandId !in warbandIds || campaign.officerId !in officerIds
         }
     }
 }

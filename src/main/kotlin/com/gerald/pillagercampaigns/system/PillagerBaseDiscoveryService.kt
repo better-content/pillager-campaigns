@@ -15,7 +15,6 @@ import net.minecraft.world.level.ChunkPos
 object PillagerBaseDiscoveryService {
     fun registerPlannedBase(level: ServerLevel, data: PillagerWorldData, candidate: PillagerBasePlacementRules.Candidate, now: Long): Boolean {
         if (data.bases.containsKey(candidate.id)) return false
-        if (!PillagerBaseMaterializer.canMaterialize(level, candidate.structureId)) return false
         val existsAtAnchor = data.bases.values.any {
             it.dimension == candidate.dimension &&
                 it.anchorChunkX == candidate.chunkX &&
@@ -55,7 +54,7 @@ object PillagerBaseDiscoveryService {
             materializationBestScore = Int.MIN_VALUE,
         )
         ensureBossOfficer(level, data, candidate.id, faction.id)
-        PillagerSettlementScheduler.onBaseRegistered(data.bases.getValue(candidate.id))
+        data.migrateBasesToWarbands()
         data.markChanged()
         return true
     }

@@ -1,7 +1,6 @@
 package com.gerald.pillagercampaigns.system
 
 import kotlin.test.Test
-import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 class PillagerLocateGuardTest {
@@ -13,45 +12,24 @@ class PillagerLocateGuardTest {
     )
 
     @Test
-    fun `blocks configured pillager base structure locate commands`() {
-        assertEquals(
-            "minecraft:pillager_outpost",
-            PillagerLocateGuard.blockedTarget("locate structure minecraft:pillager_outpost", configured),
-        )
-        assertEquals(
-            "takesapillage:bastille",
-            PillagerLocateGuard.blockedTarget("/locate structure takesapillage:bastille", configured),
-        )
-        assertEquals(
-            "towns_and_towers:exclusives/pillager_outpost_classic",
-            PillagerLocateGuard.blockedTarget("locate structure towns_and_towers:exclusives/pillager_outpost_classic", configured),
-        )
+    fun `allows configured pillager structure locate commands`() {
+        assertNull(PillagerLocateGuard.blockedTarget("locate structure minecraft:pillager_outpost", configured))
+        assertNull(PillagerLocateGuard.blockedTarget("/locate structure takesapillage:bastille", configured))
+        assertNull(PillagerLocateGuard.blockedTarget("locate structure towns_and_towers:exclusives/pillager_outpost_classic", configured))
     }
 
     @Test
-    fun `blocks pillager structure tags without blocking unrelated locate commands`() {
-        assertEquals(
-            "#minecraft:pillager_outpost",
-            PillagerLocateGuard.blockedTarget("locate structure #minecraft:pillager_outpost", configured),
-        )
+    fun `allows pillager structure tags and unrelated locate commands`() {
+        assertNull(PillagerLocateGuard.blockedTarget("locate structure #minecraft:pillager_outpost", configured))
         assertNull(PillagerLocateGuard.blockedTarget("locate structure minecraft:village_plains", configured))
         assertNull(PillagerLocateGuard.blockedTarget("locate biome minecraft:plains", configured))
         assertNull(PillagerLocateGuard.blockedTarget("sam settlements list", configured))
     }
 
     @Test
-    fun `guard handles case and spacing variants to prevent bypass`() {
-        assertEquals(
-            "MINECRAFT:PILLAGER_OUTPOST",
-            PillagerLocateGuard.blockedTarget("/LOCATE   STRUCTURE   MINECRAFT:PILLAGER_OUTPOST", configured),
-        )
-        assertEquals(
-            "takesapillage:pillager_camp",
-            PillagerLocateGuard.blockedTarget("locate structure takesapillage:pillager_camp", configured),
-        )
-        assertEquals(
-            "minecraft:pillager_outpost",
-            PillagerLocateGuard.blockedTarget("execute as @p run locate structure minecraft:pillager_outpost", configured),
-        )
+    fun `case and spacing variants are not blocked`() {
+        assertNull(PillagerLocateGuard.blockedTarget("/LOCATE   STRUCTURE   MINECRAFT:PILLAGER_OUTPOST", configured))
+        assertNull(PillagerLocateGuard.blockedTarget("locate structure takesapillage:pillager_camp", configured))
+        assertNull(PillagerLocateGuard.blockedTarget("execute as @p run locate structure minecraft:pillager_outpost", configured))
     }
 }

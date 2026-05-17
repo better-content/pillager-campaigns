@@ -8,17 +8,33 @@ import net.minecraft.world.level.levelgen.Heightmap
 import kotlin.math.abs
 
 object PillagerSpawnPlacementRules {
+    data class MaterializationSite(val pos: BlockPos, val overWater: Boolean)
+
     fun findMaterializationPos(level: ServerLevel, player: ServerPlayer, originChunkX: Int, originChunkZ: Int, distanceChunks: Int): BlockPos? {
+        return findMaterializationSite(level, player, originChunkX, originChunkZ, distanceChunks)
+            ?.takeUnless { it.overWater }
+            ?.pos
+    }
+
+    fun findMaterializationSite(level: ServerLevel, player: ServerPlayer, originChunkX: Int, originChunkZ: Int, distanceChunks: Int): MaterializationSite? {
         val playerChunkX = player.chunkPosition().x
         val playerChunkZ = player.chunkPosition().z
         val dirX = (playerChunkX - originChunkX).sign()
         val dirZ = (playerChunkZ - originChunkZ).sign()
         val desiredChunkX = playerChunkX - (dirX * distanceChunks)
         val desiredChunkZ = playerChunkZ - (dirZ * distanceChunks)
-        return nearestSafePosInLoadedChunks(level, desiredChunkX, desiredChunkZ)
+        return nearestSafeSiteInLoadedChunks(level, desiredChunkX, desiredChunkZ, allowWater = true)
     }
 
+    fun findRallyPos(level: ServerLevel, rallyChunkX: Int, rallyChunkZ: Int): BlockPos? =
+        nearestSafePosInLoadedChunks(level, rallyChunkX, rallyChunkZ)
+
     private fun nearestSafePosInLoadedChunks(level: ServerLevel, startChunkX: Int, startChunkZ: Int): BlockPos? {
+        return nearestSafeSiteInLoadedChunks(level, startChunkX, startChunkZ, allowWater = false)?.pos
+    }
+
+    private fun nearestSafeSiteInLoadedChunks(level: ServerLevel, startChunkX: Int, startChunkZ: Int, allowWater: Boolean): MaterializationSite? {
+        var waterFallback: MaterializationSite? = null
         for (ring in 0..4) {
             for (dx in -ring..ring) {
                 for (dz in -ring..ring) {
@@ -26,12 +42,15 @@ object PillagerSpawnPlacementRules {
                     val z = startChunkZ + dz
                     if (!level.hasChunk(x, z)) continue
                     val pos = chunkCenterSurface(level, x, z) ?: continue
-                    if (isWater(level, pos)) continue
-                    return pos
+                    val water = isWater(level, pos)
+                    if (!water) return MaterializationSite(pos, overWater = false)
+                    if (allowWater && waterFallback == null) {
+                        waterFallback = MaterializationSite(pos, overWater = true)
+                    }
                 }
             }
         }
-        return null
+        return waterFallback
     }
 
     private fun chunkCenterSurface(level: ServerLevel, chunkX: Int, chunkZ: Int): BlockPos? {
