@@ -33,7 +33,7 @@ object PillagerCampaignsGameTests {
         val candidate = PillagerBasePlacementRules.Candidate(
             id = UUID.nameUUIDFromBytes("gametest:planned-base".toByteArray()),
             dimension = level.dimension().location(),
-            structureId = ResourceLocation("minecraft", "pillager_outpost"),
+            structureId = location("minecraft:pillager_outpost"),
             cellX = 0,
             cellZ = 0,
             chunkX = anchor.x,
@@ -84,7 +84,7 @@ object PillagerCampaignsGameTests {
         val candidate = PillagerBasePlacementRules.Candidate(
             id = UUID.nameUUIDFromBytes("gametest:sam-warband-command".toByteArray()),
             dimension = level.dimension().location(),
-            structureId = ResourceLocation("minecraft", "pillager_outpost"),
+            structureId = location("minecraft:pillager_outpost"),
             cellX = 0,
             cellZ = 0,
             chunkX = anchor.x,
@@ -178,7 +178,7 @@ object PillagerCampaignsGameTests {
         val candidate = PillagerBasePlacementRules.Candidate(
             id = UUID.nameUUIDFromBytes("gametest:materialize-warlord-command".toByteArray()),
             dimension = level.dimension().location(),
-            structureId = ResourceLocation("minecraft", "pillager_outpost"),
+            structureId = location("minecraft:pillager_outpost"),
             cellX = 0,
             cellZ = 0,
             chunkX = anchor.x,
@@ -308,7 +308,7 @@ object PillagerCampaignsGameTests {
         id = UUID.randomUUID(),
         factionId = UUID.randomUUID(),
         dimension = dimension,
-        structureId = ResourceLocation("minecraft", "pillager_outpost"),
+        structureId = location("minecraft:pillager_outpost"),
         bannerSeed = 0,
         difficulty = 0,
         defeated = false,
@@ -332,4 +332,6 @@ object PillagerCampaignsGameTests {
         materializationBestZ = 0,
         materializationBestScore = Int.MIN_VALUE,
     )
+
+    private fun location(value: String): ResourceLocation = ResourceLocation.tryParse(value)!!
 }

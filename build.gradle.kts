@@ -109,6 +109,12 @@ tasks.withType<JavaExec>().configureEach {
     }
 }
 
+tasks.register("headlessGameTest") {
+    group = "verification"
+    description = "Runs Forge game tests in a headless dedicated server."
+    dependsOn(tasks.named("runGameTestServer"))
+}
+
 tasks.withType<JavaCompile>().configureEach {
     options.release.set(17)
 }

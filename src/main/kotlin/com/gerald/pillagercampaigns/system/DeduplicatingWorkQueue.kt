@@ -26,7 +26,11 @@ internal class DeduplicatingWorkQueue<T> {
         return item
     }
 
-    fun remove(item: T): Boolean = queued.remove(item)
+    fun remove(item: T): Boolean {
+        if (!queued.remove(item)) return false
+        queue.remove(item)
+        return true
+    }
 
     fun contains(item: T): Boolean = item in queued
 
