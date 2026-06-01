@@ -11,6 +11,7 @@ import net.minecraft.resources.ResourceKey
 import net.minecraft.resources.ResourceLocation
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.world.level.ChunkPos
+import net.minecraft.world.level.chunk.LevelChunk
 import net.minecraft.world.level.levelgen.Heightmap
 import net.minecraft.world.level.levelgen.structure.BoundingBox
 import net.minecraft.world.level.levelgen.structure.PoolElementStructurePiece
@@ -88,7 +89,7 @@ object PillagerBaseMaterializer {
         val strict = !force && base.materializationAttempts < 6
         val radius = (searchRadiusChunks + if (force) 8 else (base.materializationAttempts / 4)).coerceAtMost(24)
         val search = PillagerMaterializationSearchPlan.advance(base, radius, candidateCheckBudget.coerceAtLeast(1)) { chunkX, chunkZ ->
-            if (!level.hasChunk(chunkX, chunkZ)) null else scoreChunk(level, chunkX, chunkZ, strict)
+            loadedChunk(level, chunkX, chunkZ)?.let { scoreChunk(level, it, strict) }
         }
         if (!search.complete) {
             return MaterializationResult(
@@ -138,8 +139,8 @@ object PillagerBaseMaterializer {
             for (dx in -radius..radius) {
                 val chunkX = anchorChunkX + dx
                 val chunkZ = anchorChunkZ + dz
-                if (!level.hasChunk(chunkX, chunkZ)) continue
-                val site = scoreChunk(level, chunkX, chunkZ, strict) ?: continue
+                val chunk = loadedChunk(level, chunkX, chunkZ) ?: continue
+                val site = scoreChunk(level, chunk, strict) ?: continue
                 val currentBest = best
                 if (currentBest == null || site.score > currentBest.score) {
                     best = site
@@ -149,10 +150,10 @@ object PillagerBaseMaterializer {
         return best
     }
 
-    private fun scoreChunk(level: ServerLevel, chunkX: Int, chunkZ: Int, strict: Boolean): Site? {
-        val chunk = ChunkPos(chunkX, chunkZ)
-        val centerX = chunk.middleBlockX
-        val centerZ = chunk.middleBlockZ
+    private fun scoreChunk(level: ServerLevel, chunk: LevelChunk, strict: Boolean): Site? {
+        val chunkPos = chunk.pos
+        val centerX = chunkPos.middleBlockX
+        val centerZ = chunkPos.middleBlockZ
         val sampleOffsets = intArrayOf(-6, -3, 0, 3, 6)
         var minY = Int.MAX_VALUE
         var maxY = Int.MIN_VALUE
@@ -163,9 +164,9 @@ object PillagerBaseMaterializer {
             for (zOffset in sampleOffsets) {
                 val x = centerX + xOffset
                 val z = centerZ + zOffset
-                val y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z)
+                val y = chunk.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x and 15, z and 15) + 1
                 val ground = BlockPos(x, y - 1, z)
-                val groundState = level.getBlockState(ground)
+                val groundState = chunk.getBlockState(ground)
                 if (!groundState.fluidState.isEmpty) fluidPenalty += 8
                 if (groundState.isSolidRender(level, ground)) solidSamples++
                 minY = minOf(minY, y)
@@ -178,9 +179,9 @@ object PillagerBaseMaterializer {
         val maxSlope = if (strict) 8 else 14
         val maxFluidPenalty = if (strict) 16 else 32
         if (solidSamples < minSolid || slope > maxSlope || fluidPenalty >= maxFluidPenalty) return null
-        val centerY = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, centerX, centerZ)
+        val centerY = chunk.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, centerX and 15, centerZ and 15) + 1
         val score = 100 - slope * 8 - fluidPenalty - abs(centerY - level.seaLevel)
-        return Site(chunkX, chunkZ, BlockPos(centerX, centerY, centerZ), score)
+        return Site(chunkPos.x, chunkPos.z, BlockPos(centerX, centerY, centerZ), score)
     }
 
     private fun placeJigsawBase(level: ServerLevel, structureId: ResourceLocation, center: BlockPos): Boolean {
@@ -226,11 +227,14 @@ object PillagerBaseMaterializer {
     private fun hasLoadedFootprint(level: ServerLevel, chunkX: Int, chunkZ: Int, radiusChunks: Int): Boolean {
         for (dz in -radiusChunks..radiusChunks) {
             for (dx in -radiusChunks..radiusChunks) {
-                if (!level.hasChunk(chunkX + dx, chunkZ + dz)) return false
+                if (loadedChunk(level, chunkX + dx, chunkZ + dz) == null) return false
             }
         }
         return true
     }
+
+    private fun loadedChunk(level: ServerLevel, chunkX: Int, chunkZ: Int): LevelChunk? =
+        level.chunkSource.getChunkNow(chunkX, chunkZ)
 
     private fun startPoolFor(structureId: ResourceLocation): ResourceLocation {
         START_POOLS_BY_STRUCTURE_ID[structureId]?.let { return it }

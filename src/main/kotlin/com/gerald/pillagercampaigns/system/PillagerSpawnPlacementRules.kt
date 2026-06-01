@@ -4,6 +4,7 @@ import net.minecraft.core.BlockPos
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.server.level.ServerPlayer
 import net.minecraft.world.level.block.state.BlockState
+import net.minecraft.world.level.chunk.LevelChunk
 import net.minecraft.world.level.levelgen.Heightmap
 import kotlin.math.abs
 
@@ -40,9 +41,9 @@ object PillagerSpawnPlacementRules {
                 for (dz in -ring..ring) {
                     val x = startChunkX + dx
                     val z = startChunkZ + dz
-                    if (!level.hasChunk(x, z)) continue
-                    val pos = chunkCenterSurface(level, x, z) ?: continue
-                    val water = isWater(level, pos)
+                    val chunk = level.chunkSource.getChunkNow(x, z) ?: continue
+                    val pos = chunkCenterSurface(level, chunk, x, z) ?: continue
+                    val water = isWater(chunk, pos)
                     if (!water) return MaterializationSite(pos, overWater = false)
                     if (allowWater && waterFallback == null) {
                         waterFallback = MaterializationSite(pos, overWater = true)
@@ -53,17 +54,17 @@ object PillagerSpawnPlacementRules {
         return waterFallback
     }
 
-    private fun chunkCenterSurface(level: ServerLevel, chunkX: Int, chunkZ: Int): BlockPos? {
+    private fun chunkCenterSurface(level: ServerLevel, chunk: LevelChunk, chunkX: Int, chunkZ: Int): BlockPos? {
         val x = chunkX * 16 + 8
         val z = chunkZ * 16 + 8
-        val y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z)
+        val y = chunk.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x and 15, z and 15) + 1
         if (y <= level.minBuildHeight) return null
         return BlockPos(x, y, z)
     }
 
-    private fun isWater(level: ServerLevel, pos: BlockPos): Boolean {
+    private fun isWater(chunk: LevelChunk, pos: BlockPos): Boolean {
         val below = pos.below()
-        val state: BlockState = level.getBlockState(below)
+        val state: BlockState = chunk.getBlockState(below)
         return state.fluidState.isSource
     }
 }
