@@ -25,7 +25,7 @@ import kotlin.test.assertTrue
 
 class PillagerCampaignEngineTest {
     @Test
-    fun `resolving campaign penalizes live warband and releases officer`() {
+    fun `resolving campaign strengthens live warband and releases officer`() {
         val fixture = campaignFixture(strength = 3, nextRaidTick = 100L)
         val campaign = fixture.campaign
         campaign.state = CampaignState.ACTIVE
@@ -39,9 +39,9 @@ class PillagerCampaignEngineTest {
         assertNull(campaign.materializeAttemptId)
         assertEquals(0L, campaign.materializingUntilTick)
         assertTrue(campaign.squadMemberIds.isEmpty())
-        assertEquals(2, fixture.warband.strength)
+        assertEquals(4, fixture.warband.strength)
         assertFalse(fixture.warband.defeated)
-        assertEquals(12_100L, fixture.warband.cooldownUntilTick)
+        assertEquals(0L, fixture.warband.cooldownUntilTick)
         assertEquals(500L, fixture.warband.lastIntelTick)
         assertEquals(OfficerState.AVAILABLE, fixture.officer.state)
     }
@@ -72,6 +72,16 @@ class PillagerCampaignEngineTest {
         assertTrue(fixture.data.warbands.isEmpty())
         assertTrue(fixture.data.officers.isEmpty())
         assertTrue(fixture.data.campaigns.isEmpty())
+    }
+
+    @Test
+    fun `campaign loss weakens warband and can defeat it`() {
+        val fixture = campaignFixture(strength = 1)
+
+        PillagerCampaignEngine.recordCampaignLoss(fixture.data, fixture.warband.id)
+
+        assertEquals(0, fixture.warband.strength)
+        assertTrue(fixture.warband.defeated)
     }
 
     private fun campaignFixture(strength: Int = 3, nextRaidTick: Long = 0L): CampaignFixture {

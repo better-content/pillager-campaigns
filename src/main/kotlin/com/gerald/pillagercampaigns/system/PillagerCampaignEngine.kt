@@ -19,7 +19,6 @@ object PillagerCampaignEngine {
     private const val MATERIALIZE_LEASE_TICKS: Long = 200L
     private const val MIN_ACTIVE_LIVE_MEMBERS: Int = 1
     private const val RAID_COOLDOWN_TICKS: Long = 6_000L
-    private const val RAID_SETBACK_TICKS: Long = 12_000L
     private const val INTEL_STABILITY_TICKS: Long = 24_000L
     private const val RALLY_WINDOW_TICKS: Long = 12_000L
     private const val RALLY_MAX_STEP_CHUNKS: Int = 3
@@ -196,12 +195,7 @@ object PillagerCampaignEngine {
     fun resolveCampaign(data: PillagerWorldData, campaignId: UUID, defeatedByPlayer: Boolean = true, observedTick: Long = -1L) {
         val campaign = data.campaigns[campaignId] ?: return
         if (campaign.state != CampaignState.RESOLVED && defeatedByPlayer) {
-            data.warbands[campaign.originWarbandId]?.let { warband ->
-                warband.strength = (warband.strength - 1).coerceAtLeast(0)
-                warband.cooldownUntilTick = maxOf(warband.cooldownUntilTick, warband.nextRaidTick + RAID_SETBACK_TICKS)
-                if (observedTick >= 0L) warband.lastIntelTick = observedTick
-                if (warband.strength <= 0) warband.defeated = true
-            }
+            recordCampaignVictory(data, campaign.originWarbandId, observedTick)
         }
         campaign.state = CampaignState.RESOLVED
         campaign.materializeAttemptId = null
@@ -209,6 +203,22 @@ object PillagerCampaignEngine {
         campaign.squadMemberIds.clear()
         data.officers[campaign.officerId]?.state = OfficerState.AVAILABLE
         data.markChanged()
+    }
+
+    fun recordCampaignVictory(data: PillagerWorldData, warbandId: UUID, observedTick: Long = -1L) {
+        data.warbands[warbandId]?.let { warband ->
+            warband.strength = (warband.strength + 1).coerceAtLeast(0)
+            if (observedTick >= 0L) warband.lastIntelTick = observedTick
+        }
+    }
+
+    fun recordCampaignLoss(data: PillagerWorldData, warbandId: UUID) {
+        data.warbands[warbandId]?.let { warband ->
+            warband.strength = (warband.strength - 1).coerceAtLeast(0)
+            if (warband.strength <= 0) {
+                warband.defeated = true
+            }
+        }
     }
 
     fun collapseFaction(data: PillagerWorldData, factionId: UUID) {

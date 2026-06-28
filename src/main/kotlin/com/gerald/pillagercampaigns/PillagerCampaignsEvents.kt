@@ -127,7 +127,7 @@ object PillagerCampaignsEvents {
                 val campaign = data.campaigns[killerTag.getUUID(PillagerRuntime.CAMPAIGN_TAG)]
                 val warband = campaign?.let { data.warbands[it.originWarbandId] }
                 if (warband != null) {
-                    warband.strength = (warband.strength - 1).coerceAtLeast(0)
+                    PillagerCampaignEngine.recordCampaignLoss(data, warband.id)
                     data.markChanged()
                 }
             }
