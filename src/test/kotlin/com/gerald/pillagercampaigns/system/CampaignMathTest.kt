@@ -15,4 +15,11 @@ class CampaignMathTest {
         assertEquals(7, CampaignMath.manhattan(0, 0, 3, -4))
         assertEquals(0, CampaignMath.manhattan(4, 9, 4, 9))
     }
+
+    @Test
+    fun `step handles reverse movement and equal axes`() {
+        assertEquals(3 to 0, CampaignMath.stepToward(4, 0, 0, 0))
+        assertEquals(2 to 1, CampaignMath.stepToward(1, 1, 2, 1))
+        assertEquals(2 to 1, CampaignMath.stepToward(1, 1, 2, 2))
+    }
 }

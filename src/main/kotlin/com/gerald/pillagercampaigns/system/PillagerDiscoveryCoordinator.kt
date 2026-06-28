@@ -11,17 +11,16 @@ import java.util.concurrent.ThreadFactory
 import java.util.concurrent.atomic.AtomicBoolean
 
 object PillagerDiscoveryCoordinator {
-    private const val MAX_CANDIDATE_REGISTRATIONS_PER_TICK = 4
     private const val MAX_PENDING_CANDIDATES = 4096
+    private val OVERWORLD: ResourceLocation = ResourceLocation("minecraft", "overworld")
 
     private data class PlayerSnapshot(
-        val dimension: ResourceLocation,
         val chunkX: Int,
         val chunkZ: Int,
     )
 
     private data class CandidateTask(
-        val candidate: PillagerBasePlacementRules.Candidate,
+        val candidate: PillagerWarbandDiscoveryRules.Candidate,
         val requestedAtTick: Long,
     )
 
@@ -39,17 +38,17 @@ object PillagerDiscoveryCoordinator {
     }
 
     fun tick(server: MinecraftServer, data: PillagerWorldData, now: Long) {
-        if (now - data.lastDiscoveryTick >= PillagerCampaignsConfig.baseDiscoveryIntervalTicks.get()) {
+        if (now - data.lastDiscoveryTick >= PillagerCampaignsConfig.warbandDiscoveryIntervalTicks.get()) {
             data.lastDiscoveryTick = now
             enqueuePlan(server, now)
         }
 
         val level = server.overworld()
         var added = 0
-        var budget = MAX_CANDIDATE_REGISTRATIONS_PER_TICK
+        var budget = PillagerCampaignsConfig.warbandRegistrationsPerTick.get().coerceAtLeast(1)
         while (budget > 0) {
             val task = pending.poll() ?: break
-            if (task.candidate.dimension == level.dimension().location() && PillagerBaseDiscoveryService.registerPlannedBase(level, data, task.candidate, task.requestedAtTick)) {
+            if (PillagerWarbandDiscoveryService.registerDiscoveredWarband(level, data, task.candidate, task.requestedAtTick)) {
                 added++
             }
             budget--
@@ -61,19 +60,19 @@ object PillagerDiscoveryCoordinator {
         if (!planning.compareAndSet(false, true)) return
         val settings = placementSettings()
         val seed = server.overworld().seed
-        val radius = PillagerBaseDiscoveryService.effectiveDiscoveryRadius(
-            baseDiscoveryRadiusChunks = PillagerCampaignsConfig.baseDiscoveryRadiusChunks.get(),
+        val radius = PillagerWarbandDiscoveryService.effectiveDiscoveryRadius(
+            warbandDiscoveryRadiusChunks = PillagerCampaignsConfig.warbandDiscoveryRadiusChunks.get(),
             maxCampaignDistanceChunks = PillagerCampaignsConfig.maxCampaignDistanceChunks.get(),
         )
-        val snapshots = server.playerList.players.map { it.snapshot() }
+        val snapshots = server.playerList.players.mapNotNull { it.snapshot() }
         planner.execute {
             try {
                 for (snapshot in snapshots) {
                     if (pending.size >= MAX_PENDING_CANDIDATES) break
-                    val cells = PillagerBasePlacementRules.cellsAround(snapshot.chunkX, snapshot.chunkZ, radius, settings.spacingChunks)
+                    val cells = PillagerWarbandDiscoveryRules.cellsAround(snapshot.chunkX, snapshot.chunkZ, radius, settings.spacingChunks)
                     for ((cellX, cellZ) in cells) {
                         if (pending.size >= MAX_PENDING_CANDIDATES) break
-                        val candidate = PillagerBasePlacementRules.candidateForCell(seed, snapshot.dimension, cellX, cellZ, settings) ?: continue
+                        val candidate = PillagerWarbandDiscoveryRules.candidateForCell(seed, OVERWORLD, cellX, cellZ, settings) ?: continue
                         pending.offer(CandidateTask(candidate, now))
                     }
                 }
@@ -83,19 +82,20 @@ object PillagerDiscoveryCoordinator {
         }
     }
 
-    private fun ServerPlayer.snapshot(): PlayerSnapshot = PlayerSnapshot(
-        dimension = level().dimension().location(),
-        chunkX = chunkPosition().x,
-        chunkZ = chunkPosition().z,
-    )
+    private fun ServerPlayer.snapshot(): PlayerSnapshot? =
+        if (level().dimension().location() == OVERWORLD) {
+            PlayerSnapshot(chunkPosition().x, chunkPosition().z)
+        } else {
+            null
+        }
 
-    private fun placementSettings(): PillagerBasePlacementRules.Settings {
-        val structures = PillagerCampaignsConfig.structureBaseIds.get().mapNotNull { ResourceLocation.tryParse(it) }
-        return PillagerBasePlacementRules.Settings(
-            spacingChunks = PillagerCampaignsConfig.baseGridSpacingChunks.get(),
-            jitterChunks = PillagerCampaignsConfig.baseGridJitterChunks.get(),
-            spawnChancePercent = PillagerCampaignsConfig.baseSpawnChancePercent.get(),
-            minSpawnDistanceChunks = PillagerCampaignsConfig.baseMinSpawnDistanceChunks.get(),
+    private fun placementSettings(): PillagerWarbandDiscoveryRules.Settings {
+        val structures = PillagerCampaignsConfig.structureWarbandIds.get().mapNotNull { ResourceLocation.tryParse(it) }
+        return PillagerWarbandDiscoveryRules.Settings(
+            spacingChunks = PillagerCampaignsConfig.warbandGridSpacingChunks.get(),
+            jitterChunks = PillagerCampaignsConfig.warbandGridJitterChunks.get(),
+            spawnChancePercent = PillagerCampaignsConfig.warbandSpawnChancePercent.get(),
+            minSpawnDistanceChunks = PillagerCampaignsConfig.warbandMinSpawnDistanceChunks.get(),
             structureIds = structures,
         )
     }

@@ -7,24 +7,18 @@ object PillagerCampaignsConfig {
 
     val enabled: ForgeConfigSpec.BooleanValue
     val disableVanillaPatrolSpawning: ForgeConfigSpec.BooleanValue
-    val baseDiscoveryIntervalTicks: ForgeConfigSpec.IntValue
-    val baseDiscoveryRadiusChunks: ForgeConfigSpec.IntValue
-    val maxBaseDiscoveriesPerTick: ForgeConfigSpec.IntValue
-    val maxBaseDiscoveryProbePointsPerPlayer: ForgeConfigSpec.IntValue
-    val baseGridSpacingChunks: ForgeConfigSpec.IntValue
-    val baseGridJitterChunks: ForgeConfigSpec.IntValue
-    val baseSpawnChancePercent: ForgeConfigSpec.IntValue
-    val baseMinSpawnDistanceChunks: ForgeConfigSpec.IntValue
-    val baseMaterializationSearchRadiusChunks: ForgeConfigSpec.IntValue
-    val materializationJobsPerTick: ForgeConfigSpec.IntValue
-    val materializationCandidateChecksPerJob: ForgeConfigSpec.IntValue
-    val materializationMaxMillisPerTick: ForgeConfigSpec.DoubleValue
-    val materializationPlacementCooldownTicks: ForgeConfigSpec.IntValue
-    val campaignDispatchBasesPerTick: ForgeConfigSpec.IntValue
-    val structureBaseIds: ForgeConfigSpec.ConfigValue<List<out String>>
+    val warbandDiscoveryIntervalTicks: ForgeConfigSpec.IntValue
+    val warbandDiscoveryRadiusChunks: ForgeConfigSpec.IntValue
+    val warbandRegistrationsPerTick: ForgeConfigSpec.IntValue
+    val warbandGridSpacingChunks: ForgeConfigSpec.IntValue
+    val warbandGridJitterChunks: ForgeConfigSpec.IntValue
+    val warbandSpawnChancePercent: ForgeConfigSpec.IntValue
+    val warbandMinSpawnDistanceChunks: ForgeConfigSpec.IntValue
+    val campaignDispatchWarbandsPerTick: ForgeConfigSpec.IntValue
+    val structureWarbandIds: ForgeConfigSpec.ConfigValue<List<out String>>
     val campaignTickInterval: ForgeConfigSpec.IntValue
     val campaignSpeedTicksPerChunk: ForgeConfigSpec.IntValue
-    val maxCampaignsPerBase: ForgeConfigSpec.IntValue
+    val maxCampaignsPerWarband: ForgeConfigSpec.IntValue
     val maxCampaignDistanceChunks: ForgeConfigSpec.IntValue
     val materializeDistanceChunks: ForgeConfigSpec.IntValue
 
@@ -33,30 +27,24 @@ object PillagerCampaignsConfig {
         b.push("scheduler")
         enabled = b.define("enabled", true)
         disableVanillaPatrolSpawning = b.define("disable_vanilla_patrol_spawning", true)
-        baseDiscoveryIntervalTicks = b.defineInRange("base_discovery_interval_ticks", 200, 20, 12000)
-        baseDiscoveryRadiusChunks = b.defineInRange("base_discovery_radius_chunks", 1000, 8, 4096)
-        maxBaseDiscoveriesPerTick = b.defineInRange("max_base_discoveries_per_tick", 2, 1, 32)
-        maxBaseDiscoveryProbePointsPerPlayer = b.defineInRange("max_base_discovery_probe_points_per_player", 6, 1, 16)
-        baseGridSpacingChunks = b.defineInRange("base_grid_spacing_chunks", 64, 16, 512)
-        baseGridJitterChunks = b.defineInRange("base_grid_jitter_chunks", 18, 0, 128)
-        baseSpawnChancePercent = b.defineInRange("base_spawn_chance_percent", 35, 1, 100)
-        baseMinSpawnDistanceChunks = b.defineInRange("base_min_spawn_distance_chunks", 24, 0, 512)
-        baseMaterializationSearchRadiusChunks = b.defineInRange("base_materialization_search_radius_chunks", 8, 1, 32)
-        materializationJobsPerTick = b.defineInRange("materialization_jobs_per_tick", 1, 1, 8)
-        materializationCandidateChecksPerJob = b.defineInRange("materialization_candidate_checks_per_job", 16, 1, 256)
-        materializationMaxMillisPerTick = b.defineInRange("materialization_max_millis_per_tick", 4.0, 0.5, 50.0)
-        materializationPlacementCooldownTicks = b.defineInRange("materialization_placement_cooldown_ticks", 200, 20, 12000)
-        campaignDispatchBasesPerTick = b.defineInRange("campaign_dispatch_bases_per_tick", 64, 1, 4096)
+        warbandDiscoveryIntervalTicks = b.defineInRange("warband_discovery_interval_ticks", 200, 20, 12000)
+        warbandDiscoveryRadiusChunks = b.defineInRange("warband_discovery_radius_chunks", 1000, 8, 4096)
+        warbandRegistrationsPerTick = b.defineInRange("warband_registrations_per_tick", 4, 1, 64)
+        warbandGridSpacingChunks = b.defineInRange("warband_grid_spacing_chunks", 64, 16, 512)
+        warbandGridJitterChunks = b.defineInRange("warband_grid_jitter_chunks", 18, 0, 128)
+        warbandSpawnChancePercent = b.defineInRange("warband_spawn_chance_percent", 35, 1, 100)
+        warbandMinSpawnDistanceChunks = b.defineInRange("warband_min_spawn_distance_chunks", 24, 0, 512)
+        campaignDispatchWarbandsPerTick = b.defineInRange("campaign_dispatch_warbands_per_tick", 64, 1, 4096)
         b.pop()
 
         b.push("campaigns")
         campaignTickInterval = b.defineInRange("campaign_tick_interval", 20, 20, 200)
         campaignSpeedTicksPerChunk = b.defineInRange("campaign_speed_ticks_per_chunk", 120, 100, 7200) // 10 chunks/min default
-        maxCampaignsPerBase = b.defineInRange("max_campaigns_per_base", 1, 0, 8)
+        maxCampaignsPerWarband = b.defineInRange("max_campaigns_per_warband", 1, 0, 8)
         maxCampaignDistanceChunks = b.defineInRange("max_campaign_distance_chunks", 1000, 4, 4096)
         materializeDistanceChunks = b.defineInRange("materialize_distance_chunks", 6, 1, 24)
-        structureBaseIds = b.defineListAllowEmpty(
-            "structure_base_ids",
+        structureWarbandIds = b.defineListAllowEmpty(
+            "structure_warband_ids",
             listOf(
                 "minecraft:pillager_outpost",
                 "takesapillage:bastille",

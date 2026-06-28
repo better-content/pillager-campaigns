@@ -14,6 +14,8 @@ class PillagerCampaignSerializationTest {
             id = UUID.randomUUID(),
             factionId = UUID.randomUUID(),
             dimension = ResourceLocation("minecraft", "overworld"),
+            structureId = ResourceLocation("minecraft", "pillager_outpost"),
+            bannerSeed = 17,
             rallyChunkX = 12,
             rallyChunkZ = -9,
             strength = 5,
@@ -33,6 +35,8 @@ class PillagerCampaignSerializationTest {
         assertEquals(warband.id, loaded.id)
         assertEquals(warband.factionId, loaded.factionId)
         assertEquals(ResourceLocation("minecraft", "overworld"), loaded.dimension)
+        assertEquals(ResourceLocation("minecraft", "pillager_outpost"), loaded.structureId)
+        assertEquals(17, loaded.bannerSeed)
         assertEquals(12, loaded.rallyChunkX)
         assertEquals(-9, loaded.rallyChunkZ)
         assertEquals(5, loaded.strength)
@@ -50,101 +54,10 @@ class PillagerCampaignSerializationTest {
     }
 
     @Test
-    fun `old non defeated base migrates into warband at anchor chunk`() {
-        val base = PillagerBase(
-            id = UUID.randomUUID(),
-            factionId = UUID.randomUUID(),
-            dimension = ResourceLocation("minecraft", "overworld"),
-            structureId = ResourceLocation("minecraft", "pillager_outpost"),
-            bannerSeed = 12,
-            difficulty = 3,
-            defeated = false,
-            state = BaseState.MATERIALIZED,
-            form = BaseForm.JIGSAW_OUTPOST,
-            anchorChunkX = 40,
-            anchorChunkZ = -16,
-            chunkX = 41,
-            chunkZ = -15,
-            center = net.minecraft.core.BlockPos(648, 65, -248),
-            lastSeenTick = 123L,
-            materializationAttempts = 0,
-            materializationFailure = BaseMaterializationFailure.NONE,
-            lastMaterializationAttemptTick = 0L,
-            materializationSearchRadius = -1,
-            materializationCursorIndex = 0,
-            materializationBestChunkX = 0,
-            materializationBestChunkZ = 0,
-            materializationBestX = 0,
-            materializationBestY = 0,
-            materializationBestZ = 0,
-            materializationBestScore = Int.MIN_VALUE,
-        )
-        val warlordId = UUID.randomUUID()
-
-        val warband = PillagerWarband.migrate(base, warlordId)
-
-        assertEquals(base.id, warband.id)
-        assertEquals(40, warband.rallyChunkX)
-        assertEquals(-16, warband.rallyChunkZ)
-        assertEquals(6, warband.strength)
-        assertEquals(false, warband.defeated)
-        assertEquals(warlordId, warband.warlordOfficerId)
-        assertEquals(123L, warband.nextRaidTick)
-        assertEquals(PresenceMaterializationResult.SUCCESS, warband.lastPresenceFailure)
-    }
-
-    @Test
-    fun `base save load roundtrip preserves planned base fields`() {
-        val base = PillagerBase(
-            id = UUID.randomUUID(),
-            factionId = UUID.randomUUID(),
-            dimension = ResourceLocation("minecraft", "overworld"),
-            structureId = ResourceLocation("minecraft", "pillager_outpost"),
-            bannerSeed = 12,
-            difficulty = 3,
-            defeated = false,
-            state = BaseState.PLANNED,
-            form = BaseForm.UNKNOWN,
-            anchorChunkX = 40,
-            anchorChunkZ = -16,
-            chunkX = 40,
-            chunkZ = -16,
-            center = net.minecraft.core.BlockPos(648, 65, -248),
-            lastSeenTick = 123L,
-            materializationAttempts = 4,
-            materializationFailure = BaseMaterializationFailure.NO_SITE,
-            lastMaterializationAttemptTick = 120L,
-            materializationSearchRadius = 12,
-            materializationCursorIndex = 99,
-            materializationBestChunkX = 41,
-            materializationBestChunkZ = -15,
-            materializationBestX = 664,
-            materializationBestY = 72,
-            materializationBestZ = -232,
-            materializationBestScore = 88,
-        )
-
-        val loaded = PillagerBase.load(base.save())
-
-        assertEquals(base.id, loaded.id)
-        assertEquals(BaseState.PLANNED, loaded.state)
-        assertEquals(BaseForm.UNKNOWN, loaded.form)
-        assertEquals(ResourceLocation("minecraft", "pillager_outpost"), loaded.structureId)
-        assertEquals(40, loaded.anchorChunkX)
-        assertEquals(-16, loaded.anchorChunkZ)
-        assertEquals(4, loaded.materializationAttempts)
-        assertEquals(BaseMaterializationFailure.NO_SITE, loaded.materializationFailure)
-        assertEquals(120L, loaded.lastMaterializationAttemptTick)
-        assertEquals(12, loaded.materializationSearchRadius)
-        assertEquals(99, loaded.materializationCursorIndex)
-        assertEquals(88, loaded.materializationBestScore)
-    }
-
-    @Test
     fun `campaign save load roundtrip preserves transactional materialization fields`() {
         val campaignId = UUID.randomUUID()
         val factionId = UUID.randomUUID()
-        val baseId = UUID.randomUUID()
+        val warbandId = UUID.randomUUID()
         val officerId = UUID.randomUUID()
         val playerId = UUID.randomUUID()
         val attemptId = UUID.randomUUID()
@@ -154,7 +67,7 @@ class PillagerCampaignSerializationTest {
         val campaign = PillagerCampaign(
             id = campaignId,
             factionId = factionId,
-            originBaseId = baseId,
+            originWarbandId = warbandId,
             officerId = officerId,
             targetPlayerId = playerId,
             targetDimension = ResourceLocation("minecraft", "overworld"),
@@ -175,7 +88,7 @@ class PillagerCampaignSerializationTest {
 
         assertEquals(campaignId, loaded.id)
         assertEquals(factionId, loaded.factionId)
-        assertEquals(baseId, loaded.originBaseId)
+        assertEquals(warbandId, loaded.originWarbandId)
         assertEquals(officerId, loaded.officerId)
         assertEquals(playerId, loaded.targetPlayerId)
         assertEquals(CampaignState.MATERIALIZING, loaded.state)
@@ -190,7 +103,7 @@ class PillagerCampaignSerializationTest {
         val campaign = PillagerCampaign(
             id = id,
             factionId = UUID.randomUUID(),
-            originBaseId = UUID.randomUUID(),
+            originWarbandId = UUID.randomUUID(),
             officerId = UUID.randomUUID(),
             targetPlayerId = UUID.randomUUID(),
             targetDimension = ResourceLocation("minecraft", "overworld"),

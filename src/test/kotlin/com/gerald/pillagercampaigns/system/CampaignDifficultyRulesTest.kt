@@ -4,6 +4,7 @@ import com.gerald.pillagercampaigns.data.OfficerClass
 import java.util.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class CampaignDifficultyRulesTest {
     @Test
@@ -60,5 +61,16 @@ class CampaignDifficultyRulesTest {
         repeat(20) {
             assertEquals("vindicator", CampaignDifficultyRules.chooseMemberType(2, graph, random))
         }
+    }
+
+    @Test
+    fun `default preference graph exposes all weighted member lanes`() {
+        val graph = CampaignDifficultyRules.defaultPreferenceGraph(99L)
+
+        assertTrue("member_pillager" in graph)
+        assertTrue("member_vindicator" in graph)
+        assertTrue("weapon_crossbow" in graph)
+        assertTrue("enchant_quick_charge" in graph)
+        assertTrue(graph.values.all { it >= 0.0 })
     }
 }

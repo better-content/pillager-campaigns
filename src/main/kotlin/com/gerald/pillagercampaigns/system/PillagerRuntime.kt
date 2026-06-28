@@ -1,7 +1,6 @@
 package com.gerald.pillagercampaigns.system
 
 import com.gerald.pillagercampaigns.data.PillagerCampaign
-import com.gerald.pillagercampaigns.data.PillagerBase
 import com.gerald.pillagercampaigns.data.PillagerFaction
 import com.gerald.pillagercampaigns.data.PillagerOfficer
 import com.gerald.pillagercampaigns.data.PillagerWarband
@@ -118,10 +117,6 @@ object PillagerRuntime {
         return count
     }
 
-    fun materializeFixedSquad(level: ServerLevel, campaign: PillagerCampaign, base: PillagerBase, officerRecord: PillagerOfficer, player: ServerPlayer, x: Double, y: Double, z: Double): List<UUID> {
-        return materializeWarbandSquad(level, campaign, base.bannerSeed, officerRecord, player, x, y, z)
-    }
-
     fun materializeWarbandSquad(level: ServerLevel, campaign: PillagerCampaign, bannerSeed: Int, officerRecord: PillagerOfficer, player: ServerPlayer, x: Double, y: Double, z: Double, useBoats: Boolean = false): List<UUID> {
         val random = Random(campaign.loadoutSeed)
         val officer = if (useBoats) EntityType.PILLAGER.create(level) else createOfficerEntity(level, officerRecord.officerClass)
@@ -228,37 +223,6 @@ object PillagerRuntime {
         )
         boat.yRot = (kotlin.math.atan2(dz, dx) * 180.0 / Math.PI).toFloat() - 90.0f
         boat.hasImpulse = true
-    }
-
-    fun ensureBossAtBase(level: ServerLevel, base: PillagerBase, faction: PillagerFaction, bossOfficer: PillagerOfficer) {
-        faction.bossEntityId?.let { cachedId ->
-            val cachedBoss = level.getEntity(cachedId) as? Mob
-            if (cachedBoss != null &&
-                cachedBoss.isAlive &&
-                cachedBoss.persistentData.hasUUID(OFFICER_TAG) &&
-                cachedBoss.persistentData.getUUID(OFFICER_TAG) == bossOfficer.id &&
-                cachedBoss.persistentData.getBoolean(BOSS_TAG)
-            ) {
-                registerLiveMob(cachedBoss)
-                return
-            }
-        }
-        if (hasLiveOfficerLeader(level, bossOfficer.id)) return
-        val boss = EntityType.VINDICATOR.create(level) ?: return
-        boss.moveTo(base.center.x + 0.5, base.center.y.toDouble(), base.center.z + 0.5, boss.yRot, boss.xRot)
-        boss.setPersistenceRequired()
-        boss.persistentData.putBoolean(BOSS_TAG, true)
-        boss.persistentData.putBoolean(LEADER_TAG, true)
-        boss.persistentData.putUUID(OFFICER_TAG, bossOfficer.id)
-        boss.persistentData.putUUID(FACTION_TAG, faction.id)
-        boss.persistentData.putString(RANK_TAG, bossOfficer.rank.name)
-        boss.setItemSlot(EquipmentSlot.HEAD, makeBaseBanner(base.bannerSeed))
-        boss.setItemSlot(EquipmentSlot.MAINHAND, ItemStack(Items.IRON_AXE))
-        applyOfficerVisuals(boss, bossOfficer)
-        level.addFreshEntity(boss)
-        faction.bossEntityId = boss.uuid
-        registerLiveMob(boss)
-        syncOfficerVisuals(boss)
     }
 
     fun pushOfficerTowardPlayer(level: ServerLevel, mob: Mob) {

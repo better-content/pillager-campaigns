@@ -4,17 +4,12 @@ import com.gerald.pillagercampaigns.data.CampaignState
 import com.gerald.pillagercampaigns.data.OfficerClass
 import com.gerald.pillagercampaigns.data.OfficerRank
 import com.gerald.pillagercampaigns.data.OfficerState
-import com.gerald.pillagercampaigns.data.PillagerBase
 import com.gerald.pillagercampaigns.data.PillagerCampaign
 import com.gerald.pillagercampaigns.data.PillagerFaction
 import com.gerald.pillagercampaigns.data.PillagerOfficer
 import com.gerald.pillagercampaigns.data.PillagerWarband
 import com.gerald.pillagercampaigns.data.PillagerWorldData
-import com.gerald.pillagercampaigns.data.BaseForm
-import com.gerald.pillagercampaigns.data.BaseMaterializationFailure
-import com.gerald.pillagercampaigns.data.BaseState
 import com.gerald.pillagercampaigns.data.PresenceMaterializationResult
-import net.minecraft.core.BlockPos
 import net.minecraft.resources.ResourceLocation
 import java.util.UUID
 import kotlin.test.Test
@@ -68,7 +63,6 @@ class PillagerCampaignEngineTest {
         PillagerCampaignEngine.collapseFaction(fixture.data, fixture.faction.id)
 
         assertTrue(fixture.data.factions.isEmpty())
-        assertTrue(fixture.data.bases.isEmpty())
         assertTrue(fixture.data.warbands.isEmpty())
         assertTrue(fixture.data.officers.isEmpty())
         assertTrue(fixture.data.campaigns.isEmpty())
@@ -98,38 +92,12 @@ class PillagerCampaignEngineTest {
             bossOfficerId = officerId,
             bossEntityId = UUID.randomUUID(),
         )
-        val base = PillagerBase(
+        val warband = PillagerWarband(
             id = warbandId,
             factionId = factionId,
             dimension = OVERWORLD,
             structureId = PILLAGER_OUTPOST,
             bannerSeed = 42,
-            difficulty = strength,
-            defeated = false,
-            state = BaseState.MATERIALIZED,
-            form = BaseForm.JIGSAW_OUTPOST,
-            anchorChunkX = 4,
-            anchorChunkZ = -3,
-            chunkX = 4,
-            chunkZ = -3,
-            center = BlockPos(72, 64, -40),
-            lastSeenTick = 0L,
-            materializationAttempts = 0,
-            materializationFailure = BaseMaterializationFailure.NONE,
-            lastMaterializationAttemptTick = 0L,
-            materializationSearchRadius = -1,
-            materializationCursorIndex = 0,
-            materializationBestChunkX = 0,
-            materializationBestChunkZ = 0,
-            materializationBestX = 0,
-            materializationBestY = 0,
-            materializationBestZ = 0,
-            materializationBestScore = Int.MIN_VALUE,
-        )
-        val warband = PillagerWarband(
-            id = warbandId,
-            factionId = factionId,
-            dimension = OVERWORLD,
             rallyChunkX = 4,
             rallyChunkZ = -3,
             strength = strength,
@@ -144,7 +112,7 @@ class PillagerCampaignEngineTest {
         val officer = PillagerOfficer(
             id = officerId,
             factionId = factionId,
-            homeBaseId = warbandId,
+            homeWarbandId = warbandId,
             name = "Captain Test",
             title = "of Tests",
             rank = OfficerRank.CAPTAIN,
@@ -155,7 +123,7 @@ class PillagerCampaignEngineTest {
         val campaign = PillagerCampaign(
             id = campaignId,
             factionId = factionId,
-            originBaseId = warbandId,
+            originWarbandId = warbandId,
             officerId = officerId,
             targetPlayerId = targetPlayerId,
             targetDimension = OVERWORLD,
@@ -173,7 +141,6 @@ class PillagerCampaignEngineTest {
         )
 
         data.factions[faction.id] = faction
-        data.bases[base.id] = base
         data.warbands[warband.id] = warband
         data.officers[officer.id] = officer
         data.campaigns[campaign.id] = campaign

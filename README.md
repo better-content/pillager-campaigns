@@ -1,6 +1,6 @@
 # Pillager Campaigns
 
-Pillager Campaigns is a Minecraft Forge mod for Minecraft 1.20.1. It replaces passive pillager pressure with a server-side campaign system: discovered bases accrue resources, officer-led squads scout and retaliate, and persistent world data tracks faction state over time.
+Pillager Campaigns is a Minecraft Forge mod for Minecraft 1.20.1. It replaces passive pillager pressure with a server-side campaign system: discovered warbands accrue pressure, officer-led squads scout and retaliate, and persistent world data tracks faction state over time.
 
 ## Development Setup
 
@@ -29,4 +29,4 @@ Common commands:
 
 ## Notes
 
-The mod is designed to own pillager campaign scheduling. By default it can disable vanilla patrol spawning and intercept natural illager spawns near registered bases according to common config values.
+The mod is designed to own pillager campaign scheduling. By default it can disable vanilla patrol spawning and intercept natural illager spawns near registered warbands according to common config values.

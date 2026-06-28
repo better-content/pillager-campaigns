@@ -5,7 +5,7 @@ import java.nio.charset.StandardCharsets
 import java.util.UUID
 import kotlin.math.abs
 
-object PillagerBasePlacementRules {
+object PillagerWarbandDiscoveryRules {
     data class Settings(
         val spacingChunks: Int,
         val jitterChunks: Int,
@@ -43,23 +43,21 @@ object PillagerBasePlacementRules {
         if (CampaignMath.manhattan(0, 0, chunkX, chunkZ) < settings.minSpawnDistanceChunks) return null
 
         val structureId = structures[positiveModulo(cellSeed ushr 51, structures.size)]
-        val id = UUID.nameUUIDFromBytes("pillagercampaigns:base:${dimension}:$cellX,$cellZ".toByteArray(StandardCharsets.UTF_8))
+        val id = UUID.nameUUIDFromBytes("pillagercampaigns:warband:${dimension}:$cellX,$cellZ".toByteArray(StandardCharsets.UTF_8))
         return Candidate(id, dimension, structureId, cellX, cellZ, chunkX, chunkZ)
     }
 
     fun cellsAround(chunkX: Int, chunkZ: Int, radiusChunks: Int, spacingChunks: Int): Sequence<Pair<Int, Int>> = sequence {
         val spacing = spacingChunks.coerceAtLeast(1)
         val radiusCells = (radiusChunks.coerceAtLeast(0) + spacing - 1) / spacing + 1
-        val centerCellX = floorDiv(chunkX, spacing)
-        val centerCellZ = floorDiv(chunkZ, spacing)
+        val centerCellX = Math.floorDiv(chunkX, spacing)
+        val centerCellZ = Math.floorDiv(chunkZ, spacing)
         for (dz in -radiusCells..radiusCells) {
             for (dx in -radiusCells..radiusCells) {
                 yield(centerCellX + dx to centerCellZ + dz)
             }
         }
     }
-
-    private fun floorDiv(value: Int, divisor: Int): Int = Math.floorDiv(value, divisor)
 
     private fun positiveModulo(value: Long, modulus: Int): Int {
         val raw = (value and Long.MAX_VALUE) % modulus

@@ -28,17 +28,17 @@ object PillagerIdentity {
 
     fun makeOfficer(
         faction: PillagerFaction,
-        homeBaseId: UUID,
+        homeWarbandId: UUID,
         seed: Long,
         rank: OfficerRank = OfficerRank.CAPTAIN,
         officerClass: OfficerClass = OfficerClass.PILLAGER,
         preferenceGraph: MutableMap<String, Double> = mutableMapOf(),
     ): PillagerOfficer {
-        val idx = abs((seed xor homeBaseId.mostSignificantBits).toInt())
+        val idx = abs((seed xor homeWarbandId.mostSignificantBits).toInt())
         return PillagerOfficer(
-            id = UUID.nameUUIDFromBytes("pillagercampaigns:officer:${faction.id}:$homeBaseId:$seed".toByteArray()),
+            id = UUID.nameUUIDFromBytes("pillagercampaigns:officer:${faction.id}:$homeWarbandId:$seed".toByteArray()),
             factionId = faction.id,
-            homeBaseId = homeBaseId,
+            homeWarbandId = homeWarbandId,
             name = firstNames[idx % firstNames.size],
             title = titles[(idx / 3) % titles.size],
             rank = rank,

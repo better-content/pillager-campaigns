@@ -14,7 +14,7 @@ class PillagerIdentityTest {
     }
 
     @Test
-    fun `officer generation changes with base`() {
+    fun `officer generation changes with warband`() {
         val faction = PillagerIdentity.makeFaction(99L)
         val a = PillagerIdentity.makeOfficer(faction, java.util.UUID.randomUUID(), 1L)
         val b = PillagerIdentity.makeOfficer(faction, java.util.UUID.randomUUID(), 1L)

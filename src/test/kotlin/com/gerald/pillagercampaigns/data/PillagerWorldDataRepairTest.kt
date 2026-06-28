@@ -1,6 +1,5 @@
 package com.gerald.pillagercampaigns.data
 
-import net.minecraft.core.BlockPos
 import net.minecraft.resources.ResourceLocation
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -10,8 +9,8 @@ class PillagerWorldDataRepairTest {
     @Test
     fun `load repairs dangling officer and campaign references`() {
         val factionId = UUID.randomUUID()
-        val goodBaseId = UUID.randomUUID()
-        val badBaseId = UUID.randomUUID()
+        val goodWarbandId = UUID.randomUUID()
+        val badWarbandId = UUID.randomUUID()
         val goodOfficerId = UUID.randomUUID()
         val badOfficerId = UUID.randomUUID()
 
@@ -22,39 +21,28 @@ class PillagerWorldDataRepairTest {
             bossOfficerId = null,
         )
 
-        val base = PillagerBase(
-            id = goodBaseId,
+        val warband = PillagerWarband(
+            id = goodWarbandId,
             factionId = factionId,
             dimension = ResourceLocation("minecraft", "overworld"),
             structureId = ResourceLocation("minecraft", "pillager_outpost"),
             bannerSeed = 2,
-            difficulty = 1,
+            rallyChunkX = 0,
+            rallyChunkZ = 0,
+            strength = 1,
             defeated = false,
-            state = BaseState.MATERIALIZED,
-            form = BaseForm.JIGSAW_OUTPOST,
-            anchorChunkX = 0,
-            anchorChunkZ = 0,
-            chunkX = 0,
-            chunkZ = 0,
-            center = BlockPos(0, 80, 0),
-            lastSeenTick = 0L,
-            materializationAttempts = 0,
-            materializationFailure = BaseMaterializationFailure.NONE,
-            lastMaterializationAttemptTick = 0L,
-            materializationSearchRadius = -1,
-            materializationCursorIndex = 0,
-            materializationBestChunkX = 0,
-            materializationBestChunkZ = 0,
-            materializationBestX = 0,
-            materializationBestY = 0,
-            materializationBestZ = 0,
-            materializationBestScore = Int.MIN_VALUE,
+            warlordOfficerId = goodOfficerId,
+            warlordEntityId = null,
+            nextRaidTick = 0L,
+            cooldownUntilTick = 0L,
+            lastIntelTick = 0L,
+            lastPresenceFailure = PresenceMaterializationResult.SUCCESS,
         )
 
         val goodOfficer = PillagerOfficer(
             id = goodOfficerId,
             factionId = factionId,
-            homeBaseId = goodBaseId,
+            homeWarbandId = goodWarbandId,
             name = "Good",
             title = "Captain",
             rank = OfficerRank.CAPTAIN,
@@ -66,7 +54,7 @@ class PillagerWorldDataRepairTest {
         val badOfficer = PillagerOfficer(
             id = badOfficerId,
             factionId = factionId,
-            homeBaseId = badBaseId,
+            homeWarbandId = badWarbandId,
             name = "Bad",
             title = "Dangling",
             rank = OfficerRank.CAPTAIN,
@@ -78,7 +66,7 @@ class PillagerWorldDataRepairTest {
         val goodCampaign = PillagerCampaign(
             id = UUID.randomUUID(),
             factionId = factionId,
-            originBaseId = goodBaseId,
+            originWarbandId = goodWarbandId,
             officerId = goodOfficerId,
             targetPlayerId = UUID.randomUUID(),
             targetDimension = ResourceLocation("minecraft", "overworld"),
@@ -98,7 +86,7 @@ class PillagerWorldDataRepairTest {
         val badCampaign = PillagerCampaign(
             id = UUID.randomUUID(),
             factionId = factionId,
-            originBaseId = goodBaseId,
+            originWarbandId = goodWarbandId,
             officerId = badOfficerId,
             targetPlayerId = UUID.randomUUID(),
             targetDimension = ResourceLocation("minecraft", "overworld"),
@@ -117,7 +105,7 @@ class PillagerWorldDataRepairTest {
 
         val raw = PillagerWorldData().apply {
             factions[faction.id] = faction
-            bases[base.id] = base
+            warbands[warband.id] = warband
             officers[goodOfficer.id] = goodOfficer
             officers[badOfficer.id] = badOfficer
             campaigns[goodCampaign.id] = goodCampaign

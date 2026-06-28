@@ -32,7 +32,6 @@ object PillagerCampaignEngine {
     fun discoveryTick(server: MinecraftServer, data: PillagerWorldData, now: Long) {
         val before = data.warbands.size
         PillagerDiscoveryCoordinator.tick(server, data, now)
-        data.migrateBasesToWarbands()
         val added = data.warbands.size - before
         if (added > 0) {
             PillagerCampaignsMod.LOGGER.info("Discovered {} pillager warband(s)", added)
@@ -53,7 +52,7 @@ object PillagerCampaignEngine {
             .asSequence()
             .filter { it.state != CampaignState.RESOLVED }
             .groupBy({ it.originWarbandId }, { it.targetPlayerId })
-        val budget = PillagerCampaignsConfig.campaignDispatchBasesPerTick.get().coerceAtLeast(1)
+        val budget = PillagerCampaignsConfig.campaignDispatchWarbandsPerTick.get().coerceAtLeast(1)
         var inspected = 0
         while (inspected < budget && inspected < warbands.size) {
             val warband = warbands[Math.floorMod(dispatchCursor, warbands.size)]
@@ -74,7 +73,7 @@ object PillagerCampaignEngine {
             val campaign = PillagerCampaign(
                 id = UUID.randomUUID(),
                 factionId = warband.factionId,
-                originBaseId = warband.id,
+                originWarbandId = warband.id,
                 officerId = officer.id,
                 targetPlayerId = target.uuid,
                 targetDimension = level.dimension().location(),
@@ -227,7 +226,6 @@ object PillagerCampaignEngine {
         data.campaigns.entries.removeIf { (_, campaign) -> campaign.factionId == factionId }
         data.officers.entries.removeIf { (_, officer) -> officer.factionId == factionId }
         data.warbands.entries.removeIf { (_, warband) -> warband.factionId == factionId }
-        data.bases.entries.removeIf { (_, base) -> base.factionId == factionId }
         data.factions.remove(factionId)
         data.markChanged()
     }
@@ -243,12 +241,10 @@ object PillagerCampaignEngine {
             .map { it.id }
         campaignIds.forEach { id -> resolveCampaign(data, id, defeatedByPlayer = false) }
         data.officers.values
-            .filter { it.homeBaseId == warbandId }
+            .filter { it.homeWarbandId == warbandId }
             .forEach { it.state = OfficerState.DEAD }
         data.markChanged()
     }
-
-    fun collapseBase(data: PillagerWorldData, baseId: UUID) = collapseWarband(data, baseId)
 
     private fun moveRallyIfDue(server: MinecraftServer, data: PillagerWorldData, warband: com.gerald.pillagercampaigns.data.PillagerWarband, now: Long) {
         if (warband.defeated || now - warband.lastIntelTick < INTEL_STABILITY_TICKS) return
@@ -275,7 +271,7 @@ object PillagerCampaignEngine {
             .minByOrNull { CampaignMath.manhattan(chunkX, chunkZ, it.chunkPosition().x, it.chunkPosition().z) }
     }
 
-    private fun obtainOfficer(data: PillagerWorldData, factionId: UUID, homeBaseId: UUID, baseDifficulty: Int): PillagerOfficer {
+    private fun obtainOfficer(data: PillagerWorldData, factionId: UUID, homeWarbandId: UUID, baseDifficulty: Int): PillagerOfficer {
         val bossId = data.factions[factionId]?.bossOfficerId
         val pooled = data.officers.values.firstOrNull {
             it.factionId == factionId &&
@@ -283,17 +279,17 @@ object PillagerCampaignEngine {
                 it.id != bossId
         }
         if (pooled != null) {
-            pooled.homeBaseId = homeBaseId
+            pooled.homeWarbandId = homeWarbandId
             return pooled
         }
-        val faction = data.factions[factionId] ?: PillagerIdentity.makeFaction(homeBaseId.leastSignificantBits).also { data.factions[it.id] = it }
+        val faction = data.factions[factionId] ?: PillagerIdentity.makeFaction(homeWarbandId.leastSignificantBits).also { data.factions[it.id] = it }
         val officer = PillagerIdentity.makeOfficer(
             faction,
-            homeBaseId,
-            homeBaseId.leastSignificantBits xor data.officers.size.toLong(),
+            homeWarbandId,
+            homeWarbandId.leastSignificantBits xor data.officers.size.toLong(),
             rank = OfficerRank.CAPTAIN,
             officerClass = CampaignDifficultyRules.officerClassForDifficulty(baseDifficulty),
-            preferenceGraph = CampaignDifficultyRules.defaultPreferenceGraph(homeBaseId.mostSignificantBits xor homeBaseId.leastSignificantBits xor data.officers.size.toLong()),
+            preferenceGraph = CampaignDifficultyRules.defaultPreferenceGraph(homeWarbandId.mostSignificantBits xor homeWarbandId.leastSignificantBits xor data.officers.size.toLong()),
         )
         data.officers[officer.id] = officer
         return officer
