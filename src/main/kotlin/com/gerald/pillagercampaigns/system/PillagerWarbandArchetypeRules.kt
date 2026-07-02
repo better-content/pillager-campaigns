@@ -54,20 +54,30 @@ object PillagerWarbandArchetypeRules {
             WarbandRole.WARLORD to RoleRules(mobs = mobs("takesapillage:archer"), weaponFamily = WeaponFamily.RANGED, armorProfile = ArmorProfile.WARLORD),
             WarbandRole.CAPTAIN to RoleRules(mobs = mobs("minecraft:pillager"), weaponFamily = WeaponFamily.RANGED, armorProfile = ArmorProfile.LIGHT),
             WarbandRole.LINE to RoleRules(mobs = mobs("minecraft:pillager", "takesapillage:archer"), weaponFamily = WeaponFamily.RANGED, armorProfile = ArmorProfile.LIGHT),
-            WarbandRole.SPECIALIST to RoleRules(mobs = mobs("takesapillage:skirmisher"), weaponFamily = WeaponFamily.RANGED, armorProfile = ArmorProfile.LIGHT),
+            WarbandRole.SPECIALIST to RoleRules(
+                mobs = mobs("takesapillage:skirmisher"),
+                rareMobs = mobs("aquamirae:pillagers_patrol"),
+                weaponFamily = WeaponFamily.RANGED,
+                armorProfile = ArmorProfile.LIGHT,
+            ),
         ),
         WarbandArchetype.BLACKGUARD to mapOf(
             WarbandRole.WARLORD to RoleRules(mobs = mobs("savage_and_ravage:executioner"), weaponFamily = WeaponFamily.MELEE, armorProfile = ArmorProfile.WARLORD),
             WarbandRole.CAPTAIN to RoleRules(mobs = mobs("takesapillage:legioner"), weaponFamily = WeaponFamily.MELEE, armorProfile = ArmorProfile.HEAVY),
             WarbandRole.LINE to RoleRules(mobs = mobs("minecraft:vindicator", "takesapillage:legioner"), weaponFamily = WeaponFamily.MELEE, armorProfile = ArmorProfile.MEDIUM),
-            WarbandRole.SPECIALIST to RoleRules(mobs = mobs("savage_and_ravage:executioner"), weaponFamily = WeaponFamily.MELEE, armorProfile = ArmorProfile.HEAVY),
+            WarbandRole.SPECIALIST to RoleRules(
+                mobs = mobs("savage_and_ravage:executioner", "minecraft:ravager"),
+                rareMobs = mobs("companions:illager_golem"),
+                weaponFamily = WeaponFamily.MELEE,
+                armorProfile = ArmorProfile.HEAVY,
+            ),
         ),
         WarbandArchetype.HEX to mapOf(
             WarbandRole.WARLORD to RoleRules(mobs = mobs("minecraft:evoker"), weaponFamily = WeaponFamily.CASTER, armorProfile = ArmorProfile.WARLORD),
             WarbandRole.CAPTAIN to RoleRules(mobs = mobs("minecraft:witch"), weaponFamily = WeaponFamily.CASTER, armorProfile = ArmorProfile.LIGHT),
             WarbandRole.LINE to RoleRules(mobs = mobs("minecraft:pillager", "minecraft:vindicator"), weaponFamily = WeaponFamily.RANGED, armorProfile = ArmorProfile.LIGHT),
             WarbandRole.SPECIALIST to RoleRules(
-                mobs = mobs("minecraft:witch", "savage_and_ravage:trickster"),
+                mobs = mobs("minecraft:witch", "savage_and_ravage:trickster", "savage_and_ravage:iceologer"),
                 rareMobs = mobs("minecraft:illusioner"),
                 weaponFamily = WeaponFamily.CASTER,
                 armorProfile = ArmorProfile.LIGHT,
