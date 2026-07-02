@@ -23,6 +23,7 @@ object PillagerWarbandArchetypeRules {
     data class RoleRules(
         val mobs: List<ResourceLocation>,
         val rareMobs: List<ResourceLocation> = emptyList(),
+        val rareMobMinDifficulty: Int = Int.MAX_VALUE,
         val weaponFamily: WeaponFamily,
         val armorProfile: ArmorProfile,
     )
@@ -35,9 +36,9 @@ object PillagerWarbandArchetypeRules {
 
     fun rules(archetype: WarbandArchetype, role: WarbandRole): RoleRules = table.getValue(archetype).getValue(role)
 
-    fun chooseMob(archetype: WarbandArchetype, role: WarbandRole, random: Random): ResourceLocation {
+    fun chooseMob(archetype: WarbandArchetype, role: WarbandRole, difficulty: Int, random: Random): ResourceLocation {
         val rules = rules(archetype, role)
-        if (rules.rareMobs.isNotEmpty() && random.nextInt(8) == 0) {
+        if (difficulty >= rules.rareMobMinDifficulty && rules.rareMobs.isNotEmpty() && random.nextInt(8) == 0) {
             return rules.rareMobs[random.nextInt(rules.rareMobs.size)]
         }
         return rules.mobs[random.nextInt(rules.mobs.size)]
@@ -57,6 +58,7 @@ object PillagerWarbandArchetypeRules {
             WarbandRole.SPECIALIST to RoleRules(
                 mobs = mobs("takesapillage:skirmisher"),
                 rareMobs = mobs("aquamirae:pillagers_patrol"),
+                rareMobMinDifficulty = 8,
                 weaponFamily = WeaponFamily.RANGED,
                 armorProfile = ArmorProfile.LIGHT,
             ),
@@ -66,8 +68,9 @@ object PillagerWarbandArchetypeRules {
             WarbandRole.CAPTAIN to RoleRules(mobs = mobs("takesapillage:legioner"), weaponFamily = WeaponFamily.MELEE, armorProfile = ArmorProfile.HEAVY),
             WarbandRole.LINE to RoleRules(mobs = mobs("minecraft:vindicator", "takesapillage:legioner"), weaponFamily = WeaponFamily.MELEE, armorProfile = ArmorProfile.MEDIUM),
             WarbandRole.SPECIALIST to RoleRules(
-                mobs = mobs("savage_and_ravage:executioner", "minecraft:ravager"),
+                mobs = mobs("takesapillage:legioner", "savage_and_ravage:executioner"),
                 rareMobs = mobs("companions:illager_golem"),
+                rareMobMinDifficulty = 10,
                 weaponFamily = WeaponFamily.MELEE,
                 armorProfile = ArmorProfile.HEAVY,
             ),
@@ -79,6 +82,7 @@ object PillagerWarbandArchetypeRules {
             WarbandRole.SPECIALIST to RoleRules(
                 mobs = mobs("minecraft:witch", "savage_and_ravage:trickster", "savage_and_ravage:iceologer"),
                 rareMobs = mobs("minecraft:illusioner"),
+                rareMobMinDifficulty = 12,
                 weaponFamily = WeaponFamily.CASTER,
                 armorProfile = ArmorProfile.LIGHT,
             ),

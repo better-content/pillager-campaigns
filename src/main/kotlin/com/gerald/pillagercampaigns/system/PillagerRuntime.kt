@@ -118,7 +118,7 @@ object PillagerRuntime {
 
     fun materializeWarbandSquad(level: ServerLevel, warband: PillagerWarband, campaign: PillagerCampaign, bannerSeed: Int, officerRecord: PillagerOfficer, player: ServerPlayer, x: Double, y: Double, z: Double): List<UUID> {
         val random = Random(campaign.loadoutSeed)
-        val officer = createArchetypeMob(level, warband.archetype, WarbandRole.CAPTAIN, random) ?: createOfficerEntity(level, officerRecord.officerClass)
+        val officer = createArchetypeMob(level, warband.archetype, WarbandRole.CAPTAIN, campaign.difficultySnapshot, random) ?: createOfficerEntity(level, officerRecord.officerClass)
         officer ?: return emptyList()
         prepareOfficer(officer, warband, campaign, bannerSeed, officerRecord, x, y, z, random, campaign.difficultySnapshot)
         level.addFreshEntity(officer)
@@ -129,7 +129,7 @@ object PillagerRuntime {
         val memberCount = CampaignDifficultyRules.memberCountForDifficulty(campaign.difficultySnapshot)
         repeat(memberCount) { index ->
             val role = PillagerWarbandArchetypeRules.chooseFollowerRole(campaign.difficultySnapshot, index, memberCount, random)
-            val mob: Mob = createArchetypeMob(level, warband.archetype, role, random) ?: EntityType.PILLAGER.create(level) ?: return@repeat
+            val mob: Mob = createArchetypeMob(level, warband.archetype, role, campaign.difficultySnapshot, random) ?: EntityType.PILLAGER.create(level) ?: return@repeat
             prepareFollower(mob, warband, campaign, role, x + random.nextDouble() * 3.0 - 1.5, y, z + random.nextDouble() * 3.0 - 1.5, random, campaign.difficultySnapshot)
             mob.target = player
             level.addFreshEntity(mob)
@@ -281,7 +281,12 @@ object PillagerRuntime {
     }
 
     private fun createArchetypeMob(level: ServerLevel, archetype: WarbandArchetype, role: WarbandRole, random: Random): Mob? {
-        val id = PillagerWarbandArchetypeRules.chooseMob(archetype, role, random)
+        val id = PillagerWarbandArchetypeRules.chooseMob(archetype, role, difficulty = 16, random)
+        return createMobById(level, id) ?: createMobById(level, fallbackMobId(archetype, role))
+    }
+
+    private fun createArchetypeMob(level: ServerLevel, archetype: WarbandArchetype, role: WarbandRole, difficulty: Int, random: Random): Mob? {
+        val id = PillagerWarbandArchetypeRules.chooseMob(archetype, role, difficulty, random)
         return createMobById(level, id) ?: createMobById(level, fallbackMobId(archetype, role))
     }
 

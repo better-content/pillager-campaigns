@@ -26,6 +26,7 @@ class PillagerWarbandArchetypeRulesTest {
         assertEquals(listOf(id("savage_and_ravage:executioner")), PillagerWarbandArchetypeRules.rules(WarbandArchetype.BLACKGUARD, WarbandRole.WARLORD).mobs)
         assertEquals(listOf(id("minecraft:evoker")), PillagerWarbandArchetypeRules.rules(WarbandArchetype.HEX, WarbandRole.WARLORD).mobs)
         assertEquals(listOf(id("savage_and_ravage:griefer")), PillagerWarbandArchetypeRules.rules(WarbandArchetype.SABOTEUR, WarbandRole.WARLORD).mobs)
+        assertEquals(listOf(id("takesapillage:legioner"), id("savage_and_ravage:executioner")), PillagerWarbandArchetypeRules.rules(WarbandArchetype.BLACKGUARD, WarbandRole.SPECIALIST).mobs)
         assertEquals(listOf(id("minecraft:illusioner")), PillagerWarbandArchetypeRules.rules(WarbandArchetype.HEX, WarbandRole.SPECIALIST).rareMobs)
         assertEquals(listOf(id("aquamirae:pillagers_patrol")), PillagerWarbandArchetypeRules.rules(WarbandArchetype.SKIRMISHER, WarbandRole.SPECIALIST).rareMobs)
         assertEquals(listOf(id("companions:illager_golem")), PillagerWarbandArchetypeRules.rules(WarbandArchetype.BLACKGUARD, WarbandRole.SPECIALIST).rareMobs)
@@ -53,8 +54,18 @@ class PillagerWarbandArchetypeRulesTest {
         val random = Random(5L)
         val rules = PillagerWarbandArchetypeRules.rules(WarbandArchetype.SABOTEUR, WarbandRole.SPECIALIST)
         repeat(20) {
-            val chosen = PillagerWarbandArchetypeRules.chooseMob(WarbandArchetype.SABOTEUR, WarbandRole.SPECIALIST, random)
+            val chosen = PillagerWarbandArchetypeRules.chooseMob(WarbandArchetype.SABOTEUR, WarbandRole.SPECIALIST, 12, random)
             assertTrue(chosen in rules.mobs || chosen in rules.rareMobs)
+        }
+    }
+
+    @Test
+    fun `rare outliers stay out of early campaigns`() {
+        val lowRules = PillagerWarbandArchetypeRules.rules(WarbandArchetype.BLACKGUARD, WarbandRole.SPECIALIST)
+        val lowRandom = Random(0L)
+        repeat(20) {
+            val chosen = PillagerWarbandArchetypeRules.chooseMob(WarbandArchetype.BLACKGUARD, WarbandRole.SPECIALIST, 4, lowRandom)
+            assertTrue(chosen in lowRules.mobs)
         }
     }
 
