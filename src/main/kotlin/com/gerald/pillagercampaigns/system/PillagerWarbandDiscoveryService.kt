@@ -3,9 +3,11 @@ package com.gerald.pillagercampaigns.system
 import com.gerald.pillagercampaigns.PillagerCampaignsConfig
 import com.gerald.pillagercampaigns.data.OfficerRank
 import com.gerald.pillagercampaigns.data.OfficerState
+import com.gerald.pillagercampaigns.data.OfficerClass
 import com.gerald.pillagercampaigns.data.PillagerWarband
 import com.gerald.pillagercampaigns.data.PillagerWorldData
 import com.gerald.pillagercampaigns.data.PresenceMaterializationResult
+import com.gerald.pillagercampaigns.data.WarbandArchetype
 import com.gerald.pillagercampaigns.util.PillagerIdentity
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.world.level.ChunkPos
@@ -24,7 +26,8 @@ object PillagerWarbandDiscoveryService {
 
         val faction = PillagerIdentity.makeFaction(level.seed xor ChunkPos.asLong(candidate.chunkX, candidate.chunkZ))
         data.factions.putIfAbsent(faction.id, faction)
-        val warlord = ensureWarlord(level, data, candidate.id, faction.id)
+        val archetype = PillagerWarbandArchetypeRules.select(level.seed, candidate.id)
+        val warlord = ensureWarlord(level, data, candidate.id, faction.id, archetype)
         data.warbands[candidate.id] = PillagerWarband(
             id = candidate.id,
             factionId = faction.id,
@@ -42,6 +45,7 @@ object PillagerWarbandDiscoveryService {
             lastIntelTick = now,
             lastPresenceFailure = PresenceMaterializationResult.SUCCESS,
             activeCampaignLimit = PillagerCampaignsConfig.maxCampaignsPerWarband.get().coerceAtLeast(0),
+            archetype = archetype,
         )
         data.markChanged()
         return true
@@ -51,21 +55,28 @@ object PillagerWarbandDiscoveryService {
         return maxOf(warbandDiscoveryRadiusChunks, maxCampaignDistanceChunks).coerceAtLeast(1)
     }
 
-    private fun ensureWarlord(level: ServerLevel, data: PillagerWorldData, warbandId: java.util.UUID, factionId: java.util.UUID) =
+    private fun ensureWarlord(level: ServerLevel, data: PillagerWorldData, warbandId: java.util.UUID, factionId: java.util.UUID, archetype: WarbandArchetype) =
         data.factions[factionId]?.let { faction ->
             val existing = faction.bossOfficerId?.let { data.officers[it] }
             if (existing != null) {
                 existing.homeWarbandId = warbandId
+                existing.officerClass = officerClassForWarlordArchetype(archetype)
                 existing
             } else {
                 val warlord = PillagerIdentity.makeOfficer(faction, warbandId, level.seed xor warbandId.mostSignificantBits, rank = OfficerRank.WARLORD)
                 warlord.title = "the Warlord"
                 warlord.state = OfficerState.AVAILABLE
-                warlord.officerClass = CampaignDifficultyRules.officerClassForDifficulty(0)
+                warlord.officerClass = officerClassForWarlordArchetype(archetype)
                 warlord.preferenceGraph.putAll(CampaignDifficultyRules.defaultPreferenceGraph(level.seed xor warbandId.mostSignificantBits))
                 data.officers[warlord.id] = warlord
                 faction.bossOfficerId = warlord.id
                 warlord
             }
         } ?: error("Faction $factionId missing while registering warband")
+
+    private fun officerClassForWarlordArchetype(archetype: WarbandArchetype): OfficerClass = when (archetype) {
+        WarbandArchetype.BLACKGUARD -> OfficerClass.VINDICATOR
+        WarbandArchetype.HEX -> OfficerClass.EVOKER
+        else -> OfficerClass.PILLAGER
+    }
 }

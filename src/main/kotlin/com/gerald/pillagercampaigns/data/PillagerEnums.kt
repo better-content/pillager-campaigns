@@ -20,6 +20,20 @@ enum class OfficerClass {
     ILLUSIONER,
 }
 
+enum class WarbandArchetype {
+    SKIRMISHER,
+    BLACKGUARD,
+    HEX,
+    SABOTEUR,
+}
+
+enum class WarbandRole {
+    WARLORD,
+    CAPTAIN,
+    LINE,
+    SPECIALIST,
+}
+
 enum class CampaignState {
     TRAVELING,
     READY_TO_MATERIALIZE,

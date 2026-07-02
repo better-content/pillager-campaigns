@@ -99,7 +99,6 @@ object PillagerCampaignsEvents {
         val mob = event.entity as? Mob ?: return
         val level = mob.level() as? ServerLevel ?: return
         if (!mob.isAlive || level.gameTime % 10L != 0L) return
-        PillagerRuntime.steerBoatAssault(level, mob)
         PillagerRuntime.keepSquadCohesive(level, mob)
         PillagerRuntime.pushOfficerTowardPlayer(level, mob)
         PillagerRuntime.tickOfficerVisuals(level, mob)
@@ -272,7 +271,7 @@ object PillagerCampaignsEvents {
             val warlordState = if (warband.defeated) "defeated" else if (warband.warlordEntityId != null) "live_or_cached" else "unseen"
             source.sendSuccess({
                 Component.literal(
-                    "  ${warband.id.toString().take(8)} dim=${warband.dimension} structure=${warband.structureId} rally_chunk=${warband.rallyChunkX},${warband.rallyChunkZ} rally_xyz=${rally.x},${rally.y},${rally.z} strength=${warband.strength} cooldown_ticks=$cooldown active=${activeCampaigns[warband.id] ?: 0}/${warband.activeCampaignLimit} warlord=$warlordState last_failure=${warband.lastPresenceFailure.name.lowercase()}"
+                    "  ${warband.id.toString().take(8)} dim=${warband.dimension} structure=${warband.structureId} archetype=${warband.archetype.name.lowercase()} rally_chunk=${warband.rallyChunkX},${warband.rallyChunkZ} rally_xyz=${rally.x},${rally.y},${rally.z} strength=${warband.strength} cooldown_ticks=$cooldown active=${activeCampaigns[warband.id] ?: 0}/${warband.activeCampaignLimit} warlord=$warlordState last_failure=${warband.lastPresenceFailure.name.lowercase()}"
                 ).append(" ").append(tpLink(warband.dimension.toString(), rally.x, rally.y, rally.z))
             }, false)
         }
@@ -399,7 +398,7 @@ object PillagerCampaignsEvents {
 
     internal fun formatWarbandLine(warband: com.gerald.pillagercampaigns.data.PillagerWarband): String {
         val rally = warband.rallyBlockPos()
-        return "  ${warband.id.toString().take(8)} dim=${warband.dimension} structure=${warband.structureId} rally_chunk=${warband.rallyChunkX},${warband.rallyChunkZ} rally_xyz=${rally.x},${rally.y},${rally.z} strength=${warband.strength} warlord=${warband.warlordOfficerId.toString().take(8)} failure=${warband.lastPresenceFailure.name.lowercase()}"
+        return "  ${warband.id.toString().take(8)} dim=${warband.dimension} structure=${warband.structureId} archetype=${warband.archetype.name.lowercase()} rally_chunk=${warband.rallyChunkX},${warband.rallyChunkZ} rally_xyz=${rally.x},${rally.y},${rally.z} strength=${warband.strength} warlord=${warband.warlordOfficerId.toString().take(8)} failure=${warband.lastPresenceFailure.name.lowercase()}"
     }
 
     private fun reset(source: CommandSourceStack): Int {

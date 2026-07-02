@@ -35,6 +35,7 @@ object PillagerWarbandPresenceSystem {
         val faction = data.factions[warband.factionId] ?: return record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now)
         val spawnedIds = PillagerRuntime.materializeWarbandSquad(
             level = level,
+            warband = warband,
             campaign = campaign,
             bannerSeed = faction.bannerSeed,
             officerRecord = officer,
@@ -42,7 +43,6 @@ object PillagerWarbandPresenceSystem {
             x = pos.x + 0.5,
             y = pos.y.toDouble(),
             z = pos.z + 0.5,
-            useBoats = site.overWater,
         )
         if (spawnedIds.isEmpty()) return record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now)
         campaign.squadMemberIds.clear()

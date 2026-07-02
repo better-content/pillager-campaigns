@@ -28,6 +28,7 @@ class PillagerCampaignSerializationTest {
             lastPresenceFailure = PresenceMaterializationResult.NOT_LOADED,
             lastPresenceAttemptTick = 111L,
             activeCampaignLimit = 2,
+            archetype = WarbandArchetype.BLACKGUARD,
         )
 
         val loaded = PillagerWarband.load(warband.save())
@@ -49,8 +50,37 @@ class PillagerCampaignSerializationTest {
         assertEquals(PresenceMaterializationResult.NOT_LOADED, loaded.lastPresenceFailure)
         assertEquals(111L, loaded.lastPresenceAttemptTick)
         assertEquals(2, loaded.activeCampaignLimit)
+        assertEquals(WarbandArchetype.BLACKGUARD, loaded.archetype)
         assertEquals(200, loaded.rallyBlockPos(70).x)
         assertEquals(-136, loaded.rallyBlockPos(70).z)
+    }
+
+    @Test
+    fun `warband load deterministically assigns legacy archetype when absent`() {
+        val warband = PillagerWarband(
+            id = UUID.fromString("11111111-2222-3333-4444-555555555555"),
+            factionId = UUID.randomUUID(),
+            dimension = ResourceLocation("minecraft", "overworld"),
+            structureId = ResourceLocation("minecraft", "pillager_outpost"),
+            bannerSeed = 17,
+            rallyChunkX = 12,
+            rallyChunkZ = -9,
+            strength = 5,
+            defeated = false,
+            warlordOfficerId = UUID.randomUUID(),
+            warlordEntityId = null,
+            nextRaidTick = 200L,
+            cooldownUntilTick = 400L,
+            lastIntelTick = 123L,
+            lastPresenceFailure = PresenceMaterializationResult.NOT_LOADED,
+        )
+        val tag = warband.save()
+        tag.remove("archetype")
+
+        val first = PillagerWarband.load(tag)
+        val second = PillagerWarband.load(tag)
+
+        assertEquals(first.archetype, second.archetype)
     }
 
     @Test

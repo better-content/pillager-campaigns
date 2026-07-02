@@ -6,14 +6,14 @@ import net.minecraft.server.level.ServerPlayer
 import net.minecraft.world.level.block.state.BlockState
 import net.minecraft.world.level.chunk.LevelChunk
 import net.minecraft.world.level.levelgen.Heightmap
-import kotlin.math.abs
 
 object PillagerSpawnPlacementRules {
-    data class MaterializationSite(val pos: BlockPos, val overWater: Boolean)
+    private const val LAND_SEARCH_RADIUS_CHUNKS = 3
+
+    data class MaterializationSite(val pos: BlockPos)
 
     fun findMaterializationPos(level: ServerLevel, player: ServerPlayer, originChunkX: Int, originChunkZ: Int, distanceChunks: Int): BlockPos? {
         return findMaterializationSite(level, player, originChunkX, originChunkZ, distanceChunks)
-            ?.takeUnless { it.overWater }
             ?.pos
     }
 
@@ -24,48 +24,65 @@ object PillagerSpawnPlacementRules {
         val dirZ = (playerChunkZ - originChunkZ).sign()
         val desiredChunkX = playerChunkX - (dirX * distanceChunks)
         val desiredChunkZ = playerChunkZ - (dirZ * distanceChunks)
-        return nearestSafeSiteInLoadedChunks(level, desiredChunkX, desiredChunkZ, allowWater = true)
+        return deterministicDrySiteInLoadedChunks(level, desiredChunkX, desiredChunkZ, LAND_SEARCH_RADIUS_CHUNKS)
     }
 
     fun findRallyPos(level: ServerLevel, rallyChunkX: Int, rallyChunkZ: Int): BlockPos? =
-        nearestSafePosInLoadedChunks(level, rallyChunkX, rallyChunkZ)
+        deterministicDrySiteInLoadedChunks(level, rallyChunkX, rallyChunkZ, LAND_SEARCH_RADIUS_CHUNKS)?.pos
 
-    private fun nearestSafePosInLoadedChunks(level: ServerLevel, startChunkX: Int, startChunkZ: Int): BlockPos? {
-        return nearestSafeSiteInLoadedChunks(level, startChunkX, startChunkZ, allowWater = false)?.pos
-    }
-
-    private fun nearestSafeSiteInLoadedChunks(level: ServerLevel, startChunkX: Int, startChunkZ: Int, allowWater: Boolean): MaterializationSite? {
-        var waterFallback: MaterializationSite? = null
-        for (ring in 0..4) {
-            for (dx in -ring..ring) {
-                for (dz in -ring..ring) {
-                    val x = startChunkX + dx
-                    val z = startChunkZ + dz
-                    val chunk = level.chunkSource.getChunkNow(x, z) ?: continue
-                    val pos = chunkCenterSurface(level, chunk, x, z) ?: continue
-                    val water = isWater(chunk, pos)
-                    if (!water) return MaterializationSite(pos, overWater = false)
-                    if (allowWater && waterFallback == null) {
-                        waterFallback = MaterializationSite(pos, overWater = true)
-                    }
-                }
-            }
+    private fun deterministicDrySiteInLoadedChunks(level: ServerLevel, startChunkX: Int, startChunkZ: Int, radiusChunks: Int): MaterializationSite? {
+        deterministicChunkOffsets(radiusChunks).forEach { (dx, dz) ->
+            val x = startChunkX + dx
+            val z = startChunkZ + dz
+            val chunk = level.chunkSource.getChunkNow(x, z) ?: return@forEach
+            val pos = deterministicDrySurface(level, chunk, x, z) ?: return@forEach
+            return MaterializationSite(pos)
         }
-        return waterFallback
+        return null
     }
 
-    private fun chunkCenterSurface(level: ServerLevel, chunk: LevelChunk, chunkX: Int, chunkZ: Int): BlockPos? {
-        val x = chunkX * 16 + 8
-        val z = chunkZ * 16 + 8
-        val y = chunk.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x and 15, z and 15) + 1
-        if (y <= level.minBuildHeight) return null
-        return BlockPos(x, y, z)
+    internal fun deterministicChunkOffsets(radiusChunks: Int): List<Pair<Int, Int>> {
+        val radius = radiusChunks.coerceAtLeast(0)
+        return (-radius..radius).flatMap { dx ->
+            (-radius..radius).map { dz -> dx to dz }
+        }
     }
 
-    private fun isWater(chunk: LevelChunk, pos: BlockPos): Boolean {
+    private fun deterministicDrySurface(level: ServerLevel, chunk: LevelChunk, chunkX: Int, chunkZ: Int): BlockPos? {
+        deterministicInChunkOffsets().forEach { (localX, localZ) ->
+            val x = chunkX * 16 + localX
+            val z = chunkZ * 16 + localZ
+            val y = chunk.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, localX, localZ) + 1
+            if (y <= level.minBuildHeight || y >= level.maxBuildHeight) return@forEach
+            val pos = BlockPos(x, y, z)
+            if (isDryLandSpawn(level, chunk, pos)) return pos
+        }
+        return null
+    }
+
+    private fun deterministicInChunkOffsets(): List<Pair<Int, Int>> = listOf(
+        8 to 8,
+        4 to 4,
+        12 to 4,
+        4 to 12,
+        12 to 12,
+        8 to 4,
+        4 to 8,
+        12 to 8,
+        8 to 12,
+    )
+
+    private fun isDryLandSpawn(level: ServerLevel, chunk: LevelChunk, pos: BlockPos): Boolean {
         val below = pos.below()
-        val state: BlockState = chunk.getBlockState(below)
-        return state.fluidState.isSource
+        val floor: BlockState = chunk.getBlockState(below)
+        if (!floor.fluidState.isEmpty) return false
+        if (!floor.isSolidRender(level, below)) return false
+        val body = level.getBlockState(pos)
+        val head = level.getBlockState(pos.above())
+        return body.fluidState.isEmpty &&
+            head.fluidState.isEmpty &&
+            body.getCollisionShape(level, pos).isEmpty &&
+            head.getCollisionShape(level, pos.above()).isEmpty
     }
 }
 

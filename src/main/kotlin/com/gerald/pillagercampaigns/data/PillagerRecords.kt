@@ -51,6 +51,7 @@ data class PillagerWarband(
     var lastPresenceFailure: PresenceMaterializationResult,
     var lastPresenceAttemptTick: Long = 0L,
     var activeCampaignLimit: Int = 1,
+    var archetype: WarbandArchetype = WarbandArchetype.SKIRMISHER,
 ) {
     fun save(): CompoundTag = CompoundTag().also {
         it.putUUID("id", id)
@@ -70,6 +71,7 @@ data class PillagerWarband(
         it.putString("lastPresenceFailure", lastPresenceFailure.name)
         it.putLong("lastPresenceAttemptTick", lastPresenceAttemptTick)
         it.putInt("activeCampaignLimit", activeCampaignLimit)
+        it.putString("archetype", archetype.name)
     }
 
     fun rallyBlockPos(y: Int = 64): BlockPos = BlockPos((rallyChunkX shl 4) + 8, y, (rallyChunkZ shl 4) + 8)
@@ -95,7 +97,16 @@ data class PillagerWarband(
             } else PresenceMaterializationResult.SUCCESS,
             lastPresenceAttemptTick = if (tag.contains("lastPresenceAttemptTick")) tag.getLong("lastPresenceAttemptTick") else 0L,
             activeCampaignLimit = if (tag.contains("activeCampaignLimit")) tag.getInt("activeCampaignLimit") else 1,
+            archetype = if (tag.contains("archetype")) {
+                runCatching { WarbandArchetype.valueOf(tag.getString("archetype")) }.getOrDefault(archetypeForId(tag.getUUID("id")))
+            } else archetypeForId(tag.getUUID("id")),
         )
+
+        private fun archetypeForId(id: UUID): WarbandArchetype {
+            val values = WarbandArchetype.entries
+            val idx = Math.floorMod((id.mostSignificantBits xor id.leastSignificantBits).toInt(), values.size)
+            return values[idx]
+        }
     }
 }
 

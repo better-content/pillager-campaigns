@@ -5,9 +5,11 @@ import com.gerald.pillagercampaigns.data.PillagerFaction
 import com.gerald.pillagercampaigns.data.PillagerOfficer
 import com.gerald.pillagercampaigns.data.PillagerWarband
 import com.gerald.pillagercampaigns.data.OfficerClass
+import com.gerald.pillagercampaigns.data.WarbandArchetype
+import com.gerald.pillagercampaigns.data.WarbandRole
 import net.minecraft.nbt.CompoundTag
+import net.minecraft.resources.ResourceLocation
 import net.minecraft.network.chat.Component
-import net.minecraft.network.chat.MutableComponent
 import net.minecraft.ChatFormatting
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.server.level.ServerPlayer
@@ -17,15 +19,12 @@ import net.minecraft.world.entity.EquipmentSlot
 import net.minecraft.world.entity.EntityType
 import net.minecraft.world.entity.LivingEntity
 import net.minecraft.world.entity.Mob
-import net.minecraft.world.entity.monster.Pillager
-import net.minecraft.world.entity.monster.Vindicator
-import net.minecraft.world.entity.vehicle.Boat
+import net.minecraft.world.entity.ai.attributes.Attributes
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Item
 import net.minecraft.world.item.Items
 import net.minecraft.world.item.enchantment.Enchantments
-import net.minecraft.world.phys.AABB
-import net.minecraft.world.phys.Vec3
+import net.minecraftforge.registries.ForgeRegistries
 import org.joml.Vector3f
 import java.util.Random
 import java.util.UUID
@@ -117,35 +116,25 @@ object PillagerRuntime {
         return count
     }
 
-    fun materializeWarbandSquad(level: ServerLevel, campaign: PillagerCampaign, bannerSeed: Int, officerRecord: PillagerOfficer, player: ServerPlayer, x: Double, y: Double, z: Double, useBoats: Boolean = false): List<UUID> {
+    fun materializeWarbandSquad(level: ServerLevel, warband: PillagerWarband, campaign: PillagerCampaign, bannerSeed: Int, officerRecord: PillagerOfficer, player: ServerPlayer, x: Double, y: Double, z: Double): List<UUID> {
         val random = Random(campaign.loadoutSeed)
-        val officer = if (useBoats) EntityType.PILLAGER.create(level) else createOfficerEntity(level, officerRecord.officerClass)
+        val officer = createArchetypeMob(level, warband.archetype, WarbandRole.CAPTAIN, random) ?: createOfficerEntity(level, officerRecord.officerClass)
         officer ?: return emptyList()
-        prepareOfficer(officer, campaign, bannerSeed, officerRecord, x, y, z, random, campaign.difficultySnapshot)
+        prepareOfficer(officer, warband, campaign, bannerSeed, officerRecord, x, y, z, random, campaign.difficultySnapshot)
         level.addFreshEntity(officer)
         registerLiveMob(officer)
         val spawnedIds = mutableListOf<UUID>()
-        val spawnedMobs = mutableListOf<Mob>()
         spawnedIds += officer.uuid
-        spawnedMobs += officer
 
         val memberCount = CampaignDifficultyRules.memberCountForDifficulty(campaign.difficultySnapshot)
-        repeat(memberCount) {
-            val memberType = CampaignDifficultyRules.chooseMemberType(campaign.difficultySnapshot, officerRecord.preferenceGraph, random)
-            val mob: Mob = when {
-                useBoats -> EntityType.PILLAGER.create(level)
-                memberType == "vindicator" -> EntityType.VINDICATOR.create(level)
-                else -> EntityType.PILLAGER.create(level)
-            } ?: return@repeat
-            prepareFollower(mob, campaign, officerRecord, x + level.random.nextDouble() * 3.0 - 1.5, y, z + level.random.nextDouble() * 3.0 - 1.5, random, campaign.difficultySnapshot)
+        repeat(memberCount) { index ->
+            val role = PillagerWarbandArchetypeRules.chooseFollowerRole(campaign.difficultySnapshot, index, memberCount, random)
+            val mob: Mob = createArchetypeMob(level, warband.archetype, role, random) ?: EntityType.PILLAGER.create(level) ?: return@repeat
+            prepareFollower(mob, warband, campaign, role, x + random.nextDouble() * 3.0 - 1.5, y, z + random.nextDouble() * 3.0 - 1.5, random, campaign.difficultySnapshot)
             mob.target = player
             level.addFreshEntity(mob)
             registerLiveMob(mob)
             spawnedIds += mob.uuid
-            spawnedMobs += mob
-        }
-        if (useBoats) {
-            putSquadInBoats(level, spawnedMobs, x, y, z)
         }
         return spawnedIds
     }
@@ -164,7 +153,8 @@ object PillagerRuntime {
             }
         }
         if (hasLiveOfficerLeader(level, warlord.id)) return liveOfficerLeaderEntityIds[warlord.id]
-        val boss = createOfficerEntity(level, warlord.officerClass) ?: EntityType.VINDICATOR.create(level) ?: return null
+        val random = Random(warband.id.mostSignificantBits xor warband.id.leastSignificantBits)
+        val boss = createArchetypeMob(level, warband.archetype, WarbandRole.WARLORD, random) ?: createOfficerEntity(level, warlord.officerClass) ?: EntityType.VINDICATOR.create(level) ?: return null
         boss.moveTo(x, y, z, boss.yRot, boss.xRot)
         boss.setPersistenceRequired()
         boss.persistentData.putBoolean(BOSS_TAG, true)
@@ -173,8 +163,9 @@ object PillagerRuntime {
         boss.persistentData.putUUID(FACTION_TAG, faction.id)
         boss.persistentData.putString(RANK_TAG, warlord.rank.name)
         boss.setItemSlot(EquipmentSlot.HEAD, makeBaseBanner(faction.bannerSeed))
-        boss.setItemSlot(EquipmentSlot.MAINHAND, ItemStack(Items.IRON_AXE))
+        applyArchetypeEquipment(boss, warband.archetype, WarbandRole.WARLORD, random, difficulty = 16)
         applyOfficerVisuals(boss, warlord)
+        applyWarlordTuning(boss)
         level.addFreshEntity(boss)
         registerLiveMob(boss)
         syncOfficerVisuals(boss)
@@ -193,36 +184,6 @@ object PillagerRuntime {
             return
         }
         mob.navigation.moveTo(officer, 1.15)
-    }
-
-    fun steerBoatAssault(level: ServerLevel, mob: Mob) {
-        val boat = mob.vehicle as? Boat ?: return
-        val tag = mob.persistentData
-        if (!tag.hasUUID(CAMPAIGN_TAG)) return
-        val target = mob.target as? ServerPlayer
-            ?: level.players().minByOrNull { it.distanceToSqr(boat) }
-            ?: return
-        mob.target = target
-
-        val dx = target.x - boat.x
-        val dz = target.z - boat.z
-        val distanceSq = dx * dx + dz * dz
-        if (distanceSq < 9.0) {
-            boat.deltaMovement = boat.deltaMovement.scale(0.6)
-            return
-        }
-
-        val distance = kotlin.math.sqrt(distanceSq)
-        val speed = if (distanceSq > 48.0 * 48.0) 0.22 else 0.13
-        val desiredX = dx / distance * speed
-        val desiredZ = dz / distance * speed
-        boat.deltaMovement = Vec3(
-            boat.deltaMovement.x * 0.65 + desiredX,
-            boat.deltaMovement.y,
-            boat.deltaMovement.z * 0.65 + desiredZ,
-        )
-        boat.yRot = (kotlin.math.atan2(dz, dx) * 180.0 / Math.PI).toFloat() - 90.0f
-        boat.hasImpulse = true
     }
 
     fun pushOfficerTowardPlayer(level: ServerLevel, mob: Mob) {
@@ -255,6 +216,7 @@ object PillagerRuntime {
 
     private fun prepareOfficer(
         mob: Mob,
+        warband: PillagerWarband,
         campaign: PillagerCampaign,
         bannerSeed: Int,
         officerRecord: PillagerOfficer,
@@ -270,30 +232,16 @@ object PillagerRuntime {
         mob.persistentData.putBoolean(LEADER_TAG, true)
         mob.persistentData.putString(RANK_TAG, officerRecord.rank.name)
         mob.setItemSlot(EquipmentSlot.HEAD, makeBaseBanner(bannerSeed))
-        equipWeaponByPreference(mob, officerRecord, random, difficulty)
-        applyArmorByPreference(mob, officerRecord, random, difficulty)
-        applyEnchantmentsByPreference(mob, officerRecord, random, difficulty)
+        applyArchetypeEquipment(mob, warband.archetype, WarbandRole.CAPTAIN, random, difficulty)
         applyOfficerVisuals(mob, officerRecord)
     }
 
-    private fun prepareFollower(mob: Mob, campaign: PillagerCampaign, officerRecord: PillagerOfficer, x: Double, y: Double, z: Double, random: Random, difficulty: Int) {
+    private fun prepareFollower(mob: Mob, warband: PillagerWarband, campaign: PillagerCampaign, role: WarbandRole, x: Double, y: Double, z: Double, random: Random, difficulty: Int) {
         mob.moveTo(x, y, z, mob.yRot, mob.xRot)
         mob.setPersistenceRequired()
         mob.persistentData.applyCampaignTags(campaign)
         mob.persistentData.putBoolean(LEADER_TAG, false)
-        equipWeaponByPreference(mob, officerRecord, random, difficulty)
-        applyArmorByPreference(mob, officerRecord, random, difficulty)
-        applyEnchantmentsByPreference(mob, officerRecord, random, difficulty)
-    }
-
-    private fun putSquadInBoats(level: ServerLevel, mobs: List<Mob>, x: Double, y: Double, z: Double) {
-        mobs.chunked(2).forEachIndexed { index, pair ->
-            val boat = EntityType.BOAT.create(level) ?: return@forEachIndexed
-            boat.moveTo(x + ((index % 3) - 1) * 2.0, y, z + (index / 3) * 2.0, boat.yRot, boat.xRot)
-            boat.variant = Boat.Type.DARK_OAK
-            level.addFreshEntity(boat)
-            pair.forEach { mob -> mob.startRiding(boat, true) }
-        }
+        applyArchetypeEquipment(mob, warband.archetype, role, random, difficulty)
     }
 
     private fun CompoundTag.applyCampaignTags(campaign: PillagerCampaign) {
@@ -330,6 +278,103 @@ object PillagerRuntime {
         OfficerClass.WITCH -> EntityType.WITCH.create(level)
         OfficerClass.EVOKER -> EntityType.EVOKER.create(level)
         OfficerClass.ILLUSIONER -> EntityType.ILLUSIONER.create(level)
+    }
+
+    private fun createArchetypeMob(level: ServerLevel, archetype: WarbandArchetype, role: WarbandRole, random: Random): Mob? {
+        val id = PillagerWarbandArchetypeRules.chooseMob(archetype, role, random)
+        return createMobById(level, id) ?: createMobById(level, fallbackMobId(archetype, role))
+    }
+
+    private fun createMobById(level: ServerLevel, id: ResourceLocation): Mob? {
+        val entityType = ForgeRegistries.ENTITY_TYPES.getValue(id) ?: return null
+        return entityType.create(level) as? Mob
+    }
+
+    private fun fallbackMobId(archetype: WarbandArchetype, role: WarbandRole): ResourceLocation {
+        val id = when {
+            archetype == WarbandArchetype.BLACKGUARD -> "minecraft:vindicator"
+            archetype == WarbandArchetype.HEX && role != WarbandRole.LINE -> "minecraft:witch"
+            archetype == WarbandArchetype.HEX -> "minecraft:pillager"
+            else -> "minecraft:pillager"
+        }
+        return ResourceLocation.tryParse(id) ?: ResourceLocation("minecraft", "pillager")
+    }
+
+    private fun applyArchetypeEquipment(mob: Mob, archetype: WarbandArchetype, role: WarbandRole, random: Random, difficulty: Int) {
+        val rules = PillagerWarbandArchetypeRules.rules(archetype, role)
+        equipWeaponFamily(mob, rules.weaponFamily, role, difficulty, random)
+        applyArmorProfile(mob, rules.armorProfile)
+        applyRoleEnchantments(mob, rules.weaponFamily, role, difficulty)
+    }
+
+    private fun equipWeaponFamily(mob: Mob, family: PillagerWarbandArchetypeRules.WeaponFamily, role: WarbandRole, difficulty: Int, random: Random) {
+        val stack = when (family) {
+            PillagerWarbandArchetypeRules.WeaponFamily.RANGED -> ItemStack(if (random.nextBoolean()) Items.CROSSBOW else Items.BOW)
+            PillagerWarbandArchetypeRules.WeaponFamily.MELEE -> ItemStack(if (random.nextBoolean()) tieredAxe(difficulty, random) else tieredSword(difficulty, random))
+            PillagerWarbandArchetypeRules.WeaponFamily.CASTER -> if (role == WarbandRole.WARLORD) ItemStack(Items.NETHERITE_SWORD) else ItemStack.EMPTY
+        }
+        mob.setItemSlot(EquipmentSlot.MAINHAND, stack)
+        mob.setItemInHand(InteractionHand.MAIN_HAND, stack)
+        if (family == PillagerWarbandArchetypeRules.WeaponFamily.CASTER && role == WarbandRole.WARLORD) {
+            mob.setItemSlot(EquipmentSlot.OFFHAND, ItemStack(Items.TOTEM_OF_UNDYING))
+        }
+    }
+
+    private fun applyArmorProfile(mob: Mob, profile: PillagerWarbandArchetypeRules.ArmorProfile) {
+        val pieces = when (profile) {
+            PillagerWarbandArchetypeRules.ArmorProfile.LIGHT -> mapOf(
+                EquipmentSlot.CHEST to Items.LEATHER_CHESTPLATE,
+                EquipmentSlot.FEET to Items.LEATHER_BOOTS,
+            )
+            PillagerWarbandArchetypeRules.ArmorProfile.MEDIUM -> mapOf(
+                EquipmentSlot.CHEST to Items.IRON_CHESTPLATE,
+                EquipmentSlot.LEGS to Items.CHAINMAIL_LEGGINGS,
+                EquipmentSlot.FEET to Items.IRON_BOOTS,
+            )
+            PillagerWarbandArchetypeRules.ArmorProfile.HEAVY -> mapOf(
+                EquipmentSlot.CHEST to Items.IRON_CHESTPLATE,
+                EquipmentSlot.LEGS to Items.IRON_LEGGINGS,
+                EquipmentSlot.FEET to Items.IRON_BOOTS,
+            )
+            PillagerWarbandArchetypeRules.ArmorProfile.WARLORD -> mapOf(
+                EquipmentSlot.CHEST to Items.NETHERITE_CHESTPLATE,
+                EquipmentSlot.LEGS to Items.NETHERITE_LEGGINGS,
+                EquipmentSlot.FEET to Items.NETHERITE_BOOTS,
+            )
+        }
+        pieces.forEach { (slot, item) -> mob.setItemSlot(slot, ItemStack(item)) }
+    }
+
+    private fun applyRoleEnchantments(mob: Mob, family: PillagerWarbandArchetypeRules.WeaponFamily, role: WarbandRole, difficulty: Int) {
+        val tier = if (role == WarbandRole.WARLORD) 4 else CampaignDifficultyRules.enchantTierForDifficulty(difficulty)
+        if (tier <= 0) return
+        val weapon = mob.getItemBySlot(EquipmentSlot.MAINHAND)
+        if (!weapon.isEmpty) {
+            when (family) {
+                PillagerWarbandArchetypeRules.WeaponFamily.RANGED -> {
+                    if (Enchantments.POWER_ARROWS.canEnchant(weapon)) weapon.enchant(Enchantments.POWER_ARROWS, tier)
+                    if (Enchantments.QUICK_CHARGE.canEnchant(weapon)) weapon.enchant(Enchantments.QUICK_CHARGE, tier.coerceAtMost(3))
+                }
+                PillagerWarbandArchetypeRules.WeaponFamily.MELEE -> weapon.enchant(Enchantments.SHARPNESS, tier)
+                PillagerWarbandArchetypeRules.WeaponFamily.CASTER -> weapon.enchant(Enchantments.UNBREAKING, tier)
+            }
+        }
+        listOf(EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET).forEach { slot ->
+            val stack = mob.getItemBySlot(slot)
+            if (!stack.isEmpty) {
+                stack.enchant(Enchantments.ALL_DAMAGE_PROTECTION, tier.coerceAtMost(4))
+                stack.enchant(Enchantments.UNBREAKING, tier.coerceAtMost(3))
+            }
+        }
+    }
+
+    private fun applyWarlordTuning(mob: Mob) {
+        mob.getAttribute(Attributes.MAX_HEALTH)?.baseValue = 220.0
+        mob.getAttribute(Attributes.ARMOR)?.baseValue = 24.0
+        mob.getAttribute(Attributes.ARMOR_TOUGHNESS)?.baseValue = 10.0
+        mob.getAttribute(Attributes.KNOCKBACK_RESISTANCE)?.baseValue = 0.85
+        mob.health = mob.maxHealth
+        mob.persistentData.putDouble(SCALE_TAG, 1.95)
     }
 
     private fun equipWeaponByPreference(mob: Mob, officer: PillagerOfficer, random: Random, difficulty: Int) {
