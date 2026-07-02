@@ -92,6 +92,7 @@ tasks.processResources {
 
 tasks.jar {
     from("src/compat/resources")
+    finalizedBy("reobfJar")
 }
 
 tasks.named<Jar>("sourcesJar") {
@@ -107,6 +108,19 @@ tasks.withType<JavaExec>().configureEach {
     if (name == "runGameTestServer") {
         dependsOn(syncGameTestStructures)
     }
+}
+
+val runtimeJar by tasks.registering(Copy::class) {
+    group = "build"
+    description = "Stages the reobfuscated runtime jar into build/libs."
+    dependsOn(tasks.named("reobfJar"))
+    from(layout.buildDirectory.file("reobfJar/output.jar"))
+    into(layout.buildDirectory.dir("libs"))
+    rename { "${modId}-${modVersion}-runtime.jar" }
+}
+
+tasks.assemble {
+    dependsOn(runtimeJar)
 }
 
 tasks.register("headlessGameTest") {

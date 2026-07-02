@@ -2,6 +2,7 @@ package com.gerald.pillagercampaigns
 
 import com.gerald.pillagercampaigns.data.CampaignState
 import com.gerald.pillagercampaigns.data.PillagerWorldData
+import com.gerald.pillagercampaigns.gametest.OpeningProgressionRuntimeValidation
 import com.gerald.pillagercampaigns.system.CampaignMath
 import com.gerald.pillagercampaigns.system.PillagerCampaignEngine
 import com.gerald.pillagercampaigns.system.PillagerDiscoveryCoordinator
@@ -220,12 +221,14 @@ object PillagerCampaignsEvents {
                         ),
                 )
                 .then(LiteralArgumentBuilder.literal<CommandSourceStack>("list").then(LiteralArgumentBuilder.literal<CommandSourceStack>("officers").executes { listOfficers(it.source) }))
+                .then(LiteralArgumentBuilder.literal<CommandSourceStack>("validate_opening_progression").executes { validateOpeningProgression(it.source) })
                 .then(LiteralArgumentBuilder.literal<CommandSourceStack>("reset").executes { reset(it.source) }),
         )
         dispatcher.register(
             LiteralArgumentBuilder.literal<CommandSourceStack>("sam")
                 .requires { it.hasPermission(2) }
                 .then(LiteralArgumentBuilder.literal<CommandSourceStack>("status").executes { status(it.source) })
+                .then(LiteralArgumentBuilder.literal<CommandSourceStack>("validate_opening_progression").executes { validateOpeningProgression(it.source) })
                 .then(LiteralArgumentBuilder.literal<CommandSourceStack>("warbands").then(LiteralArgumentBuilder.literal<CommandSourceStack>("list").executes { listWarbands(it.source) }))
                 .then(
                     LiteralArgumentBuilder.literal<CommandSourceStack>("warbands")
@@ -236,6 +239,19 @@ object PillagerCampaignsEvents {
                 )
                 .then(LiteralArgumentBuilder.literal<CommandSourceStack>("movements").then(LiteralArgumentBuilder.literal<CommandSourceStack>("list").executes { listCampaigns(it.source) })),
         )
+    }
+
+    private fun validateOpeningProgression(source: CommandSourceStack): Int {
+        return try {
+            OpeningProgressionRuntimeValidation.validate(source.server.overworld())
+            PillagerCampaignsMod.LOGGER.info("OPENING_PROGRESSION_VALIDATION PASS")
+            source.sendSuccess({ Component.literal("Opening progression runtime validation passed") }, true)
+            Command.SINGLE_SUCCESS
+        } catch (t: Throwable) {
+            PillagerCampaignsMod.LOGGER.error("OPENING_PROGRESSION_VALIDATION FAIL: {}", t.message ?: t.javaClass.simpleName, t)
+            source.sendFailure(Component.literal("Opening progression runtime validation failed: ${t.message ?: t.javaClass.simpleName}"))
+            0
+        }
     }
 
     private fun status(source: CommandSourceStack): Int {
