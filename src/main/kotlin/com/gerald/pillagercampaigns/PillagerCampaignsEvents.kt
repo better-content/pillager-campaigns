@@ -9,6 +9,8 @@ import com.gerald.pillagercampaigns.system.PillagerRuntime
 import com.gerald.pillagercampaigns.system.PillagerWarbandPresenceSystem
 import com.mojang.brigadier.Command
 import com.mojang.brigadier.CommandDispatcher
+import com.mojang.brigadier.builder.LiteralArgumentBuilder
+import com.mojang.brigadier.builder.RequiredArgumentBuilder
 import com.mojang.brigadier.arguments.StringArgumentType
 import net.minecraft.ChatFormatting
 import net.minecraft.commands.CommandSourceStack
@@ -197,42 +199,42 @@ object PillagerCampaignsEvents {
 
     private fun register(dispatcher: CommandDispatcher<CommandSourceStack>) {
         dispatcher.register(
-            Commands.literal("pillagercampaigns")
+            LiteralArgumentBuilder.literal<CommandSourceStack>("pillagercampaigns")
                 .requires { it.hasPermission(2) }
-                .then(Commands.literal("status").executes { status(it.source) })
-                .then(Commands.literal("tick_once").executes { tickOnce(it.source) })
-                .then(Commands.literal("warbands").then(Commands.literal("list").executes { listWarbands(it.source) }))
+                .then(LiteralArgumentBuilder.literal<CommandSourceStack>("status").executes { status(it.source) })
+                .then(LiteralArgumentBuilder.literal<CommandSourceStack>("tick_once").executes { tickOnce(it.source) })
+                .then(LiteralArgumentBuilder.literal<CommandSourceStack>("warbands").then(LiteralArgumentBuilder.literal<CommandSourceStack>("list").executes { listWarbands(it.source) }))
                 .then(
-                    Commands.literal("warbands")
+                    LiteralArgumentBuilder.literal<CommandSourceStack>("warbands")
                         .then(
-                            Commands.literal("materialize_warlord")
-                                .then(Commands.argument("warband", StringArgumentType.word()).executes { forceMaterializeWarlord(it.source, StringArgumentType.getString(it, "warband")) }),
+                            LiteralArgumentBuilder.literal<CommandSourceStack>("materialize_warlord")
+                                .then(RequiredArgumentBuilder.argument<CommandSourceStack, String>("warband", StringArgumentType.word()).executes { forceMaterializeWarlord(it.source, StringArgumentType.getString(it, "warband")) }),
                         ),
                 )
                 .then(
-                    Commands.literal("list")
+                    LiteralArgumentBuilder.literal<CommandSourceStack>("list")
                         .then(
-                            Commands.literal("campaigns")
+                            LiteralArgumentBuilder.literal<CommandSourceStack>("campaigns")
                                 .executes { listCampaigns(it.source) }
-                                .then(Commands.literal("closed").executes { listClosedCampaigns(it.source) }),
+                                .then(LiteralArgumentBuilder.literal<CommandSourceStack>("closed").executes { listClosedCampaigns(it.source) }),
                         ),
                 )
-                .then(Commands.literal("list").then(Commands.literal("officers").executes { listOfficers(it.source) }))
-                .then(Commands.literal("reset").executes { reset(it.source) }),
+                .then(LiteralArgumentBuilder.literal<CommandSourceStack>("list").then(LiteralArgumentBuilder.literal<CommandSourceStack>("officers").executes { listOfficers(it.source) }))
+                .then(LiteralArgumentBuilder.literal<CommandSourceStack>("reset").executes { reset(it.source) }),
         )
         dispatcher.register(
-            Commands.literal("sam")
+            LiteralArgumentBuilder.literal<CommandSourceStack>("sam")
                 .requires { it.hasPermission(2) }
-                .then(Commands.literal("status").executes { status(it.source) })
-                .then(Commands.literal("warbands").then(Commands.literal("list").executes { listWarbands(it.source) }))
+                .then(LiteralArgumentBuilder.literal<CommandSourceStack>("status").executes { status(it.source) })
+                .then(LiteralArgumentBuilder.literal<CommandSourceStack>("warbands").then(LiteralArgumentBuilder.literal<CommandSourceStack>("list").executes { listWarbands(it.source) }))
                 .then(
-                    Commands.literal("warbands")
+                    LiteralArgumentBuilder.literal<CommandSourceStack>("warbands")
                         .then(
-                            Commands.literal("materialize_warlord")
-                                .then(Commands.argument("warband", StringArgumentType.word()).executes { forceMaterializeWarlord(it.source, StringArgumentType.getString(it, "warband")) }),
+                            LiteralArgumentBuilder.literal<CommandSourceStack>("materialize_warlord")
+                                .then(RequiredArgumentBuilder.argument<CommandSourceStack, String>("warband", StringArgumentType.word()).executes { forceMaterializeWarlord(it.source, StringArgumentType.getString(it, "warband")) }),
                         ),
                 )
-                .then(Commands.literal("movements").then(Commands.literal("list").executes { listCampaigns(it.source) })),
+                .then(LiteralArgumentBuilder.literal<CommandSourceStack>("movements").then(LiteralArgumentBuilder.literal<CommandSourceStack>("list").executes { listCampaigns(it.source) })),
         )
     }
 
