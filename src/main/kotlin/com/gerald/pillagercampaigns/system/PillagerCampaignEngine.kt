@@ -248,8 +248,9 @@ object PillagerCampaignEngine {
 
     private fun moveRallyIfDue(server: MinecraftServer, data: PillagerWorldData, warband: com.gerald.pillagercampaigns.data.PillagerWarband, now: Long) {
         if (warband.defeated || now - warband.lastIntelTick < INTEL_STABILITY_TICKS) return
+        val level = server.allLevels.firstOrNull { it.dimension().location() == warband.dimension }
         warband.warlordEntityId?.let { id ->
-            server.allLevels.firstOrNull { it.dimension().location() == warband.dimension }?.getEntity(id)?.let { entity ->
+            level?.getEntity(id)?.let { entity ->
                 if (entity.isAlive) return
             }
         }
@@ -258,9 +259,20 @@ object PillagerCampaignEngine {
         val dx = Math.floorMod(seed.toInt(), RALLY_MAX_STEP_CHUNKS * 2 + 1) - RALLY_MAX_STEP_CHUNKS
         val dz = Math.floorMod((seed ushr 32).toInt(), RALLY_MAX_STEP_CHUNKS * 2 + 1) - RALLY_MAX_STEP_CHUNKS
         if (dx == 0 && dz == 0) return
-        warband.rallyChunkX += dx
-        warband.rallyChunkZ += dz
+        val targetChunkX = warband.rallyChunkX + dx
+        val targetChunkZ = warband.rallyChunkZ + dz
+        val isLoaded: ((Int, Int) -> Boolean)? = level?.let { loadedLevel -> { chunkX, chunkZ -> loadedLevel.hasChunk(chunkX, chunkZ) } }
+        if (!shouldApplyRallyDrift(isLoaded, warband.rallyChunkX, warband.rallyChunkZ, targetChunkX, targetChunkZ)) return
+        warband.rallyChunkX = targetChunkX
+        warband.rallyChunkZ = targetChunkZ
         data.markChanged()
+    }
+
+    internal fun shouldApplyRallyDrift(isChunkLoaded: ((Int, Int) -> Boolean)?, currentChunkX: Int, currentChunkZ: Int, targetChunkX: Int, targetChunkZ: Int): Boolean {
+        if (isChunkLoaded == null) return true
+        if (isChunkLoaded(currentChunkX, currentChunkZ)) return false
+        if (isChunkLoaded(targetChunkX, targetChunkZ)) return false
+        return true
     }
 
     private fun nearestPlayer(level: ServerLevel, players: List<ServerPlayer>, chunkX: Int, chunkZ: Int, maxRange: Int): ServerPlayer? {
