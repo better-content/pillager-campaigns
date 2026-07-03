@@ -110,17 +110,17 @@ tasks.withType<JavaExec>().configureEach {
     }
 }
 
-val runtimeJar by tasks.registering(Copy::class) {
+val stageRuntimeJar by tasks.registering(Copy::class) {
     group = "build"
-    description = "Stages the reobfuscated runtime jar into build/libs."
+    description = "Stages the reobfuscated runtime jar into build/libs using the canonical release filename."
     dependsOn(tasks.named("reobfJar"))
     from(layout.buildDirectory.file("reobfJar/output.jar"))
     into(layout.buildDirectory.dir("libs"))
-    rename { "${modId}-${modVersion}-runtime.jar" }
+    rename { "${modId}-${modVersion}.jar" }
 }
 
 tasks.assemble {
-    dependsOn(runtimeJar)
+    dependsOn(stageRuntimeJar)
 }
 
 tasks.register("headlessGameTest") {
