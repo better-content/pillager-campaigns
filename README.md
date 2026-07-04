@@ -11,14 +11,13 @@ Pillager Campaigns is a Minecraft Forge mod for Minecraft 1.20.1. It replaces pa
 Common commands:
 
 ```sh
-./gradlew test
-./gradlew check
-./gradlew build
+./gradlew verifyFast
+./gradlew verifyFull
 ./gradlew runClient
 ./gradlew runServer
 ```
 
-`./gradlew check` runs the test suite and JaCoCo coverage verification. Coverage is intentionally enforced, so new production classes usually need targeted tests.
+`verifyFast` runs the test suite and JaCoCo coverage verification. `verifyFull` adds the headless Forge GameTest pass.
 
 ## Project Layout
 

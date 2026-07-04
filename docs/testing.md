@@ -1,6 +1,6 @@
 # Pillager Campaigns Testing
 
-`./gradlew test jacocoTestReport jacocoTestCoverageVerification` runs the JVM test suite and emits coverage reports.
+`./gradlew verifyFast` runs the JVM test suite and coverage verification. `./gradlew verifyFull` adds the headless Forge GameTest pass.
 
 Current coverage focus:
 
@@ -32,4 +32,4 @@ JaCoCo reports:
 - HTML: `build/reports/jacoco/test/html/index.html`
 - XML: `build/reports/jacoco/test/jacocoTestReport.xml`
 
-The Gradle `check` task enforces at least 90% class coverage for the bundle. This keeps new source files from silently arriving with no tests while acknowledging that world/event classes need Forge GameTest or live-instance harness coverage.
+The Gradle `verifyFast` lane enforces at least 90% class coverage for the bundle. This keeps new source files from silently arriving with no tests while acknowledging that world/event classes need Forge GameTest or live-instance harness coverage.
