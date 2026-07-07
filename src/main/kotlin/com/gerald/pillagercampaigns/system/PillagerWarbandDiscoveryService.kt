@@ -36,7 +36,7 @@ object PillagerWarbandDiscoveryService {
             bannerSeed = (level.seed xor candidate.id.mostSignificantBits xor candidate.id.leastSignificantBits).toInt(),
             rallyChunkX = candidate.chunkX,
             rallyChunkZ = candidate.chunkZ,
-            strength = 3,
+            strength = PillagerCampaignEngine.INITIAL_WARBAND_STRENGTH,
             defeated = false,
             warlordOfficerId = warlord.id,
             warlordEntityId = null,

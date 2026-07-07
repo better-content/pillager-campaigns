@@ -49,6 +49,7 @@ object PillagerCampaignsGameTests {
         helper.assertTrue(warband != null, "warband record should exist")
         helper.assertTrue(data.factions.containsKey(warband!!.factionId), "warband faction should exist")
         helper.assertTrue(data.officers.containsKey(warband.warlordOfficerId), "warband should have a warlord officer")
+        helper.assertTrue(warband.strength == PillagerCampaignEngine.INITIAL_WARBAND_STRENGTH, "new warbands should start at the gentlest pressure tier")
         helper.succeed()
     }
 

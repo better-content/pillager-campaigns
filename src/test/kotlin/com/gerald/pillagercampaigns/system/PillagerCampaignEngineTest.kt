@@ -78,6 +78,24 @@ class PillagerCampaignEngineTest {
         assertTrue(fixture.warband.defeated)
     }
 
+    @Test
+    fun `player death aborts campaign, cools down warband, and releases officer`() {
+        val fixture = campaignFixture(strength = 3)
+        fixture.campaign.state = CampaignState.ACTIVE
+        fixture.campaign.squadMemberIds += UUID.randomUUID()
+
+        PillagerCampaignEngine.abortCampaignAfterPlayerKill(fixture.data, fixture.campaign.id, observedTick = 1_000L)
+
+        assertEquals(2, fixture.warband.strength)
+        assertFalse(fixture.warband.defeated)
+        assertEquals(25_000L, fixture.warband.cooldownUntilTick)
+        assertEquals(25_000L, fixture.warband.nextRaidTick)
+        assertEquals(1_000L, fixture.warband.lastIntelTick)
+        assertEquals(CampaignState.RESOLVED, fixture.campaign.state)
+        assertTrue(fixture.campaign.squadMemberIds.isEmpty())
+        assertEquals(OfficerState.AVAILABLE, fixture.officer.state)
+    }
+
     private fun campaignFixture(strength: Int = 3, nextRaidTick: Long = 0L): CampaignFixture {
         val data = PillagerWorldData()
         val factionId = UUID.randomUUID()

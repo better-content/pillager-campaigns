@@ -11,6 +11,8 @@ import net.minecraft.nbt.CompoundTag
 import net.minecraft.resources.ResourceLocation
 import net.minecraft.network.chat.Component
 import net.minecraft.ChatFormatting
+import net.minecraft.core.BlockPos
+import net.minecraft.core.Direction
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.server.level.ServerPlayer
 import net.minecraft.core.particles.DustParticleOptions
@@ -24,6 +26,10 @@ import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Item
 import net.minecraft.world.item.Items
 import net.minecraft.world.item.enchantment.Enchantments
+import net.minecraft.world.level.block.BannerBlock
+import net.minecraft.world.level.block.Block
+import net.minecraft.world.level.block.Blocks
+import net.minecraft.world.level.block.WallBannerBlock
 import net.minecraftforge.registries.ForgeRegistries
 import org.joml.Vector3f
 import java.util.Random
@@ -114,6 +120,76 @@ object PillagerRuntime {
             }
         }
         return count
+    }
+
+    fun dismissCampaign(level: ServerLevel, campaignId: UUID, memberIds: Collection<UUID>) {
+        memberIds.forEach { entityId ->
+            val mob = level.getEntity(entityId) as? Mob ?: return@forEach
+            if (mob.persistentData.hasUUID(CAMPAIGN_TAG) && mob.persistentData.getUUID(CAMPAIGN_TAG) == campaignId) {
+                forgetLiveMob(mob)
+                mob.discard()
+            }
+        }
+        liveCampaignMemberEntityIds.remove(campaignId)
+    }
+
+    fun placeFactionDeathBanner(level: ServerLevel, deathPos: BlockPos, bannerSeed: Int): BlockPos? {
+        val banner = makeBaseBanner(bannerSeed)
+        val block = (Block.byItem(banner.item) as? BannerBlock) ?: (Blocks.WHITE_BANNER as BannerBlock)
+        val candidates = listOf(
+            deathPos,
+            deathPos.above(),
+            deathPos.north(),
+            deathPos.south(),
+            deathPos.east(),
+            deathPos.west(),
+            deathPos.north().above(),
+            deathPos.south().above(),
+            deathPos.east().above(),
+            deathPos.west().above(),
+        )
+        for (pos in candidates) {
+            if (!level.getBlockState(pos).canBeReplaced()) continue
+            val below = pos.below()
+            if (level.getBlockState(below).isFaceSturdy(level, below, Direction.UP)) {
+                val state = block.defaultBlockState().setValue(BannerBlock.ROTATION, 0)
+                if (level.setBlock(pos, state, Block.UPDATE_ALL)) {
+                    return pos
+                }
+            }
+        }
+        for (pos in candidates) {
+            if (!level.getBlockState(pos).canBeReplaced()) continue
+            for (direction in Direction.Plane.HORIZONTAL) {
+                val anchor = pos.relative(direction.opposite)
+                if (!level.getBlockState(anchor).isFaceSturdy(level, anchor, direction)) continue
+                val wallBlock = wallBannerFor(block)
+                val state = wallBlock.defaultBlockState().setValue(WallBannerBlock.FACING, direction)
+                if (level.setBlock(pos, state, Block.UPDATE_ALL)) {
+                    return pos
+                }
+            }
+        }
+        return null
+    }
+
+    private fun wallBannerFor(block: BannerBlock) = when (block) {
+        Blocks.WHITE_BANNER -> Blocks.WHITE_WALL_BANNER
+        Blocks.ORANGE_BANNER -> Blocks.ORANGE_WALL_BANNER
+        Blocks.MAGENTA_BANNER -> Blocks.MAGENTA_WALL_BANNER
+        Blocks.LIGHT_BLUE_BANNER -> Blocks.LIGHT_BLUE_WALL_BANNER
+        Blocks.YELLOW_BANNER -> Blocks.YELLOW_WALL_BANNER
+        Blocks.LIME_BANNER -> Blocks.LIME_WALL_BANNER
+        Blocks.PINK_BANNER -> Blocks.PINK_WALL_BANNER
+        Blocks.GRAY_BANNER -> Blocks.GRAY_WALL_BANNER
+        Blocks.LIGHT_GRAY_BANNER -> Blocks.LIGHT_GRAY_WALL_BANNER
+        Blocks.CYAN_BANNER -> Blocks.CYAN_WALL_BANNER
+        Blocks.PURPLE_BANNER -> Blocks.PURPLE_WALL_BANNER
+        Blocks.BLUE_BANNER -> Blocks.BLUE_WALL_BANNER
+        Blocks.BROWN_BANNER -> Blocks.BROWN_WALL_BANNER
+        Blocks.GREEN_BANNER -> Blocks.GREEN_WALL_BANNER
+        Blocks.RED_BANNER -> Blocks.RED_WALL_BANNER
+        else -> Blocks.BLACK_WALL_BANNER
     }
 
     fun materializeWarbandSquad(level: ServerLevel, warband: PillagerWarband, campaign: PillagerCampaign, bannerSeed: Int, officerRecord: PillagerOfficer, player: ServerPlayer, x: Double, y: Double, z: Double): List<UUID> {

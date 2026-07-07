@@ -125,8 +125,10 @@ object PillagerCampaignsEvents {
             if (killerTag.hasUUID(PillagerRuntime.CAMPAIGN_TAG)) {
                 val campaign = data.campaigns[killerTag.getUUID(PillagerRuntime.CAMPAIGN_TAG)]
                 val warband = campaign?.let { data.warbands[it.originWarbandId] }
-                if (warband != null) {
-                    PillagerCampaignEngine.recordCampaignLoss(data, warband.id)
+                if (campaign != null && warband != null) {
+                    PillagerRuntime.dismissCampaign(level, campaign.id, campaign.squadMemberIds)
+                    PillagerRuntime.placeFactionDeathBanner(level, event.entity.blockPosition(), warband.bannerSeed)
+                    PillagerCampaignEngine.abortCampaignAfterPlayerKill(data, campaign.id, level.gameTime)
                     data.markChanged()
                 }
             }

@@ -85,7 +85,7 @@ data class PillagerWarband(
             bannerSeed = if (tag.contains("bannerSeed")) tag.getInt("bannerSeed") else (tag.getUUID("id").mostSignificantBits xor tag.getUUID("id").leastSignificantBits).toInt(),
             rallyChunkX = tag.getInt("rallyChunkX"),
             rallyChunkZ = tag.getInt("rallyChunkZ"),
-            strength = if (tag.contains("strength")) tag.getInt("strength") else 3,
+            strength = if (tag.contains("strength")) tag.getInt("strength") else 1,
             defeated = if (tag.contains("defeated")) tag.getBoolean("defeated") else false,
             warlordOfficerId = tag.getUUID("warlordOfficerId"),
             warlordEntityId = if (tag.hasUUID("warlordEntityId")) tag.getUUID("warlordEntityId") else null,

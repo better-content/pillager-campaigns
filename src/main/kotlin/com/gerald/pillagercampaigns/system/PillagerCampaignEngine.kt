@@ -16,9 +16,11 @@ import java.util.UUID
 import java.util.concurrent.ThreadLocalRandom
 
 object PillagerCampaignEngine {
+    const val INITIAL_WARBAND_STRENGTH: Int = 1
     private const val MATERIALIZE_LEASE_TICKS: Long = 200L
     private const val MIN_ACTIVE_LIVE_MEMBERS: Int = 1
     private const val RAID_COOLDOWN_TICKS: Long = 6_000L
+    private const val PLAYER_KILL_COOLDOWN_TICKS: Long = 24_000L
     private const val INTEL_STABILITY_TICKS: Long = 24_000L
     private const val RALLY_WINDOW_TICKS: Long = 12_000L
     private const val RALLY_MAX_STEP_CHUNKS: Int = 3
@@ -218,6 +220,19 @@ object PillagerCampaignEngine {
                 warband.defeated = true
             }
         }
+    }
+
+    fun abortCampaignAfterPlayerKill(data: PillagerWorldData, campaignId: UUID, observedTick: Long = -1L) {
+        val campaign = data.campaigns[campaignId] ?: return
+        data.warbands[campaign.originWarbandId]?.let { warband ->
+            warband.strength = (warband.strength - 1).coerceAtLeast(INITIAL_WARBAND_STRENGTH)
+            if (observedTick >= 0L) {
+                warband.lastIntelTick = observedTick
+                warband.cooldownUntilTick = maxOf(warband.cooldownUntilTick, observedTick + PLAYER_KILL_COOLDOWN_TICKS)
+                warband.nextRaidTick = maxOf(warband.nextRaidTick, warband.cooldownUntilTick)
+            }
+        }
+        resolveCampaign(data, campaign.id, defeatedByPlayer = false, observedTick = observedTick)
     }
 
     fun collapseFaction(data: PillagerWorldData, factionId: UUID) {
