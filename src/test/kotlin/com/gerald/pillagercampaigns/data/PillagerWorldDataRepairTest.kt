@@ -3,6 +3,7 @@ package com.gerald.pillagercampaigns.data
 import net.minecraft.resources.ResourceLocation
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import java.util.UUID
 
 class PillagerWorldDataRepairTest {
@@ -118,5 +119,19 @@ class PillagerWorldDataRepairTest {
         assertEquals(true, repaired.officers.containsKey(goodOfficerId))
         assertEquals(1, repaired.campaigns.size)
         assertEquals(true, repaired.campaigns.containsKey(goodCampaign.id))
+    }
+
+    @Test
+    fun `load preserves initialized and protected players`() {
+        val playerId = UUID.randomUUID()
+        val raw = PillagerWorldData().apply {
+            initializedPlayers += playerId
+            protectedPlayersUntilTick[playerId] = 6_000L
+        }.save(net.minecraft.nbt.CompoundTag())
+
+        val loaded = PillagerWorldData.load(raw)
+
+        assertTrue(playerId in loaded.initializedPlayers)
+        assertEquals(6_000L, loaded.protectedPlayersUntilTick[playerId])
     }
 }

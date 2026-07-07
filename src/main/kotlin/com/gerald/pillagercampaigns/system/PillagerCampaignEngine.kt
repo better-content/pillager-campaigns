@@ -17,6 +17,7 @@ import java.util.concurrent.ThreadLocalRandom
 
 object PillagerCampaignEngine {
     const val INITIAL_WARBAND_STRENGTH: Int = 1
+    const val PLAYER_RESPAWN_PROTECTION_TICKS: Long = 6_000L
     private const val MATERIALIZE_LEASE_TICKS: Long = 200L
     private const val MIN_ACTIVE_LIVE_MEMBERS: Int = 1
     private const val RAID_COOLDOWN_TICKS: Long = 6_000L
@@ -67,7 +68,7 @@ object PillagerCampaignEngine {
             val existing = activeCampaignsByWarband[warband.id] ?: 0
             if (existing >= warband.activeCampaignLimit) continue
             val level = server.allLevels.firstOrNull { it.dimension().location() == warband.dimension } ?: continue
-            val target = nearestPlayer(level, players, warband.rallyChunkX, warband.rallyChunkZ, maxRange) ?: continue
+            val target = nearestPlayer(level, players, warband.rallyChunkX, warband.rallyChunkZ, maxRange, data, now) ?: continue
             val alreadyTargetingPlayer = targetedPlayersByWarband[warband.id]?.contains(target.uuid) == true
             if (alreadyTargetingPlayer) continue
             val officer = obtainOfficer(data, warband.factionId, warband.id, warband.strength)
@@ -111,6 +112,11 @@ object PillagerCampaignEngine {
                 return@forEach
             }
             val level = player.serverLevel()
+            if (data.isPlayerProtected(player.uuid, now)) {
+                PillagerRuntime.dismissCampaign(level, campaign.id, campaign.squadMemberIds)
+                toResolve.add(campaign.id)
+                return@forEach
+            }
             when (campaign.state) {
                 CampaignState.ACTIVE -> {
                     val alive = PillagerRuntime.countLiveMembers(level, campaign.squadMemberIds)
@@ -290,10 +296,11 @@ object PillagerCampaignEngine {
         return true
     }
 
-    private fun nearestPlayer(level: ServerLevel, players: List<ServerPlayer>, chunkX: Int, chunkZ: Int, maxRange: Int): ServerPlayer? {
+    private fun nearestPlayer(level: ServerLevel, players: List<ServerPlayer>, chunkX: Int, chunkZ: Int, maxRange: Int, data: PillagerWorldData, now: Long): ServerPlayer? {
         return players
             .asSequence()
             .filter { it.level() == level }
+            .filter { !data.isPlayerProtected(it.uuid, now) }
             .filter { CampaignMath.manhattan(chunkX, chunkZ, it.chunkPosition().x, it.chunkPosition().z) <= maxRange }
             .minByOrNull { CampaignMath.manhattan(chunkX, chunkZ, it.chunkPosition().x, it.chunkPosition().z) }
     }

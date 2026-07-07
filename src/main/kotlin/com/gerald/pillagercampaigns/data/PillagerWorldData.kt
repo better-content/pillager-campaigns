@@ -1,6 +1,8 @@
 package com.gerald.pillagercampaigns.data
 
 import net.minecraft.nbt.CompoundTag
+import net.minecraft.nbt.ListTag
+import net.minecraft.nbt.Tag
 import net.minecraft.server.MinecraftServer
 import net.minecraft.world.level.saveddata.SavedData
 import java.util.UUID
@@ -10,6 +12,8 @@ class PillagerWorldData : SavedData() {
     val warbands: MutableMap<UUID, PillagerWarband> = linkedMapOf()
     val officers: MutableMap<UUID, PillagerOfficer> = linkedMapOf()
     val campaigns: MutableMap<UUID, PillagerCampaign> = linkedMapOf()
+    val initializedPlayers: MutableSet<UUID> = linkedSetOf()
+    val protectedPlayersUntilTick: MutableMap<UUID, Long> = linkedMapOf()
 
     var lastDiscoveryTick: Long = 0L
     var lastCampaignTick: Long = 0L
@@ -22,11 +26,33 @@ class PillagerWorldData : SavedData() {
         tag.put("warbands", saveRecordList(warbands.values.map { it.save() }))
         tag.put("officers", saveRecordList(officers.values.map { it.save() }))
         tag.put("campaigns", saveRecordList(campaigns.values.map { it.save() }))
+        tag.put("initializedPlayers", saveUuidList(initializedPlayers))
+        tag.put("protectedPlayersUntilTick", saveProtectedPlayers(protectedPlayersUntilTick))
         return tag
     }
 
     fun markChanged() {
         setDirty()
+    }
+
+    fun markPlayerInitialized(playerId: UUID): Boolean {
+        val added = initializedPlayers.add(playerId)
+        if (added) markChanged()
+        return added
+    }
+
+    fun protectPlayerUntil(playerId: UUID, untilTick: Long) {
+        if ((protectedPlayersUntilTick[playerId] ?: Long.MIN_VALUE) >= untilTick) return
+        protectedPlayersUntilTick[playerId] = untilTick
+        markChanged()
+    }
+
+    fun isPlayerProtected(playerId: UUID, now: Long): Boolean {
+        val untilTick = protectedPlayersUntilTick[playerId] ?: return false
+        if (now <= untilTick) return true
+        protectedPlayersUntilTick.remove(playerId)
+        markChanged()
+        return false
     }
 
     companion object {
@@ -44,8 +70,37 @@ class PillagerWorldData : SavedData() {
             loadRecordList(tag, "warbands") { PillagerWarband.load(it).let { v -> data.warbands[v.id] = v } }
             loadRecordList(tag, "officers") { PillagerOfficer.load(it).let { v -> data.officers[v.id] = v } }
             loadRecordList(tag, "campaigns") { PillagerCampaign.load(it).let { v -> data.campaigns[v.id] = v } }
+            if (tag.contains("initializedPlayers", Tag.TAG_LIST.toInt())) {
+                tag.getList("initializedPlayers", Tag.TAG_COMPOUND.toInt()).forEach { raw ->
+                    val entry = raw as CompoundTag
+                    if (entry.hasUUID("id")) data.initializedPlayers += entry.getUUID("id")
+                }
+            }
+            if (tag.contains("protectedPlayersUntilTick", Tag.TAG_LIST.toInt())) {
+                tag.getList("protectedPlayersUntilTick", Tag.TAG_COMPOUND.toInt()).forEach { raw ->
+                    val entry = raw as CompoundTag
+                    if (entry.hasUUID("id") && entry.contains("untilTick")) {
+                        data.protectedPlayersUntilTick[entry.getUUID("id")] = entry.getLong("untilTick")
+                    }
+                }
+            }
             data.repairReferences()
             return data
+        }
+
+        private fun saveUuidList(ids: Collection<UUID>): ListTag = ListTag().also { list ->
+            ids.forEach { id ->
+                list.add(CompoundTag().also { it.putUUID("id", id) })
+            }
+        }
+
+        private fun saveProtectedPlayers(players: Map<UUID, Long>): ListTag = ListTag().also { list ->
+            players.forEach { (id, untilTick) ->
+                list.add(CompoundTag().also {
+                    it.putUUID("id", id)
+                    it.putLong("untilTick", untilTick)
+                })
+            }
         }
     }
 

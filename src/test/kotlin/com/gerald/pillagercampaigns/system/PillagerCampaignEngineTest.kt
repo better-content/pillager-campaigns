@@ -96,6 +96,16 @@ class PillagerCampaignEngineTest {
         assertEquals(OfficerState.AVAILABLE, fixture.officer.state)
     }
 
+    @Test
+    fun `protected target prevents future campaign dispatch`() {
+        val fixture = campaignFixture(strength = 3)
+
+        fixture.data.protectPlayerUntil(fixture.campaign.targetPlayerId, 6_000L)
+
+        assertTrue(fixture.data.isPlayerProtected(fixture.campaign.targetPlayerId, 100L))
+        assertFalse(fixture.data.isPlayerProtected(fixture.campaign.targetPlayerId, 6_001L))
+    }
+
     private fun campaignFixture(strength: Int = 3, nextRaidTick: Long = 0L): CampaignFixture {
         val data = PillagerWorldData()
         val factionId = UUID.randomUUID()

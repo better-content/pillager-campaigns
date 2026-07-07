@@ -33,6 +33,7 @@ import net.minecraftforge.event.entity.EntityEvent
 import net.minecraftforge.event.entity.EntityJoinLevelEvent
 import net.minecraftforge.event.entity.living.LivingDeathEvent
 import net.minecraftforge.event.entity.living.LivingEvent
+import net.minecraftforge.event.entity.player.PlayerEvent
 import net.minecraftforge.event.level.ChunkEvent
 import net.minecraftforge.event.server.ServerStartedEvent
 import net.minecraftforge.eventbus.api.SubscribeEvent
@@ -51,6 +52,26 @@ object PillagerCampaignsEvents {
     private var discoveryMaxMs: Double = 0.0
     private var campaignMaxMs: Double = 0.0
     private var bossEnsureMaxMs: Double = 0.0
+
+    @SubscribeEvent
+    fun onPlayerLoggedIn(event: PlayerEvent.PlayerLoggedInEvent) {
+        val player = event.entity
+        val level = player.level() as? ServerLevel ?: return
+        val data = PillagerWorldData.get(level.server)
+        if (data.markPlayerInitialized(player.uuid)) {
+            data.protectPlayerUntil(player.uuid, level.gameTime + PillagerCampaignEngine.PLAYER_RESPAWN_PROTECTION_TICKS)
+        }
+    }
+
+    @SubscribeEvent
+    fun onPlayerRespawn(event: PlayerEvent.PlayerRespawnEvent) {
+        val player = event.entity
+        val level = player.level() as? ServerLevel ?: return
+        val data = PillagerWorldData.get(level.server)
+        data.markPlayerInitialized(player.uuid)
+        data.protectPlayerUntil(player.uuid, level.gameTime + PillagerCampaignEngine.PLAYER_RESPAWN_PROTECTION_TICKS)
+    }
+
     @SubscribeEvent
     fun onServerStarted(event: ServerStartedEvent) {
         if (PillagerCampaignsConfig.disableVanillaPatrolSpawning.get()) {
