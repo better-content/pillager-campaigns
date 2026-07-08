@@ -78,7 +78,7 @@ object PillagerWarbandArchetypeRules {
         WarbandArchetype.HEX to mapOf(
             WarbandRole.WARLORD to RoleRules(mobs = mobs("minecraft:evoker"), weaponFamily = WeaponFamily.CASTER, armorProfile = ArmorProfile.WARLORD),
             WarbandRole.CAPTAIN to RoleRules(mobs = mobs("minecraft:witch"), weaponFamily = WeaponFamily.CASTER, armorProfile = ArmorProfile.LIGHT),
-            WarbandRole.LINE to RoleRules(mobs = mobs("minecraft:pillager", "minecraft:vindicator"), weaponFamily = WeaponFamily.RANGED, armorProfile = ArmorProfile.LIGHT),
+            WarbandRole.LINE to RoleRules(mobs = mobs("minecraft:pillager"), weaponFamily = WeaponFamily.RANGED, armorProfile = ArmorProfile.LIGHT),
             WarbandRole.SPECIALIST to RoleRules(
                 mobs = mobs("minecraft:witch", "savage_and_ravage:trickster", "savage_and_ravage:iceologer"),
                 rareMobs = mobs("minecraft:illusioner"),

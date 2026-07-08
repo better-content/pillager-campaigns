@@ -48,6 +48,26 @@ object PillagerRuntime {
 
     private val liveOfficerLeaderEntityIds: MutableMap<UUID, UUID> = linkedMapOf()
     private val liveCampaignMemberEntityIds: MutableMap<UUID, MutableSet<UUID>> = linkedMapOf()
+    private val rangedEntityIds = setOf(
+        "minecraft:pillager",
+        "takesapillage:archer",
+        "takesapillage:skirmisher",
+        "aquamirae:pillagers_patrol",
+    )
+    private val meleeEntityIds = setOf(
+        "minecraft:vindicator",
+        "takesapillage:legioner",
+        "savage_and_ravage:executioner",
+        "savage_and_ravage:griefer",
+        "companions:illager_golem",
+    )
+    private val casterEntityIds = setOf(
+        "minecraft:witch",
+        "minecraft:evoker",
+        "minecraft:illusioner",
+        "savage_and_ravage:trickster",
+        "savage_and_ravage:iceologer",
+    )
 
     fun resetLiveIndexes() {
         liveOfficerLeaderEntityIds.clear()
@@ -383,9 +403,28 @@ object PillagerRuntime {
 
     private fun applyArchetypeEquipment(mob: Mob, archetype: WarbandArchetype, role: WarbandRole, random: Random, difficulty: Int) {
         val rules = PillagerWarbandArchetypeRules.rules(archetype, role)
-        equipWeaponFamily(mob, rules.weaponFamily, role, difficulty, random)
+        val weaponFamily = resolveWeaponFamily(ForgeRegistries.ENTITY_TYPES.getKey(mob.type), rules.weaponFamily)
+        equipWeaponFamily(mob, weaponFamily, role, difficulty, random)
         applyArmorProfile(mob, rules.armorProfile)
-        applyRoleEnchantments(mob, rules.weaponFamily, role, difficulty)
+        applyRoleEnchantments(mob, weaponFamily, role, difficulty)
+    }
+
+    internal fun resolveWeaponFamily(
+        entityId: ResourceLocation?,
+        requested: PillagerWarbandArchetypeRules.WeaponFamily,
+    ): PillagerWarbandArchetypeRules.WeaponFamily {
+        val supported = supportedWeaponFamily(entityId) ?: return requested
+        return if (supported == requested) requested else supported
+    }
+
+    internal fun supportedWeaponFamily(entityId: ResourceLocation?): PillagerWarbandArchetypeRules.WeaponFamily? {
+        val key = entityId?.toString() ?: return null
+        return when (key) {
+            in rangedEntityIds -> PillagerWarbandArchetypeRules.WeaponFamily.RANGED
+            in meleeEntityIds -> PillagerWarbandArchetypeRules.WeaponFamily.MELEE
+            in casterEntityIds -> PillagerWarbandArchetypeRules.WeaponFamily.CASTER
+            else -> null
+        }
     }
 
     private fun equipWeaponFamily(mob: Mob, family: PillagerWarbandArchetypeRules.WeaponFamily, role: WarbandRole, difficulty: Int, random: Random) {

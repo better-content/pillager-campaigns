@@ -26,6 +26,7 @@ class PillagerWarbandArchetypeRulesTest {
         assertEquals(listOf(id("savage_and_ravage:executioner")), PillagerWarbandArchetypeRules.rules(WarbandArchetype.BLACKGUARD, WarbandRole.WARLORD).mobs)
         assertEquals(listOf(id("minecraft:evoker")), PillagerWarbandArchetypeRules.rules(WarbandArchetype.HEX, WarbandRole.WARLORD).mobs)
         assertEquals(listOf(id("savage_and_ravage:griefer")), PillagerWarbandArchetypeRules.rules(WarbandArchetype.SABOTEUR, WarbandRole.WARLORD).mobs)
+        assertEquals(listOf(id("minecraft:pillager")), PillagerWarbandArchetypeRules.rules(WarbandArchetype.HEX, WarbandRole.LINE).mobs)
         assertEquals(listOf(id("takesapillage:legioner"), id("savage_and_ravage:executioner")), PillagerWarbandArchetypeRules.rules(WarbandArchetype.BLACKGUARD, WarbandRole.SPECIALIST).mobs)
         assertEquals(listOf(id("minecraft:illusioner")), PillagerWarbandArchetypeRules.rules(WarbandArchetype.HEX, WarbandRole.SPECIALIST).rareMobs)
         assertEquals(listOf(id("aquamirae:pillagers_patrol")), PillagerWarbandArchetypeRules.rules(WarbandArchetype.SKIRMISHER, WarbandRole.SPECIALIST).rareMobs)
