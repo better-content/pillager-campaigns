@@ -12,6 +12,7 @@ import com.gerald.pillagercampaigns.util.PillagerIdentity
 import net.minecraft.server.MinecraftServer
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.server.level.ServerPlayer
+import net.minecraft.world.level.GameType
 import java.util.UUID
 import java.util.concurrent.ThreadLocalRandom
 
@@ -88,6 +89,7 @@ object PillagerCampaignEngine {
                 loadoutSeed = ThreadLocalRandom.current().nextLong(),
                 tickDebt = 0,
                 state = CampaignState.TRAVELING,
+                resumeState = null,
                 materializeAttemptId = null,
                 materializingUntilTick = 0L,
                 squadMemberIds = mutableListOf(),
@@ -112,6 +114,14 @@ object PillagerCampaignEngine {
                 return@forEach
             }
             val level = player.serverLevel()
+            if (!isCampaignTarget(player)) {
+                pauseCampaign(level, campaign, data)
+                return@forEach
+            }
+            if (campaign.state == CampaignState.PAUSED) {
+                if (data.isPlayerProtected(player.uuid, now)) return@forEach
+                resumeCampaign(campaign, data)
+            }
             if (data.isPlayerProtected(player.uuid, now)) {
                 PillagerRuntime.dismissCampaign(level, campaign.id, campaign.squadMemberIds)
                 toResolve.add(campaign.id)
@@ -143,6 +153,7 @@ object PillagerCampaignEngine {
                     }
                     return@forEach
                 }
+                CampaignState.PAUSED -> return@forEach
                 else -> {}
             }
             if (player.level().dimension().location() != campaign.targetDimension) {
@@ -181,6 +192,7 @@ object PillagerCampaignEngine {
             return
         }
         campaign.state = CampaignState.MATERIALIZING
+        campaign.resumeState = null
         campaign.materializeAttemptId = UUID.randomUUID()
         campaign.materializingUntilTick = now + MATERIALIZE_LEASE_TICKS
         campaign.squadMemberIds.clear()
@@ -192,6 +204,7 @@ object PillagerCampaignEngine {
             result == com.gerald.pillagercampaigns.data.PresenceMaterializationResult.LIVE_ALREADY_PRESENT
         ) {
             campaign.state = CampaignState.ACTIVE
+            campaign.resumeState = null
             campaign.materializeAttemptId = null
             campaign.materializingUntilTick = 0L
             data.markChanged()
@@ -205,6 +218,7 @@ object PillagerCampaignEngine {
             recordCampaignVictory(data, campaign.originWarbandId, observedTick)
         }
         campaign.state = CampaignState.RESOLVED
+        campaign.resumeState = null
         campaign.materializeAttemptId = null
         campaign.materializingUntilTick = 0L
         campaign.squadMemberIds.clear()
@@ -300,9 +314,56 @@ object PillagerCampaignEngine {
         return players
             .asSequence()
             .filter { it.level() == level }
+            .filter { isCampaignTarget(it) }
             .filter { !data.isPlayerProtected(it.uuid, now) }
             .filter { CampaignMath.manhattan(chunkX, chunkZ, it.chunkPosition().x, it.chunkPosition().z) <= maxRange }
             .minByOrNull { CampaignMath.manhattan(chunkX, chunkZ, it.chunkPosition().x, it.chunkPosition().z) }
+    }
+
+    internal fun isCampaignTarget(player: ServerPlayer): Boolean = isCampaignTargetGameMode(player.gameMode.gameModeForPlayer)
+
+    internal fun isCampaignTargetGameMode(gameType: GameType): Boolean = gameType == GameType.SURVIVAL
+
+    internal fun pauseCampaignsForPlayer(server: MinecraftServer, data: PillagerWorldData, playerId: UUID) {
+        var changed = false
+        data.campaigns.values
+            .asSequence()
+            .filter { it.targetPlayerId == playerId && it.state != CampaignState.RESOLVED && it.state != CampaignState.PAUSED }
+            .forEach { campaign ->
+                server.allLevels.firstOrNull { it.dimension().location() == campaign.targetDimension }?.let { level ->
+                    PillagerRuntime.dismissCampaign(level, campaign.id, campaign.squadMemberIds)
+                }
+                pauseCampaignRecord(campaign)
+                changed = true
+            }
+        if (changed) data.markChanged()
+    }
+
+    private fun pauseCampaign(level: ServerLevel, campaign: PillagerCampaign, data: PillagerWorldData) {
+        if (campaign.state == CampaignState.PAUSED || campaign.state == CampaignState.RESOLVED) return
+        PillagerRuntime.dismissCampaign(level, campaign.id, campaign.squadMemberIds)
+        pauseCampaignRecord(campaign)
+        data.markChanged()
+    }
+
+    private fun resumeCampaign(campaign: PillagerCampaign, data: PillagerWorldData) {
+        campaign.state = campaign.resumeState ?: CampaignState.TRAVELING
+        campaign.resumeState = null
+        data.markChanged()
+    }
+
+    internal fun pauseCampaignRecord(campaign: PillagerCampaign) {
+        campaign.resumeState = pausedResumeState(campaign.state)
+        campaign.state = CampaignState.PAUSED
+        campaign.materializeAttemptId = null
+        campaign.materializingUntilTick = 0L
+        campaign.squadMemberIds.clear()
+    }
+
+    internal fun pausedResumeState(state: CampaignState): CampaignState = when (state) {
+        CampaignState.ACTIVE, CampaignState.MATERIALIZING -> CampaignState.READY_TO_MATERIALIZE
+        CampaignState.PAUSED -> CampaignState.READY_TO_MATERIALIZE
+        else -> state
     }
 
     private fun obtainOfficer(data: PillagerWorldData, factionId: UUID, homeWarbandId: UUID, baseDifficulty: Int): PillagerOfficer {

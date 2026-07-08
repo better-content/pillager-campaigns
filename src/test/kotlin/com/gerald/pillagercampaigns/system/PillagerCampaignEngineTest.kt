@@ -11,6 +11,7 @@ import com.gerald.pillagercampaigns.data.PillagerWarband
 import com.gerald.pillagercampaigns.data.PillagerWorldData
 import com.gerald.pillagercampaigns.data.PresenceMaterializationResult
 import net.minecraft.resources.ResourceLocation
+import net.minecraft.world.level.GameType
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -106,6 +107,41 @@ class PillagerCampaignEngineTest {
         assertFalse(fixture.data.isPlayerProtected(fixture.campaign.targetPlayerId, 6_001L))
     }
 
+    @Test
+    fun `only survival players are eligible campaign targets`() {
+        assertTrue(PillagerCampaignEngine.isCampaignTargetGameMode(GameType.SURVIVAL))
+        assertFalse(PillagerCampaignEngine.isCampaignTargetGameMode(GameType.CREATIVE))
+        assertFalse(PillagerCampaignEngine.isCampaignTargetGameMode(GameType.SPECTATOR))
+        assertFalse(PillagerCampaignEngine.isCampaignTargetGameMode(GameType.ADVENTURE))
+    }
+
+    @Test
+    fun `pausing traveling campaign preserves travel state for resume`() {
+        val fixture = campaignFixture()
+
+        PillagerCampaignEngine.pauseCampaignRecord(fixture.campaign)
+
+        assertEquals(CampaignState.PAUSED, fixture.campaign.state)
+        assertEquals(CampaignState.TRAVELING, fixture.campaign.resumeState)
+    }
+
+    @Test
+    fun `pausing active campaign resumes from ready to materialize`() {
+        val fixture = campaignFixture()
+        fixture.campaign.state = CampaignState.ACTIVE
+        fixture.campaign.materializeAttemptId = UUID.randomUUID()
+        fixture.campaign.materializingUntilTick = 99L
+        fixture.campaign.squadMemberIds += UUID.randomUUID()
+
+        PillagerCampaignEngine.pauseCampaignRecord(fixture.campaign)
+
+        assertEquals(CampaignState.PAUSED, fixture.campaign.state)
+        assertEquals(CampaignState.READY_TO_MATERIALIZE, fixture.campaign.resumeState)
+        assertNull(fixture.campaign.materializeAttemptId)
+        assertEquals(0L, fixture.campaign.materializingUntilTick)
+        assertTrue(fixture.campaign.squadMemberIds.isEmpty())
+    }
+
     private fun campaignFixture(strength: Int = 3, nextRaidTick: Long = 0L): CampaignFixture {
         val data = PillagerWorldData()
         val factionId = UUID.randomUUID()
@@ -163,6 +199,7 @@ class PillagerCampaignEngineTest {
             loadoutSeed = 123L,
             tickDebt = 0,
             state = CampaignState.TRAVELING,
+            resumeState = null,
             materializeAttemptId = null,
             materializingUntilTick = 0L,
             squadMemberIds = mutableListOf(),

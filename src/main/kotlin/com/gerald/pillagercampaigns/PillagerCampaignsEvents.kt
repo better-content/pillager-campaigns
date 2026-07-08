@@ -24,6 +24,7 @@ import net.minecraft.world.entity.player.Player
 import net.minecraft.world.entity.Mob
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.MapItem
+import net.minecraft.world.level.GameType
 import net.minecraft.world.level.GameRules
 import net.minecraft.world.level.chunk.LevelChunk
 import net.minecraftforge.event.RegisterCommandsEvent
@@ -59,7 +60,7 @@ object PillagerCampaignsEvents {
         val level = player.level() as? ServerLevel ?: return
         val data = PillagerWorldData.get(level.server)
         if (data.markPlayerInitialized(player.uuid)) {
-            data.protectPlayerUntil(player.uuid, level.gameTime + PillagerCampaignEngine.PLAYER_RESPAWN_PROTECTION_TICKS)
+            armRespawnProtectionIfEligible(player, level, data)
         }
     }
 
@@ -69,7 +70,26 @@ object PillagerCampaignsEvents {
         val level = player.level() as? ServerLevel ?: return
         val data = PillagerWorldData.get(level.server)
         data.markPlayerInitialized(player.uuid)
-        data.protectPlayerUntil(player.uuid, level.gameTime + PillagerCampaignEngine.PLAYER_RESPAWN_PROTECTION_TICKS)
+        armRespawnProtectionIfEligible(player, level, data)
+    }
+
+    @SubscribeEvent
+    fun onPlayerChangeGameMode(event: PlayerEvent.PlayerChangeGameModeEvent) {
+        val player = event.entity
+        val level = player.level() as? ServerLevel ?: return
+        val data = PillagerWorldData.get(level.server)
+        val current = event.currentGameMode
+        val next = event.newGameMode
+
+        if (PillagerCampaignEngine.isCampaignTargetGameMode(next) && !PillagerCampaignEngine.isCampaignTargetGameMode(current)) {
+            data.markPlayerInitialized(player.uuid)
+            data.protectPlayerUntil(player.uuid, level.gameTime + PillagerCampaignEngine.PLAYER_RESPAWN_PROTECTION_TICKS)
+            return
+        }
+
+        if (!PillagerCampaignEngine.isCampaignTargetGameMode(next)) {
+            PillagerCampaignEngine.pauseCampaignsForPlayer(level.server, data, player.uuid)
+        }
     }
 
     @SubscribeEvent
@@ -221,6 +241,13 @@ object PillagerCampaignsEvents {
         return
     }
 
+    private fun armRespawnProtectionIfEligible(player: Player, level: ServerLevel, data: PillagerWorldData) {
+        val gameMode = (player as? net.minecraft.server.level.ServerPlayer)?.gameMode?.gameModeForPlayer ?: GameType.SURVIVAL
+        if (PillagerCampaignEngine.isCampaignTargetGameMode(gameMode)) {
+            data.protectPlayerUntil(player.uuid, level.gameTime + PillagerCampaignEngine.PLAYER_RESPAWN_PROTECTION_TICKS)
+        }
+    }
+
     private fun register(dispatcher: CommandDispatcher<CommandSourceStack>) {
         dispatcher.register(
             LiteralArgumentBuilder.literal<CommandSourceStack>("pillagercampaigns")
@@ -362,6 +389,7 @@ object PillagerCampaignsEvents {
                 CampaignState.READY_TO_MATERIALIZE -> "ready"
                 CampaignState.MATERIALIZING -> "materializing"
                 CampaignState.ACTIVE -> "active"
+                CampaignState.PAUSED -> "paused"
                 CampaignState.RESOLVED -> "resolved"
             }
             source.sendSuccess({

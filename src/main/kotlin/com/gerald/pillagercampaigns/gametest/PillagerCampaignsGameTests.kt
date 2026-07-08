@@ -166,6 +166,7 @@ object PillagerCampaignsGameTests {
             loadoutSeed = 1L,
             tickDebt = 0,
             state = CampaignState.ACTIVE,
+            resumeState = null,
             materializeAttemptId = null,
             materializingUntilTick = 0L,
             squadMemberIds = mutableListOf(),

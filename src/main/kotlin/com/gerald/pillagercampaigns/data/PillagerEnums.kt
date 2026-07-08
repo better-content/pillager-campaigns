@@ -39,6 +39,7 @@ enum class CampaignState {
     READY_TO_MATERIALIZE,
     MATERIALIZING,
     ACTIVE,
+    PAUSED,
     RESOLVED,
 }
 

@@ -170,6 +170,7 @@ data class PillagerCampaign(
     var loadoutSeed: Long,
     var tickDebt: Int,
     var state: CampaignState,
+    var resumeState: CampaignState?,
     var materializeAttemptId: UUID?,
     var materializingUntilTick: Long,
     var squadMemberIds: MutableList<UUID>,
@@ -189,6 +190,7 @@ data class PillagerCampaign(
         it.putLong("loadoutSeed", loadoutSeed)
         it.putInt("tickDebt", tickDebt)
         it.putString("state", state.name)
+        resumeState?.let { resume -> it.putString("resumeState", resume.name) }
         materializeAttemptId?.let { attempt -> it.putUUID("materializeAttemptId", attempt) }
         it.putLong("materializingUntilTick", materializingUntilTick)
         val members = ListTag()
@@ -216,6 +218,9 @@ data class PillagerCampaign(
             loadoutSeed = if (tag.contains("loadoutSeed")) tag.getLong("loadoutSeed") else tag.getUUID("id").mostSignificantBits xor tag.getUUID("id").leastSignificantBits,
             tickDebt = tag.getInt("tickDebt"),
             state = runCatching { CampaignState.valueOf(tag.getString("state")) }.getOrDefault(CampaignState.TRAVELING),
+            resumeState = if (tag.contains("resumeState")) {
+                runCatching { CampaignState.valueOf(tag.getString("resumeState")) }.getOrNull()
+            } else null,
             materializeAttemptId = if (tag.hasUUID("materializeAttemptId")) tag.getUUID("materializeAttemptId") else null,
             materializingUntilTick = if (tag.contains("materializingUntilTick")) tag.getLong("materializingUntilTick") else 0L,
             squadMemberIds = mutableListOf<UUID>().also { ids ->

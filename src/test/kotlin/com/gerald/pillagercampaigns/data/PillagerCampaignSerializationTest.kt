@@ -109,6 +109,7 @@ class PillagerCampaignSerializationTest {
             loadoutSeed = 998877L,
             tickDebt = 41,
             state = CampaignState.MATERIALIZING,
+            resumeState = CampaignState.READY_TO_MATERIALIZE,
             materializeAttemptId = attemptId,
             materializingUntilTick = 4242L,
             squadMemberIds = mutableListOf(memberA, memberB),
@@ -122,6 +123,7 @@ class PillagerCampaignSerializationTest {
         assertEquals(officerId, loaded.officerId)
         assertEquals(playerId, loaded.targetPlayerId)
         assertEquals(CampaignState.MATERIALIZING, loaded.state)
+        assertEquals(CampaignState.READY_TO_MATERIALIZE, loaded.resumeState)
         assertEquals(attemptId, loaded.materializeAttemptId)
         assertEquals(4242L, loaded.materializingUntilTick)
         assertEquals(listOf(memberA, memberB), loaded.squadMemberIds)
@@ -145,6 +147,7 @@ class PillagerCampaignSerializationTest {
             loadoutSeed = 7L,
             tickDebt = 0,
             state = CampaignState.TRAVELING,
+            resumeState = null,
             materializeAttemptId = UUID.randomUUID(),
             materializingUntilTick = 99L,
             squadMemberIds = mutableListOf(UUID.randomUUID()),
@@ -158,6 +161,7 @@ class PillagerCampaignSerializationTest {
         val loaded = PillagerCampaign.load(tag)
 
         assertEquals(CampaignState.TRAVELING, loaded.state)
+        assertNull(loaded.resumeState)
         assertNull(loaded.materializeAttemptId)
         assertEquals(0L, loaded.materializingUntilTick)
         assertNotNull(loaded.squadMemberIds)
