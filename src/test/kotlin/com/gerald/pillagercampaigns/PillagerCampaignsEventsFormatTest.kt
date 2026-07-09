@@ -33,6 +33,7 @@ class PillagerCampaignsEventsFormatTest {
         assertTrue("rally_xyz=200,64,-40" in line)
         assertTrue("structure=minecraft:pillager_outpost" in line)
         assertTrue("strength=4" in line)
+        assertTrue("rally_presence=" in line)
         assertTrue("failure=cooldown" in line)
     }
 }

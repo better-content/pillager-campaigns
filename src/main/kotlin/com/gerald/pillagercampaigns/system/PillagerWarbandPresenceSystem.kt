@@ -4,6 +4,7 @@ import com.gerald.pillagercampaigns.data.PillagerCampaign
 import com.gerald.pillagercampaigns.data.PillagerWarband
 import com.gerald.pillagercampaigns.data.PillagerWorldData
 import com.gerald.pillagercampaigns.data.PresenceMaterializationResult
+import com.gerald.pillagercampaigns.data.RallyPresenceState
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.server.level.ServerPlayer
 
@@ -22,6 +23,7 @@ object PillagerWarbandPresenceSystem {
         if (now - warband.lastPresenceAttemptTick < RETRY_COOLDOWN_TICKS) {
             return record(warband, PresenceMaterializationResult.COOLDOWN, now)
         }
+        data.officers[campaign.officerId]?.let { captain -> captain.lastSeenTick = now }
         if (PillagerRuntime.hasLiveOfficerLeader(level, campaign.officerId) || PillagerRuntime.hasLiveCampaignMember(level, campaign.id)) {
             return record(warband, PresenceMaterializationResult.LIVE_ALREADY_PRESENT, now)
         }
@@ -57,6 +59,14 @@ object PillagerWarbandPresenceSystem {
         now: Long,
         force: Boolean = false,
     ): PresenceMaterializationResult {
+        warband.rallyPresence?.entityId?.let { cachedId ->
+            val cached = level.getEntity(cachedId)
+            if (cached != null && cached.isAlive) {
+                warband.warlordEntityId = cachedId
+                warband.rallyPresence?.state = RallyPresenceState.MATERIALIZED
+                return record(warband, PresenceMaterializationResult.LIVE_ALREADY_PRESENT, now)
+            }
+        }
         warband.warlordEntityId?.let { cachedId ->
             val cached = level.getEntity(cachedId)
             if (cached != null && cached.isAlive) {
@@ -76,6 +86,14 @@ object PillagerWarbandPresenceSystem {
         val spawned = PillagerRuntime.materializeWarlord(level, warband, faction, warlord, pos.x + 0.5, pos.y.toDouble(), pos.z + 0.5)
             ?: return record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now)
         warband.warlordEntityId = spawned
+        warband.rallyPresence?.apply {
+            state = RallyPresenceState.MATERIALIZED
+            entityId = spawned
+            anchorX = pos.x
+            anchorY = pos.y
+            anchorZ = pos.z
+            lastMaterializedTick = now
+        }
         return record(warband, PresenceMaterializationResult.SUCCESS, now)
     }
 

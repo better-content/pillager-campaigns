@@ -33,6 +33,67 @@ data class PillagerFaction(
     }
 }
 
+data class RallyPresenceRecord(
+    var state: RallyPresenceState,
+    var warlordId: UUID,
+    var entityId: UUID? = null,
+    var anchorX: Int? = null,
+    var anchorY: Int? = null,
+    var anchorZ: Int? = null,
+    var lastMaterializedTick: Long = 0L,
+) {
+    fun save(): CompoundTag = CompoundTag().also {
+        it.putString("state", state.name)
+        it.putUUID("warlordId", warlordId)
+        entityId?.let { entity -> it.putUUID("entityId", entity) }
+        anchorX?.let { x -> it.putInt("anchorX", x) }
+        anchorY?.let { y -> it.putInt("anchorY", y) }
+        anchorZ?.let { z -> it.putInt("anchorZ", z) }
+        it.putLong("lastMaterializedTick", lastMaterializedTick)
+    }
+
+    companion object {
+        fun load(tag: CompoundTag): RallyPresenceRecord = RallyPresenceRecord(
+            state = runCatching { RallyPresenceState.valueOf(tag.getString("state")) }.getOrDefault(RallyPresenceState.DORMANT),
+            warlordId = if (tag.hasUUID("warlordId")) tag.getUUID("warlordId") else UUID(0L, 0L),
+            entityId = if (tag.hasUUID("entityId")) tag.getUUID("entityId") else null,
+            anchorX = if (tag.contains("anchorX")) tag.getInt("anchorX") else null,
+            anchorY = if (tag.contains("anchorY")) tag.getInt("anchorY") else null,
+            anchorZ = if (tag.contains("anchorZ")) tag.getInt("anchorZ") else null,
+            lastMaterializedTick = if (tag.contains("lastMaterializedTick")) tag.getLong("lastMaterializedTick") else 0L,
+        )
+    }
+}
+
+data class NemesisEvent(
+    val tick: Long,
+    val type: NemesisEventType,
+    val playerId: UUID? = null,
+    val warbandId: UUID? = null,
+    val campaignId: UUID? = null,
+    val severity: String? = null,
+) {
+    fun save(): CompoundTag = CompoundTag().also {
+        it.putLong("tick", tick)
+        it.putString("type", type.name)
+        playerId?.let { value -> it.putUUID("playerId", value) }
+        warbandId?.let { value -> it.putUUID("warbandId", value) }
+        campaignId?.let { value -> it.putUUID("campaignId", value) }
+        severity?.let { value -> it.putString("severity", value) }
+    }
+
+    companion object {
+        fun load(tag: CompoundTag): NemesisEvent = NemesisEvent(
+            tick = if (tag.contains("tick")) tag.getLong("tick") else 0L,
+            type = runCatching { NemesisEventType.valueOf(tag.getString("type")) }.getOrDefault(NemesisEventType.LOST_CAMPAIGN),
+            playerId = if (tag.hasUUID("playerId")) tag.getUUID("playerId") else null,
+            warbandId = if (tag.hasUUID("warbandId")) tag.getUUID("warbandId") else null,
+            campaignId = if (tag.hasUUID("campaignId")) tag.getUUID("campaignId") else null,
+            severity = if (tag.contains("severity")) tag.getString("severity") else null,
+        )
+    }
+}
+
 data class PillagerWarband(
     val id: UUID,
     val factionId: UUID,
@@ -52,6 +113,7 @@ data class PillagerWarband(
     var lastPresenceAttemptTick: Long = 0L,
     var activeCampaignLimit: Int = 1,
     var archetype: WarbandArchetype = WarbandArchetype.SKIRMISHER,
+    var rallyPresence: RallyPresenceRecord? = null,
 ) {
     fun save(): CompoundTag = CompoundTag().also {
         it.putUUID("id", id)
@@ -72,6 +134,7 @@ data class PillagerWarband(
         it.putLong("lastPresenceAttemptTick", lastPresenceAttemptTick)
         it.putInt("activeCampaignLimit", activeCampaignLimit)
         it.putString("archetype", archetype.name)
+        rallyPresence?.let { presence -> it.put("rallyPresence", presence.save()) }
     }
 
     fun rallyBlockPos(y: Int = 64): BlockPos = BlockPos((rallyChunkX shl 4) + 8, y, (rallyChunkZ shl 4) + 8)
@@ -100,6 +163,15 @@ data class PillagerWarband(
             archetype = if (tag.contains("archetype")) {
                 runCatching { WarbandArchetype.valueOf(tag.getString("archetype")) }.getOrDefault(archetypeForId(tag.getUUID("id")))
             } else archetypeForId(tag.getUUID("id")),
+            rallyPresence = when {
+                tag.contains("rallyPresence", Tag.TAG_COMPOUND.toInt()) -> RallyPresenceRecord.load(tag.getCompound("rallyPresence"))
+                tag.hasUUID("warlordOfficerId") -> RallyPresenceRecord(
+                    state = if (tag.hasUUID("warlordEntityId")) RallyPresenceState.MATERIALIZED else RallyPresenceState.DORMANT,
+                    warlordId = tag.getUUID("warlordOfficerId"),
+                    entityId = if (tag.hasUUID("warlordEntityId")) tag.getUUID("warlordEntityId") else null,
+                )
+                else -> null
+            },
         )
 
         private fun archetypeForId(id: UUID): WarbandArchetype {
@@ -116,10 +188,21 @@ data class PillagerOfficer(
     var homeWarbandId: UUID,
     var name: String,
     var title: String,
-    var rank: OfficerRank,
-    var officerClass: OfficerClass,
-    var state: OfficerState,
+    var role: OfficerRole = OfficerRole.CAPTAIN,
+    var rank: OfficerRank = OfficerRank.CAPTAIN,
+    var officerClass: OfficerClass = OfficerClass.PILLAGER,
+    var state: OfficerState = OfficerState.IDLE,
+    var combatStyle: CombatStyle = CombatStyle.HUNTER,
     val preferenceGraph: MutableMap<String, Double>,
+    var kills: Int = 0,
+    var deathsInflicted: Int = 0,
+    var campaignVictories: Int = 0,
+    var campaignDefeats: Int = 0,
+    var lastTargetPlayerId: UUID? = null,
+    var lastSeenTick: Long = 0L,
+    var injuryOrRecoveryUntilTick: Long = 0L,
+    var promotionTier: Int = 0,
+    val nemesisHistory: MutableList<NemesisEvent> = mutableListOf(),
 ) {
     fun save(): CompoundTag = CompoundTag().also {
         it.putUUID("id", id)
@@ -127,12 +210,23 @@ data class PillagerOfficer(
         it.putUUID("homeWarbandId", homeWarbandId)
         it.putString("name", name)
         it.putString("title", title)
+        it.putString("role", role.name)
         it.putString("rank", rank.name)
         it.putString("officerClass", officerClass.name)
         it.putString("state", state.name)
+        it.putString("combatStyle", combatStyle.name)
+        it.putInt("kills", kills)
+        it.putInt("deathsInflicted", deathsInflicted)
+        it.putInt("campaignVictories", campaignVictories)
+        it.putInt("campaignDefeats", campaignDefeats)
+        lastTargetPlayerId?.let { player -> it.putUUID("lastTargetPlayerId", player) }
+        it.putLong("lastSeenTick", lastSeenTick)
+        it.putLong("injuryOrRecoveryUntilTick", injuryOrRecoveryUntilTick)
+        it.putInt("promotionTier", promotionTier)
         val prefs = CompoundTag()
         preferenceGraph.forEach { (k, v) -> prefs.putDouble(k, v) }
         it.put("preferenceGraph", prefs)
+        it.put("nemesisHistory", saveRecordList(nemesisHistory.map { event -> event.save() }))
     }
 
     companion object {
@@ -142,16 +236,61 @@ data class PillagerOfficer(
             homeWarbandId = tag.getUUID("homeWarbandId"),
             name = tag.getString("name"),
             title = tag.getString("title"),
-            rank = runCatching { OfficerRank.valueOf(tag.getString("rank")) }.getOrDefault(OfficerRank.CAPTAIN),
+            role = if (tag.contains("role")) {
+                runCatching { OfficerRole.valueOf(tag.getString("role")) }.getOrDefault(OfficerRole.CAPTAIN)
+            } else if (tag.getString("rank") == "WARLORD") OfficerRole.WARLORD else OfficerRole.CAPTAIN,
+            rank = when (val rawRank = tag.getString("rank")) {
+                "WARLORD" -> OfficerRank.DREAD_CAPTAIN
+                else -> runCatching { OfficerRank.valueOf(rawRank) }.getOrDefault(OfficerRank.CAPTAIN)
+            },
             officerClass = runCatching { OfficerClass.valueOf(tag.getString("officerClass")) }.getOrDefault(OfficerClass.PILLAGER),
-            state = runCatching { OfficerState.valueOf(tag.getString("state")) }.getOrDefault(OfficerState.AVAILABLE),
+            state = when (tag.getString("state")) {
+                "AVAILABLE" -> OfficerState.IDLE
+                else -> runCatching { OfficerState.valueOf(tag.getString("state")) }.getOrDefault(OfficerState.IDLE)
+            },
+            combatStyle = if (tag.contains("combatStyle")) {
+                runCatching { CombatStyle.valueOf(tag.getString("combatStyle")) }.getOrDefault(CombatStyle.HUNTER)
+            } else inferCombatStyle(
+                mutableMapOf<String, Double>().also { graph ->
+                    if (tag.contains("preferenceGraph", Tag.TAG_COMPOUND.toInt())) {
+                        val prefs = tag.getCompound("preferenceGraph")
+                        prefs.allKeys.forEach { key -> graph[key] = prefs.getDouble(key) }
+                    }
+                },
+            ),
             preferenceGraph = mutableMapOf<String, Double>().also { graph ->
                 if (tag.contains("preferenceGraph", Tag.TAG_COMPOUND.toInt())) {
                     val prefs = tag.getCompound("preferenceGraph")
                     prefs.allKeys.forEach { key -> graph[key] = prefs.getDouble(key) }
                 }
             },
+            kills = if (tag.contains("kills")) tag.getInt("kills") else 0,
+            deathsInflicted = if (tag.contains("deathsInflicted")) tag.getInt("deathsInflicted") else 0,
+            campaignVictories = if (tag.contains("campaignVictories")) tag.getInt("campaignVictories") else 0,
+            campaignDefeats = if (tag.contains("campaignDefeats")) tag.getInt("campaignDefeats") else 0,
+            lastTargetPlayerId = if (tag.hasUUID("lastTargetPlayerId")) tag.getUUID("lastTargetPlayerId") else null,
+            lastSeenTick = if (tag.contains("lastSeenTick")) tag.getLong("lastSeenTick") else 0L,
+            injuryOrRecoveryUntilTick = if (tag.contains("injuryOrRecoveryUntilTick")) tag.getLong("injuryOrRecoveryUntilTick") else 0L,
+            promotionTier = if (tag.contains("promotionTier")) tag.getInt("promotionTier") else 0,
+            nemesisHistory = mutableListOf<NemesisEvent>().also { history ->
+                if (tag.contains("nemesisHistory", Tag.TAG_LIST.toInt())) {
+                    tag.getList("nemesisHistory", Tag.TAG_COMPOUND.toInt()).forEach { raw ->
+                        history += NemesisEvent.load(raw as CompoundTag)
+                    }
+                }
+            },
         )
+
+        private fun inferCombatStyle(preferenceGraph: Map<String, Double>): CombatStyle {
+            val dominant = preferenceGraph.maxByOrNull { it.value }?.key ?: return CombatStyle.HUNTER
+            return when {
+                dominant.contains("melee", ignoreCase = true) -> CombatStyle.BUTCHER
+                dominant.contains("magic", ignoreCase = true) || dominant.contains("caster", ignoreCase = true) -> CombatStyle.HEXER
+                dominant.contains("stealth", ignoreCase = true) || dominant.contains("mobility", ignoreCase = true) -> CombatStyle.SABOTEUR
+                dominant.contains("ranged", ignoreCase = true) -> CombatStyle.HARRIER
+                else -> CombatStyle.HUNTER
+            }
+        }
     }
 }
 

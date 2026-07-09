@@ -1,12 +1,16 @@
 package com.gerald.pillagercampaigns.system
 
 import com.gerald.pillagercampaigns.PillagerCampaignsConfig
+import com.gerald.pillagercampaigns.data.CombatStyle
 import com.gerald.pillagercampaigns.data.OfficerRank
+import com.gerald.pillagercampaigns.data.OfficerRole
 import com.gerald.pillagercampaigns.data.OfficerState
 import com.gerald.pillagercampaigns.data.OfficerClass
 import com.gerald.pillagercampaigns.data.PillagerWarband
 import com.gerald.pillagercampaigns.data.PillagerWorldData
 import com.gerald.pillagercampaigns.data.PresenceMaterializationResult
+import com.gerald.pillagercampaigns.data.RallyPresenceRecord
+import com.gerald.pillagercampaigns.data.RallyPresenceState
 import com.gerald.pillagercampaigns.data.WarbandArchetype
 import com.gerald.pillagercampaigns.util.PillagerIdentity
 import net.minecraft.server.level.ServerLevel
@@ -46,6 +50,10 @@ object PillagerWarbandDiscoveryService {
             lastPresenceFailure = PresenceMaterializationResult.SUCCESS,
             activeCampaignLimit = PillagerCampaignsConfig.maxCampaignsPerWarband.get().coerceAtLeast(0),
             archetype = archetype,
+            rallyPresence = RallyPresenceRecord(
+                state = RallyPresenceState.DORMANT,
+                warlordId = warlord.id,
+            ),
         )
         data.markChanged()
         return true
@@ -63,9 +71,16 @@ object PillagerWarbandDiscoveryService {
                 existing.officerClass = officerClassForWarlordArchetype(archetype)
                 existing
             } else {
-                val warlord = PillagerIdentity.makeOfficer(faction, warbandId, level.seed xor warbandId.mostSignificantBits, rank = OfficerRank.WARLORD)
+                val warlord = PillagerIdentity.makeOfficer(
+                    faction = faction,
+                    homeWarbandId = warbandId,
+                    seed = level.seed xor warbandId.mostSignificantBits,
+                    role = OfficerRole.WARLORD,
+                    rank = OfficerRank.DREAD_CAPTAIN,
+                    combatStyle = combatStyleForArchetype(archetype),
+                )
                 warlord.title = "the Warlord"
-                warlord.state = OfficerState.AVAILABLE
+                warlord.state = OfficerState.IDLE
                 warlord.officerClass = officerClassForWarlordArchetype(archetype)
                 warlord.preferenceGraph.putAll(CampaignDifficultyRules.defaultPreferenceGraph(level.seed xor warbandId.mostSignificantBits))
                 data.officers[warlord.id] = warlord
@@ -78,5 +93,12 @@ object PillagerWarbandDiscoveryService {
         WarbandArchetype.BLACKGUARD -> OfficerClass.VINDICATOR
         WarbandArchetype.HEX -> OfficerClass.EVOKER
         else -> OfficerClass.PILLAGER
+    }
+
+    private fun combatStyleForArchetype(archetype: WarbandArchetype): CombatStyle = when (archetype) {
+        WarbandArchetype.SKIRMISHER -> CombatStyle.HARRIER
+        WarbandArchetype.BLACKGUARD -> CombatStyle.BUTCHER
+        WarbandArchetype.HEX -> CombatStyle.HEXER
+        WarbandArchetype.SABOTEUR -> CombatStyle.SABOTEUR
     }
 }

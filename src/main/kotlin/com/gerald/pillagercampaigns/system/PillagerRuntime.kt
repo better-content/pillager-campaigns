@@ -1,6 +1,7 @@
 package com.gerald.pillagercampaigns.system
 
 import com.gerald.pillagercampaigns.data.PillagerCampaign
+import com.gerald.pillagercampaigns.data.CombatStyle
 import com.gerald.pillagercampaigns.data.PillagerFaction
 import com.gerald.pillagercampaigns.data.PillagerOfficer
 import com.gerald.pillagercampaigns.data.PillagerWarband
@@ -41,6 +42,9 @@ object PillagerRuntime {
     const val LEADER_TAG = "PillagerOfficerLeader"
     const val FACTION_TAG = "PillagerFactionId"
     const val BOSS_TAG = "PillagerFactionBoss"
+    const val ANCHOR_X_TAG = "PillagerAnchorX"
+    const val ANCHOR_Y_TAG = "PillagerAnchorY"
+    const val ANCHOR_Z_TAG = "PillagerAnchorZ"
     const val RANK_TAG = "PillagerOfficerRank"
     const val OFFICER_NAME_TAG = "PillagerOfficerName"
     const val OFFICER_TITLE_TAG = "PillagerOfficerTitle"
@@ -224,7 +228,7 @@ object PillagerRuntime {
 
         val memberCount = CampaignDifficultyRules.memberCountForDifficulty(campaign.difficultySnapshot)
         repeat(memberCount) { index ->
-            val role = PillagerWarbandArchetypeRules.chooseFollowerRole(campaign.difficultySnapshot, index, memberCount, random)
+            val role = chooseFollowerRole(officerRecord, campaign.difficultySnapshot, index, memberCount, random)
             val mob: Mob = createArchetypeMob(level, warband.archetype, role, campaign.difficultySnapshot, random) ?: EntityType.PILLAGER.create(level) ?: return@repeat
             prepareFollower(mob, warband, campaign, role, x + random.nextDouble() * 3.0 - 1.5, y, z + random.nextDouble() * 3.0 - 1.5, random, campaign.difficultySnapshot)
             mob.target = player
@@ -258,6 +262,9 @@ object PillagerRuntime {
         boss.persistentData.putUUID(OFFICER_TAG, warlord.id)
         boss.persistentData.putUUID(FACTION_TAG, faction.id)
         boss.persistentData.putString(RANK_TAG, warlord.rank.name)
+        boss.persistentData.putInt(ANCHOR_X_TAG, x.toInt())
+        boss.persistentData.putInt(ANCHOR_Y_TAG, y.toInt())
+        boss.persistentData.putInt(ANCHOR_Z_TAG, z.toInt())
         boss.setItemSlot(EquipmentSlot.HEAD, makeBaseBanner(faction.bannerSeed))
         applyArchetypeEquipment(boss, warband.archetype, WarbandRole.WARLORD, random, difficulty = 16)
         applyOfficerVisuals(boss, warlord)
@@ -285,9 +292,27 @@ object PillagerRuntime {
     fun pushOfficerTowardPlayer(level: ServerLevel, mob: Mob) {
         val tag = mob.persistentData
         if (!tag.getBoolean(LEADER_TAG)) return
+        if (tag.getBoolean(BOSS_TAG)) return
         val nearest = level.players().minByOrNull { it.distanceToSqr(mob) } ?: return
         mob.target = nearest
         mob.navigation.moveTo(nearest, 1.15)
+    }
+
+    fun holdBossAtAnchor(mob: Mob) {
+        val tag = mob.persistentData
+        if (!tag.getBoolean(BOSS_TAG)) return
+        mob.target = null
+        mob.navigation.stop()
+        if (mob.deltaMovement.lengthSqr() > 0.0) {
+            mob.deltaMovement = mob.deltaMovement.multiply(0.0, 0.0, 0.0)
+        }
+        if (!tag.contains(ANCHOR_X_TAG) || !tag.contains(ANCHOR_Y_TAG) || !tag.contains(ANCHOR_Z_TAG)) return
+        val anchorX = tag.getInt(ANCHOR_X_TAG) + 0.5
+        val anchorY = tag.getInt(ANCHOR_Y_TAG).toDouble()
+        val anchorZ = tag.getInt(ANCHOR_Z_TAG) + 0.5
+        if (mob.distanceToSqr(anchorX, anchorY, anchorZ) > 0.0625) {
+            mob.moveTo(anchorX, anchorY, anchorZ, mob.yRot, mob.xRot)
+        }
     }
 
     fun tickOfficerVisuals(level: ServerLevel, mob: Mob) {
@@ -330,6 +355,9 @@ object PillagerRuntime {
         mob.setItemSlot(EquipmentSlot.HEAD, makeBaseBanner(bannerSeed))
         applyArchetypeEquipment(mob, warband.archetype, WarbandRole.CAPTAIN, random, difficulty)
         applyOfficerVisuals(mob, officerRecord)
+        equipWeaponByPreference(mob, officerRecord, random, difficulty)
+        applyArmorByPreference(mob, officerRecord, random, difficulty)
+        applyEnchantmentsByPreference(mob, officerRecord, random, difficulty)
     }
 
     private fun prepareFollower(mob: Mob, warband: PillagerWarband, campaign: PillagerCampaign, role: WarbandRole, x: Double, y: Double, z: Double, random: Random, difficulty: Int) {
@@ -374,6 +402,17 @@ object PillagerRuntime {
         OfficerClass.WITCH -> EntityType.WITCH.create(level)
         OfficerClass.EVOKER -> EntityType.EVOKER.create(level)
         OfficerClass.ILLUSIONER -> EntityType.ILLUSIONER.create(level)
+    }
+
+    private fun chooseFollowerRole(officer: PillagerOfficer, difficulty: Int, memberIndex: Int, memberCount: Int, random: Random): WarbandRole {
+        val base = PillagerWarbandArchetypeRules.chooseFollowerRole(difficulty, memberIndex, memberCount, random)
+        return when (officer.combatStyle) {
+            CombatStyle.HUNTER -> base
+            CombatStyle.HARRIER -> if (memberIndex == memberCount - 1 || random.nextInt(3) == 0) WarbandRole.SPECIALIST else base
+            CombatStyle.BUTCHER -> WarbandRole.LINE
+            CombatStyle.HEXER -> if (difficulty >= 4 && random.nextBoolean()) WarbandRole.SPECIALIST else base
+            CombatStyle.SABOTEUR -> if (random.nextInt(4) <= 1) WarbandRole.SPECIALIST else base
+        }
     }
 
     private fun createArchetypeMob(level: ServerLevel, archetype: WarbandArchetype, role: WarbandRole, random: Random): Mob? {

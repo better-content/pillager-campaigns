@@ -2,9 +2,11 @@ package com.gerald.pillagercampaigns.util
 
 import com.gerald.pillagercampaigns.data.PillagerFaction
 import com.gerald.pillagercampaigns.data.PillagerOfficer
+import com.gerald.pillagercampaigns.data.CombatStyle
 import com.gerald.pillagercampaigns.data.OfficerRank
 import com.gerald.pillagercampaigns.data.OfficerState
 import com.gerald.pillagercampaigns.data.OfficerClass
+import com.gerald.pillagercampaigns.data.OfficerRole
 import java.util.UUID
 import kotlin.math.abs
 
@@ -30,8 +32,10 @@ object PillagerIdentity {
         faction: PillagerFaction,
         homeWarbandId: UUID,
         seed: Long,
+        role: OfficerRole = OfficerRole.CAPTAIN,
         rank: OfficerRank = OfficerRank.CAPTAIN,
         officerClass: OfficerClass = OfficerClass.PILLAGER,
+        combatStyle: CombatStyle = CombatStyle.HUNTER,
         preferenceGraph: MutableMap<String, Double> = mutableMapOf(),
     ): PillagerOfficer {
         val idx = abs((seed xor homeWarbandId.mostSignificantBits).toInt())
@@ -41,9 +45,11 @@ object PillagerIdentity {
             homeWarbandId = homeWarbandId,
             name = firstNames[idx % firstNames.size],
             title = titles[(idx / 3) % titles.size],
+            role = role,
             rank = rank,
             officerClass = officerClass,
-            state = OfficerState.AVAILABLE,
+            state = OfficerState.IDLE,
+            combatStyle = combatStyle,
             preferenceGraph = preferenceGraph,
         )
     }

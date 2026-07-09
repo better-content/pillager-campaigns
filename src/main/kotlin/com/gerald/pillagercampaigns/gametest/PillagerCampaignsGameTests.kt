@@ -4,6 +4,7 @@ import com.gerald.pillagercampaigns.PillagerCampaignsMod
 import com.gerald.pillagercampaigns.data.CampaignState
 import com.gerald.pillagercampaigns.data.OfficerClass
 import com.gerald.pillagercampaigns.data.OfficerRank
+import com.gerald.pillagercampaigns.data.OfficerRole
 import com.gerald.pillagercampaigns.data.OfficerState
 import com.gerald.pillagercampaigns.data.PillagerCampaign
 import com.gerald.pillagercampaigns.data.PillagerFaction
@@ -11,6 +12,7 @@ import com.gerald.pillagercampaigns.data.PillagerOfficer
 import com.gerald.pillagercampaigns.data.PillagerWarband
 import com.gerald.pillagercampaigns.data.PillagerWorldData
 import com.gerald.pillagercampaigns.data.PresenceMaterializationResult
+import com.gerald.pillagercampaigns.data.RallyPresenceState
 import com.gerald.pillagercampaigns.system.PillagerCampaignEngine
 import com.gerald.pillagercampaigns.system.PillagerWarbandDiscoveryRules
 import com.gerald.pillagercampaigns.system.PillagerWarbandDiscoveryService
@@ -49,6 +51,7 @@ object PillagerCampaignsGameTests {
         helper.assertTrue(warband != null, "warband record should exist")
         helper.assertTrue(data.factions.containsKey(warband!!.factionId), "warband faction should exist")
         helper.assertTrue(data.officers.containsKey(warband.warlordOfficerId), "warband should have a warlord officer")
+        helper.assertTrue(data.officers.getValue(warband.warlordOfficerId).role == OfficerRole.WARLORD, "rally leader should stay a warlord role")
         helper.assertTrue(warband.strength == PillagerCampaignEngine.INITIAL_WARBAND_STRENGTH, "new warbands should start at the gentlest pressure tier")
         helper.succeed()
     }
@@ -110,6 +113,7 @@ object PillagerCampaignsGameTests {
         helper.assertTrue(result == 1, "sam warbands materialize_warlord should return a handled result")
         helper.assertTrue(warband != null, "warband should exist after registration")
         helper.assertTrue(warband!!.lastPresenceAttemptTick == level.gameTime, "warlord materialization should record an attempt tick")
+        helper.assertTrue(warband.rallyPresence?.state == RallyPresenceState.MATERIALIZED || warband.lastPresenceFailure != PresenceMaterializationResult.SUCCESS, "warlord materialization should preserve rally presence semantics")
         helper.succeed()
     }
 
@@ -146,7 +150,8 @@ object PillagerCampaignsGameTests {
             homeWarbandId = warbandId,
             name = "Ghor",
             title = "the Warlord",
-            rank = OfficerRank.WARLORD,
+            role = OfficerRole.WARLORD,
+            rank = OfficerRank.DREAD_CAPTAIN,
             officerClass = OfficerClass.VINDICATOR,
             state = OfficerState.DEPLOYED,
             preferenceGraph = mutableMapOf(),

@@ -1,8 +1,12 @@
 package com.gerald.pillagercampaigns.system
 
+import com.gerald.pillagercampaigns.data.CampaignOutcome
 import com.gerald.pillagercampaigns.data.CampaignState
+import com.gerald.pillagercampaigns.data.CombatStyle
+import com.gerald.pillagercampaigns.data.NemesisEventType
 import com.gerald.pillagercampaigns.data.OfficerClass
 import com.gerald.pillagercampaigns.data.OfficerRank
+import com.gerald.pillagercampaigns.data.OfficerRole
 import com.gerald.pillagercampaigns.data.OfficerState
 import com.gerald.pillagercampaigns.data.PillagerCampaign
 import com.gerald.pillagercampaigns.data.PillagerFaction
@@ -10,6 +14,8 @@ import com.gerald.pillagercampaigns.data.PillagerOfficer
 import com.gerald.pillagercampaigns.data.PillagerWarband
 import com.gerald.pillagercampaigns.data.PillagerWorldData
 import com.gerald.pillagercampaigns.data.PresenceMaterializationResult
+import com.gerald.pillagercampaigns.data.RallyPresenceRecord
+import com.gerald.pillagercampaigns.data.RallyPresenceState
 import net.minecraft.resources.ResourceLocation
 import net.minecraft.world.level.GameType
 import java.util.UUID
@@ -21,40 +27,72 @@ import kotlin.test.assertTrue
 
 class PillagerCampaignEngineTest {
     @Test
-    fun `resolving campaign strengthens live warband and releases officer`() {
-        val fixture = campaignFixture(strength = 3, nextRaidTick = 100L)
-        val campaign = fixture.campaign
-        campaign.state = CampaignState.ACTIVE
-        campaign.materializeAttemptId = UUID.randomUUID()
-        campaign.materializingUntilTick = 200L
-        campaign.squadMemberIds += UUID.randomUUID()
+    fun `resolving campaign defeat sends captain into recovery with history`() {
+        val fixture = campaignFixture(strength = 3)
+        fixture.campaign.state = CampaignState.ACTIVE
 
-        PillagerCampaignEngine.resolveCampaign(fixture.data, campaign.id, defeatedByPlayer = true, observedTick = 500L)
+        PillagerCampaignEngine.resolveCampaign(fixture.data, fixture.campaign.id, observedTick = 500L, outcome = CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT)
 
-        assertEquals(CampaignState.RESOLVED, campaign.state)
-        assertNull(campaign.materializeAttemptId)
-        assertEquals(0L, campaign.materializingUntilTick)
-        assertTrue(campaign.squadMemberIds.isEmpty())
-        assertEquals(4, fixture.warband.strength)
-        assertFalse(fixture.warband.defeated)
-        assertEquals(0L, fixture.warband.cooldownUntilTick)
+        assertEquals(CampaignState.RESOLVED, fixture.campaign.state)
+        assertEquals(OfficerState.RECOVERING, fixture.officer.state)
+        assertEquals(2, fixture.warband.strength)
         assertEquals(500L, fixture.warband.lastIntelTick)
-        assertEquals(OfficerState.AVAILABLE, fixture.officer.state)
+        assertTrue(fixture.officer.nemesisHistory.any { it.type == NemesisEventType.LOST_CAMPAIGN })
+        assertTrue(fixture.officer.nemesisHistory.any { it.type == NemesisEventType.SURVIVED_RETREAT })
     }
 
     @Test
-    fun `collapse warband marks home officers dead without counting as player defeat`() {
+    fun `captain victory strengthens warband and preserves captain identity`() {
+        val fixture = campaignFixture(strength = 2)
+
+        PillagerCampaignEngine.abortCampaignAfterPlayerKill(fixture.data, fixture.campaign.id, observedTick = 1_000L)
+
+        assertEquals(3, fixture.warband.strength)
+        assertEquals(CampaignState.RESOLVED, fixture.campaign.state)
+        assertEquals(OfficerState.RECOVERING, fixture.officer.state)
+        assertEquals(1, fixture.officer.kills)
+        assertEquals(1, fixture.officer.campaignVictories)
+        assertTrue(fixture.officer.nemesisHistory.any { it.type == NemesisEventType.KILLED_PLAYER })
+    }
+
+    @Test
+    fun `captain death enters dead and removes future eligibility`() {
+        val fixture = campaignFixture(strength = 3)
+
+        PillagerCampaignEngine.resolveCampaign(fixture.data, fixture.campaign.id, observedTick = 700L, outcome = CampaignOutcome.CAPTAIN_KILLED)
+
+        assertEquals(OfficerState.DEAD, fixture.officer.state)
+        assertTrue(fixture.officer.nemesisHistory.any { it.type == NemesisEventType.WAS_DEFEATED_BY_PLAYER })
+        assertTrue(PillagerCampaignEngine.availableCaptains(fixture.data, fixture.warband, 10_000L).isEmpty())
+    }
+
+    @Test
+    fun `promotion occurs after repeated success thresholds`() {
+        val fixture = campaignFixture(strength = 4)
+        fixture.officer.campaignVictories = 1
+
+        PillagerCampaignEngine.resolveCampaign(fixture.data, fixture.campaign.id, observedTick = 1_200L, outcome = CampaignOutcome.CAPTAIN_VICTORY, defeatedByPlayer = false)
+
+        assertEquals(OfficerRank.DREAD_CAPTAIN, fixture.officer.rank)
+        assertTrue(fixture.officer.title.isNotBlank())
+        assertTrue(fixture.officer.nemesisHistory.any { it.type == NemesisEventType.PROMOTED })
+    }
+
+    @Test
+    fun `collapse warband marks home officers dead without rewriting captain history as player defeat`() {
         val fixture = campaignFixture(strength = 2)
         fixture.campaign.state = CampaignState.TRAVELING
 
-        PillagerCampaignEngine.collapseWarband(fixture.data, fixture.warband.id)
+        PillagerCampaignEngine.collapseWarband(fixture.data, fixture.warband.id, observedTick = 300L)
 
         assertTrue(fixture.warband.defeated)
         assertEquals(0, fixture.warband.strength)
         assertNull(fixture.warband.warlordEntityId)
-        assertNull(fixture.faction.bossEntityId)
+        assertEquals(RallyPresenceState.LOST, fixture.warband.rallyPresence?.state)
         assertEquals(CampaignState.RESOLVED, fixture.campaign.state)
         assertEquals(OfficerState.DEAD, fixture.officer.state)
+        assertFalse(fixture.officer.nemesisHistory.any { it.type == NemesisEventType.WAS_DEFEATED_BY_PLAYER })
+        assertTrue(fixture.officer.nemesisHistory.any { it.type == NemesisEventType.WARBAND_COLLAPSED })
     }
 
     @Test
@@ -70,41 +108,27 @@ class PillagerCampaignEngineTest {
     }
 
     @Test
-    fun `campaign loss weakens warband and can defeat it`() {
-        val fixture = campaignFixture(strength = 1)
+    fun `assignment weight prefers grudges and rejects protected targets`() {
+        val captain = PillagerOfficer(
+            id = UUID.randomUUID(),
+            factionId = UUID.randomUUID(),
+            homeWarbandId = UUID.randomUUID(),
+            name = "Ghor",
+            title = "the Hound",
+            role = OfficerRole.CAPTAIN,
+            rank = OfficerRank.CAPTAIN,
+            officerClass = OfficerClass.PILLAGER,
+            state = OfficerState.IDLE,
+            combatStyle = CombatStyle.HUNTER,
+            preferenceGraph = mutableMapOf(),
+            lastTargetPlayerId = UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        )
+        val grudge = PillagerCampaignEngine.assignmentWeight(captain, UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"), distance = 8, isProtected = false)
+        val neutral = PillagerCampaignEngine.assignmentWeight(captain, UUID.fromString("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"), distance = 8, isProtected = false)
+        val protected = PillagerCampaignEngine.assignmentWeight(captain, UUID.fromString("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"), distance = 8, isProtected = true)
 
-        PillagerCampaignEngine.recordCampaignLoss(fixture.data, fixture.warband.id)
-
-        assertEquals(0, fixture.warband.strength)
-        assertTrue(fixture.warband.defeated)
-    }
-
-    @Test
-    fun `player death aborts campaign, cools down warband, and releases officer`() {
-        val fixture = campaignFixture(strength = 3)
-        fixture.campaign.state = CampaignState.ACTIVE
-        fixture.campaign.squadMemberIds += UUID.randomUUID()
-
-        PillagerCampaignEngine.abortCampaignAfterPlayerKill(fixture.data, fixture.campaign.id, observedTick = 1_000L)
-
-        assertEquals(2, fixture.warband.strength)
-        assertFalse(fixture.warband.defeated)
-        assertEquals(25_000L, fixture.warband.cooldownUntilTick)
-        assertEquals(25_000L, fixture.warband.nextRaidTick)
-        assertEquals(1_000L, fixture.warband.lastIntelTick)
-        assertEquals(CampaignState.RESOLVED, fixture.campaign.state)
-        assertTrue(fixture.campaign.squadMemberIds.isEmpty())
-        assertEquals(OfficerState.AVAILABLE, fixture.officer.state)
-    }
-
-    @Test
-    fun `protected target prevents future campaign dispatch`() {
-        val fixture = campaignFixture(strength = 3)
-
-        fixture.data.protectPlayerUntil(fixture.campaign.targetPlayerId, 6_000L)
-
-        assertTrue(fixture.data.isPlayerProtected(fixture.campaign.targetPlayerId, 100L))
-        assertFalse(fixture.data.isPlayerProtected(fixture.campaign.targetPlayerId, 6_001L))
+        assertTrue(grudge > neutral)
+        assertTrue(protected < 0)
     }
 
     @Test
@@ -113,16 +137,6 @@ class PillagerCampaignEngineTest {
         assertFalse(PillagerCampaignEngine.isCampaignTargetGameMode(GameType.CREATIVE))
         assertFalse(PillagerCampaignEngine.isCampaignTargetGameMode(GameType.SPECTATOR))
         assertFalse(PillagerCampaignEngine.isCampaignTargetGameMode(GameType.ADVENTURE))
-    }
-
-    @Test
-    fun `pausing traveling campaign preserves travel state for resume`() {
-        val fixture = campaignFixture()
-
-        PillagerCampaignEngine.pauseCampaignRecord(fixture.campaign)
-
-        assertEquals(CampaignState.PAUSED, fixture.campaign.state)
-        assertEquals(CampaignState.TRAVELING, fixture.campaign.resumeState)
     }
 
     @Test
@@ -142,7 +156,7 @@ class PillagerCampaignEngineTest {
         assertTrue(fixture.campaign.squadMemberIds.isEmpty())
     }
 
-    private fun campaignFixture(strength: Int = 3, nextRaidTick: Long = 0L): CampaignFixture {
+    private fun campaignFixture(strength: Int = 3): CampaignFixture {
         val data = PillagerWorldData()
         val factionId = UUID.randomUUID()
         val warbandId = UUID.randomUUID()
@@ -166,22 +180,25 @@ class PillagerCampaignEngineTest {
             rallyChunkZ = -3,
             strength = strength,
             defeated = false,
-            warlordOfficerId = officerId,
+            warlordOfficerId = UUID.randomUUID(),
             warlordEntityId = UUID.randomUUID(),
-            nextRaidTick = nextRaidTick,
+            nextRaidTick = 0L,
             cooldownUntilTick = 0L,
             lastIntelTick = 0L,
             lastPresenceFailure = PresenceMaterializationResult.SUCCESS,
+            rallyPresence = RallyPresenceRecord(RallyPresenceState.MATERIALIZED, UUID.randomUUID(), UUID.randomUUID()),
         )
         val officer = PillagerOfficer(
             id = officerId,
             factionId = factionId,
             homeWarbandId = warbandId,
             name = "Captain Test",
-            title = "of Tests",
+            title = "the Hound",
+            role = OfficerRole.CAPTAIN,
             rank = OfficerRank.CAPTAIN,
             officerClass = OfficerClass.PILLAGER,
             state = OfficerState.DEPLOYED,
+            combatStyle = CombatStyle.HUNTER,
             preferenceGraph = mutableMapOf("raid" to 1.0),
         )
         val campaign = PillagerCampaign(

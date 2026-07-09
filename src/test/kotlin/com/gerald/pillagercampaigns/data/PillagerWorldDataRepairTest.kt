@@ -48,7 +48,7 @@ class PillagerWorldDataRepairTest {
             title = "Captain",
             rank = OfficerRank.CAPTAIN,
             officerClass = OfficerClass.PILLAGER,
-            state = OfficerState.AVAILABLE,
+            state = OfficerState.IDLE,
             preferenceGraph = mutableMapOf(),
         )
 
@@ -60,7 +60,7 @@ class PillagerWorldDataRepairTest {
             title = "Dangling",
             rank = OfficerRank.CAPTAIN,
             officerClass = OfficerClass.PILLAGER,
-            state = OfficerState.AVAILABLE,
+            state = OfficerState.IDLE,
             preferenceGraph = mutableMapOf(),
         )
 

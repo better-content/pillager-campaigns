@@ -25,6 +25,7 @@ class PillagerWorldData : SavedData() {
         tag.put("factions", saveRecordList(factions.values.map { it.save() }))
         tag.put("warbands", saveRecordList(warbands.values.map { it.save() }))
         tag.put("officers", saveRecordList(officers.values.map { it.save() }))
+        tag.put("captains", saveRecordList(officers.values.map { it.save() }))
         tag.put("campaigns", saveRecordList(campaigns.values.map { it.save() }))
         tag.put("initializedPlayers", saveUuidList(initializedPlayers))
         tag.put("protectedPlayersUntilTick", saveProtectedPlayers(protectedPlayersUntilTick))
@@ -57,7 +58,7 @@ class PillagerWorldData : SavedData() {
 
     companion object {
         private const val KEY = "pillagercampaigns_world"
-        private const val SCHEMA_VERSION = 1
+        private const val SCHEMA_VERSION = 2
 
         fun get(server: MinecraftServer): PillagerWorldData =
             server.overworld().dataStorage.computeIfAbsent(::load, ::PillagerWorldData, KEY)
@@ -68,7 +69,11 @@ class PillagerWorldData : SavedData() {
             data.lastCampaignTick = tag.getLong("lastCampaignTick")
             loadRecordList(tag, "factions") { PillagerFaction.load(it).let { v -> data.factions[v.id] = v } }
             loadRecordList(tag, "warbands") { PillagerWarband.load(it).let { v -> data.warbands[v.id] = v } }
-            loadRecordList(tag, "officers") { PillagerOfficer.load(it).let { v -> data.officers[v.id] = v } }
+            if (tag.contains("captains", Tag.TAG_LIST.toInt())) {
+                loadRecordList(tag, "captains") { PillagerOfficer.load(it).let { v -> data.officers[v.id] = v } }
+            } else {
+                loadRecordList(tag, "officers") { PillagerOfficer.load(it).let { v -> data.officers[v.id] = v } }
+            }
             loadRecordList(tag, "campaigns") { PillagerCampaign.load(it).let { v -> data.campaigns[v.id] = v } }
             if (tag.contains("initializedPlayers", Tag.TAG_LIST.toInt())) {
                 tag.getList("initializedPlayers", Tag.TAG_COMPOUND.toInt()).forEach { raw ->
@@ -108,10 +113,23 @@ class PillagerWorldData : SavedData() {
         val factionIds = factions.keys
         val warbandIds = warbands.keys
         val officerIds = officers.keys
-        warbands.entries.removeIf { (_, warband) -> warband.factionId !in factionIds || warband.warlordOfficerId !in officerIds }
+        warbands.entries.removeIf { (_, warband) ->
+            warband.factionId !in factionIds ||
+                warband.warlordOfficerId !in officerIds ||
+                (warband.rallyPresence?.warlordId?.let { it !in officerIds } == true)
+        }
         officers.entries.removeIf { (_, officer) -> officer.factionId !in factionIds || officer.homeWarbandId !in warbandIds }
         campaigns.entries.removeIf { (_, campaign) ->
             campaign.factionId !in factionIds || campaign.originWarbandId !in warbandIds || campaign.officerId !in officerIds
+        }
+        warbands.values.forEach { warband ->
+            if (warband.rallyPresence == null) {
+                warband.rallyPresence = RallyPresenceRecord(
+                    state = if (warband.warlordEntityId != null) RallyPresenceState.MATERIALIZED else RallyPresenceState.DORMANT,
+                    warlordId = warband.warlordOfficerId,
+                    entityId = warband.warlordEntityId,
+                )
+            }
         }
     }
 }
