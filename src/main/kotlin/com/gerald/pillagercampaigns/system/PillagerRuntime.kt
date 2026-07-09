@@ -72,6 +72,14 @@ object PillagerRuntime {
         "savage_and_ravage:trickster",
         "savage_and_ravage:iceologer",
     )
+    private val guaranteedDropSlots = listOf(
+        EquipmentSlot.MAINHAND,
+        EquipmentSlot.OFFHAND,
+        EquipmentSlot.HEAD,
+        EquipmentSlot.CHEST,
+        EquipmentSlot.LEGS,
+        EquipmentSlot.FEET,
+    )
 
     fun resetLiveIndexes() {
         liveOfficerLeaderEntityIds.clear()
@@ -269,6 +277,7 @@ object PillagerRuntime {
         applyArchetypeEquipment(boss, warband.archetype, WarbandRole.WARLORD, random, difficulty = 16)
         applyOfficerVisuals(boss, warlord)
         applyWarlordTuning(boss)
+        guaranteeEquipmentDrops(boss)
         level.addFreshEntity(boss)
         registerLiveMob(boss)
         syncOfficerVisuals(boss)
@@ -358,6 +367,7 @@ object PillagerRuntime {
         equipWeaponByPreference(mob, officerRecord, random, difficulty)
         applyArmorByPreference(mob, officerRecord, random, difficulty)
         applyEnchantmentsByPreference(mob, officerRecord, random, difficulty)
+        guaranteeEquipmentDrops(mob)
     }
 
     private fun prepareFollower(mob: Mob, warband: PillagerWarband, campaign: PillagerCampaign, role: WarbandRole, x: Double, y: Double, z: Double, random: Random, difficulty: Int) {
@@ -366,6 +376,7 @@ object PillagerRuntime {
         mob.persistentData.applyCampaignTags(campaign)
         mob.persistentData.putBoolean(LEADER_TAG, false)
         applyArchetypeEquipment(mob, warband.archetype, role, random, difficulty)
+        guaranteeEquipmentDrops(mob)
     }
 
     private fun CompoundTag.applyCampaignTags(campaign: PillagerCampaign) {
@@ -535,6 +546,12 @@ object PillagerRuntime {
         mob.health = mob.maxHealth
         mob.persistentData.putDouble(SCALE_TAG, 1.95)
     }
+
+    private fun guaranteeEquipmentDrops(mob: Mob) {
+        guaranteedDropSlots.forEach { slot -> mob.setDropChance(slot, 1.0f) }
+    }
+
+    internal fun guaranteedDropSlots(): List<EquipmentSlot> = guaranteedDropSlots
 
     private fun equipWeaponByPreference(mob: Mob, officer: PillagerOfficer, random: Random, difficulty: Int) {
         val allowed = mutableListOf("weapon_crossbow", "weapon_bow", "weapon_sword", "weapon_axe")

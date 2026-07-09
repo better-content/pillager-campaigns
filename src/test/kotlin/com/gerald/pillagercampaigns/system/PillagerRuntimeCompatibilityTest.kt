@@ -1,6 +1,7 @@
 package com.gerald.pillagercampaigns.system
 
 import net.minecraft.resources.ResourceLocation
+import net.minecraft.world.entity.EquipmentSlot
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -43,5 +44,19 @@ class PillagerRuntimeCompatibilityTest {
         )
 
         assertEquals(PillagerWarbandArchetypeRules.WeaponFamily.RANGED, resolved)
+    }
+
+    @Test
+    fun `guaranteed drop slots cover all carried equipment`() {
+        val expected = listOf(
+            EquipmentSlot.MAINHAND,
+            EquipmentSlot.OFFHAND,
+            EquipmentSlot.HEAD,
+            EquipmentSlot.CHEST,
+            EquipmentSlot.LEGS,
+            EquipmentSlot.FEET,
+        )
+
+        assertEquals(expected, PillagerRuntime.guaranteedDropSlots())
     }
 }
