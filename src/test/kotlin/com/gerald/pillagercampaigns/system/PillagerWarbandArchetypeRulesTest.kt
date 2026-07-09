@@ -45,9 +45,11 @@ class PillagerWarbandArchetypeRulesTest {
     fun `low pressure followers stay line troops and higher pressure gains specialists deterministically`() {
         val low = PillagerWarbandArchetypeRules.chooseFollowerRole(3, 0, 3, Random(1L))
         val highLast = PillagerWarbandArchetypeRules.chooseFollowerRole(4, 2, 3, Random(1L))
+        val highRandom = PillagerWarbandArchetypeRules.chooseFollowerRole(4, 0, 3, Random(4096L))
 
         assertEquals(WarbandRole.LINE, low)
         assertEquals(WarbandRole.SPECIALIST, highLast)
+        assertEquals(WarbandRole.SPECIALIST, highRandom)
     }
 
     @Test
@@ -68,6 +70,17 @@ class PillagerWarbandArchetypeRulesTest {
             val chosen = PillagerWarbandArchetypeRules.chooseMob(WarbandArchetype.BLACKGUARD, WarbandRole.SPECIALIST, 4, lowRandom)
             assertTrue(chosen in lowRules.mobs)
         }
+    }
+
+    @Test
+    fun `rare specialist outliers can appear once difficulty threshold is met`() {
+        val rules = PillagerWarbandArchetypeRules.rules(WarbandArchetype.HEX, WarbandRole.SPECIALIST)
+        val random = Random(4096L)
+        val chosen = generateSequence {
+            PillagerWarbandArchetypeRules.chooseMob(WarbandArchetype.HEX, WarbandRole.SPECIALIST, 12, random)
+        }.first { it in rules.rareMobs }
+
+        assertTrue(chosen in rules.rareMobs)
     }
 
     private fun id(value: String): ResourceLocation = ResourceLocation.tryParse(value)!!
