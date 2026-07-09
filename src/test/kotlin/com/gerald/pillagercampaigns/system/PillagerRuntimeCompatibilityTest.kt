@@ -59,4 +59,32 @@ class PillagerRuntimeCompatibilityTest {
 
         assertEquals(expected, PillagerRuntime.guaranteedDropSlots())
     }
+
+    @Test
+    fun `campaign followers scale coin rarity and quantity with strength`() {
+        assertEquals(
+            listOf(PillagerRuntime.CoinRewardPlan("createdeco:copper_coin", 1)),
+            PillagerRuntime.coinRewardPlan(1, PillagerRuntime.CoinRewardRole.FOLLOWER),
+        )
+        assertEquals(
+            listOf(PillagerRuntime.CoinRewardPlan("createdeco:industrial_iron_coin", 3)),
+            PillagerRuntime.coinRewardPlan(5, PillagerRuntime.CoinRewardRole.FOLLOWER),
+        )
+        assertEquals(
+            listOf(PillagerRuntime.CoinRewardPlan("createdeco:gold_coin", 5)),
+            PillagerRuntime.coinRewardPlan(9, PillagerRuntime.CoinRewardRole.FOLLOWER),
+        )
+    }
+
+    @Test
+    fun `captains and warlords award larger higher tier coin bundles`() {
+        assertEquals(
+            listOf(PillagerRuntime.CoinRewardPlan("createdeco:zinc_coin", 2)),
+            PillagerRuntime.coinRewardPlan(1, PillagerRuntime.CoinRewardRole.CAPTAIN),
+        )
+        assertEquals(
+            listOf(PillagerRuntime.CoinRewardPlan("createdeco:gold_coin", 7)),
+            PillagerRuntime.coinRewardPlan(7, PillagerRuntime.CoinRewardRole.WARLORD),
+        )
+    }
 }

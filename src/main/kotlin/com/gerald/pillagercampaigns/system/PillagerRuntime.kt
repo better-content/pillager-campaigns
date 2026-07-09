@@ -5,6 +5,7 @@ import com.gerald.pillagercampaigns.data.CombatStyle
 import com.gerald.pillagercampaigns.data.PillagerFaction
 import com.gerald.pillagercampaigns.data.PillagerOfficer
 import com.gerald.pillagercampaigns.data.PillagerWarband
+import com.gerald.pillagercampaigns.data.PillagerWorldData
 import com.gerald.pillagercampaigns.data.OfficerClass
 import com.gerald.pillagercampaigns.data.WarbandArchetype
 import com.gerald.pillagercampaigns.data.WarbandRole
@@ -49,6 +50,15 @@ object PillagerRuntime {
     const val OFFICER_NAME_TAG = "PillagerOfficerName"
     const val OFFICER_TITLE_TAG = "PillagerOfficerTitle"
     const val SCALE_TAG = "PillagerOfficerScale"
+    private val coinTierItemIds = listOf(
+        "createdeco:copper_coin",
+        "createdeco:zinc_coin",
+        "createdeco:iron_coin",
+        "createdeco:industrial_iron_coin",
+        "createdeco:brass_coin",
+        "createdeco:gold_coin",
+        "createdeco:netherite_coin",
+    )
 
     private val liveOfficerLeaderEntityIds: MutableMap<UUID, UUID> = linkedMapOf()
     private val liveCampaignMemberEntityIds: MutableMap<UUID, MutableSet<UUID>> = linkedMapOf()
@@ -154,6 +164,17 @@ object PillagerRuntime {
         return count
     }
 
+    internal enum class CoinRewardRole {
+        FOLLOWER,
+        CAPTAIN,
+        WARLORD,
+    }
+
+    internal data class CoinRewardPlan(
+        val itemId: String,
+        val count: Int,
+    )
+
     fun dismissCampaign(level: ServerLevel, campaignId: UUID, memberIds: Collection<UUID>) {
         memberIds.forEach { entityId ->
             val mob = level.getEntity(entityId) as? Mob ?: return@forEach
@@ -163,6 +184,20 @@ object PillagerRuntime {
             }
         }
         liveCampaignMemberEntityIds.remove(campaignId)
+    }
+
+    fun campaignCoinDropsForMob(mob: Mob, data: PillagerWorldData): List<ItemStack> {
+        val strength = campaignStrengthForReward(mob, data)
+        if (strength <= 0) return emptyList()
+        val role = when {
+            mob.persistentData.getBoolean(BOSS_TAG) -> CoinRewardRole.WARLORD
+            mob.persistentData.getBoolean(LEADER_TAG) -> CoinRewardRole.CAPTAIN
+            else -> CoinRewardRole.FOLLOWER
+        }
+        return coinRewardPlan(strength, role).mapNotNull { reward ->
+            val item = ForgeRegistries.ITEMS.getValue(ResourceLocation.tryParse(reward.itemId)) ?: return@mapNotNull null
+            ItemStack(item, reward.count)
+        }
     }
 
     fun placeFactionDeathBanner(level: ServerLevel, deathPos: BlockPos, bannerSeed: Int): BlockPos? {
@@ -222,6 +257,21 @@ object PillagerRuntime {
         Blocks.GREEN_BANNER -> Blocks.GREEN_WALL_BANNER
         Blocks.RED_BANNER -> Blocks.RED_WALL_BANNER
         else -> Blocks.BLACK_WALL_BANNER
+    }
+
+    private fun campaignStrengthForReward(mob: Mob, data: PillagerWorldData): Int {
+        val tag = mob.persistentData
+        if (tag.hasUUID(CAMPAIGN_TAG)) {
+            val campaign = data.campaigns[tag.getUUID(CAMPAIGN_TAG)]
+            val warband = campaign?.let { data.warbands[it.originWarbandId] }
+            if (warband != null) return warband.strength.coerceAtLeast(1)
+            if (campaign != null) return campaign.difficultySnapshot.coerceAtLeast(1)
+        }
+        if (tag.getBoolean(BOSS_TAG) && tag.hasUUID(OFFICER_TAG)) {
+            val warband = data.officers[tag.getUUID(OFFICER_TAG)]?.let { data.warbands[it.homeWarbandId] }
+            if (warband != null) return warband.strength.coerceAtLeast(1)
+        }
+        return 0
     }
 
     fun materializeWarbandSquad(level: ServerLevel, warband: PillagerWarband, campaign: PillagerCampaign, bannerSeed: Int, officerRecord: PillagerOfficer, player: ServerPlayer, x: Double, y: Double, z: Double): List<UUID> {
@@ -552,6 +602,50 @@ object PillagerRuntime {
     }
 
     internal fun guaranteedDropSlots(): List<EquipmentSlot> = guaranteedDropSlots
+
+    internal fun coinRewardPlan(strength: Int, role: CoinRewardRole): List<CoinRewardPlan> {
+        if (strength <= 0) return emptyList()
+        val itemId = coinTierItemIds[coinTierIndex(strength, role)]
+        val count = when (role) {
+            CoinRewardRole.FOLLOWER -> 1 + ((strength - 1) / 2)
+            CoinRewardRole.CAPTAIN -> 2 + (strength / 2)
+            CoinRewardRole.WARLORD -> 4 + (strength / 2)
+        }
+        return listOf(CoinRewardPlan(itemId, count))
+    }
+
+    private fun coinTierIndex(strength: Int, role: CoinRewardRole): Int {
+        val s = strength.coerceAtLeast(1)
+        return when (role) {
+            CoinRewardRole.FOLLOWER -> when {
+                s >= 11 -> 6
+                s >= 9 -> 5
+                s >= 7 -> 4
+                s >= 5 -> 3
+                s >= 3 -> 2
+                s >= 2 -> 1
+                else -> 0
+            }
+            CoinRewardRole.CAPTAIN -> when {
+                s >= 10 -> 6
+                s >= 8 -> 5
+                s >= 6 -> 4
+                s >= 4 -> 3
+                s >= 3 -> 2
+                s >= 2 -> 1
+                else -> 1
+            }
+            CoinRewardRole.WARLORD -> when {
+                s >= 9 -> 6
+                s >= 7 -> 5
+                s >= 5 -> 4
+                s >= 4 -> 3
+                s >= 3 -> 2
+                s >= 2 -> 1
+                else -> 2
+            }
+        }
+    }
 
     private fun equipWeaponByPreference(mob: Mob, officer: PillagerOfficer, random: Random, difficulty: Int) {
         val allowed = mutableListOf("weapon_crossbow", "weapon_bow", "weapon_sword", "weapon_axe")

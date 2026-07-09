@@ -180,8 +180,12 @@ object PillagerCampaignsEvents {
         }
 
         val mob = event.entity as? Mob ?: return
+        val killerPlayer = event.source.entity as? Player
         val tag = mob.persistentData
         PillagerRuntime.forgetLiveMob(mob)
+        if (killerPlayer != null) {
+            PillagerRuntime.campaignCoinDropsForMob(mob, data).forEach { reward -> mob.spawnAtLocation(reward) }
+        }
         if (tag.hasUUID(PillagerRuntime.OFFICER_TAG)) {
             val officer = data.officers[tag.getUUID(PillagerRuntime.OFFICER_TAG)]
             val warband = officer?.let { data.warbands[it.homeWarbandId] }
