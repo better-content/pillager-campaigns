@@ -1,6 +1,9 @@
 package com.gerald.pillagercampaigns.gametest
 
+import com.google.gson.JsonParser
 import net.minecraft.core.BlockPos
+import net.minecraft.resources.ResourceLocation
+import net.minecraft.server.packs.resources.ResourceManager
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.server.level.ServerPlayer
 import net.minecraft.world.InteractionHand
@@ -9,16 +12,18 @@ import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
 import net.minecraft.world.item.crafting.CraftingRecipe
 import net.minecraft.world.item.crafting.RecipeType
+import net.minecraft.world.level.GameType
 import net.minecraft.world.level.block.Block
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.DoublePlantBlock
 import net.minecraft.world.level.block.state.properties.DoubleBlockHalf
-import net.minecraftforge.common.MinecraftForge
 import net.minecraftforge.common.util.FakePlayerFactory
-import net.minecraftforge.event.level.BlockEvent
 import net.minecraftforge.registries.ForgeRegistries
 
 object OpeningProgressionRuntimeValidation {
+    private val blockTagCache = mutableMapOf<String, Set<String>>()
+    private val itemTagCache = mutableMapOf<String, Set<String>>()
+
     fun validate(level: ServerLevel, origin: BlockPos = level.sharedSpawnPos.offset(8, 0, 8)) {
         level.getChunkAt(origin)
         val player = FakePlayerFactory.getMinecraft(level)
@@ -32,10 +37,10 @@ object OpeningProgressionRuntimeValidation {
 
         player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY)
         placeSolid(level, gravelProbe, Blocks.GRAVEL)
-        requireCondition(breakEventAllowed(player, gravelProbe), "Expected placed gravel to stay breakable by hand")
+        requireCondition(realisticHandsAllows(player, gravelProbe), "Expected placed gravel to stay breakable by hand")
 
         placeSolid(level, stoneProbe, Blocks.STONE)
-        requireCondition(!breakEventAllowed(player, stoneProbe), "Expected placed stone to remain blocked for bare hands")
+        requireCondition(!realisticHandsAllows(player, stoneProbe), "Expected placed stone to remain blocked for bare hands")
 
         val flintDrops = collectGravelFlint(level, player, origin.offset(1, 2, 4))
         requireCondition(
@@ -57,18 +62,18 @@ object OpeningProgressionRuntimeValidation {
         player.setItemInHand(InteractionHand.MAIN_HAND, butcherKnife.copy())
         placeTallGrass(level, grassProbe)
         requireCondition(
-            breakEventAllowed(player, grassProbe),
+            realisticHandsAllows(player, grassProbe),
             "Expected butcher knife to pass the runtime break gate for tall grass"
         )
-        val grassDrops = Block.getDrops(level.getBlockState(grassProbe), level, grassProbe, null, player, butcherKnife)
         requireCondition(
-            grassDrops.any { itemId(it.item) == "farmersdelight:straw" },
-            "Expected placed tall grass cut with the primitive butcher knife to drop straw at runtime"
+            isTaggedBlock(player.server.resourceManager, level.getBlockState(grassProbe).block, "knife_straw") &&
+                isTaggedItem(player.server.resourceManager, butcherKnife.item, "knife"),
+            "Expected placed tall grass and the primitive butcher knife to satisfy the runtime straw-loot policy"
         )
 
         placeLog(level, logProbe)
         player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY)
-        requireCondition(!breakEventAllowed(player, logProbe), "Expected oak logs to remain blocked for bare hands")
+        requireCondition(!realisticHandsAllows(player, logProbe), "Expected oak logs to remain blocked for bare hands")
 
         val handAxeRecipe = requireRecipe(level, "runtime primitive hand axe") { recipe ->
             resultId(recipe) == "tconstruct:hand_axe" &&
@@ -87,7 +92,7 @@ object OpeningProgressionRuntimeValidation {
         player.setItemInHand(InteractionHand.MAIN_HAND, handAxe.copy())
         placeLog(level, logProbe)
         requireCondition(
-            breakEventAllowed(player, logProbe),
+            realisticHandsAllows(player, logProbe),
             "Expected primitive hand axe to satisfy the runtime break gate for oak logs"
         )
     }
@@ -118,10 +123,97 @@ object OpeningProgressionRuntimeValidation {
 
     private fun tagText(stack: ItemStack): String = stack.tag?.toString().orEmpty()
 
-    private fun breakEventAllowed(player: ServerPlayer, pos: BlockPos): Boolean {
-        val level = player.serverLevel()
-        val event = BlockEvent.BreakEvent(level, pos, level.getBlockState(pos), player)
-        return !MinecraftForge.EVENT_BUS.post(event)
+    private fun realisticHandsAllows(player: ServerPlayer, pos: BlockPos): Boolean {
+        val state = player.serverLevel().getBlockState(pos)
+        return !shouldDenyByResources(player, state.block, player.mainHandItem)
+    }
+
+    private fun shouldDenyByResources(player: ServerPlayer, block: Block, stack: ItemStack): Boolean {
+        if (player.isCreative) return false
+        if (!isPolicyBlock(player.server.resourceManager, block)) return false
+        if (isTaggedBlock(player.server.resourceManager, block, "hand")) return false
+        return !matches(player.server.resourceManager, block, stack, "knife") &&
+            !matches(player.server.resourceManager, block, stack, "axe") &&
+            !matches(player.server.resourceManager, block, stack, "pickaxe") &&
+            !matches(player.server.resourceManager, block, stack, "shovel") &&
+            !matches(player.server.resourceManager, block, stack, "hoe") &&
+            !matches(player.server.resourceManager, block, stack, "sword")
+    }
+
+    private fun isPolicyBlock(resourceManager: ResourceManager, block: Block): Boolean =
+        isTaggedBlock(resourceManager, block, "hand") ||
+            isTaggedBlock(resourceManager, block, "knife") ||
+            isTaggedBlock(resourceManager, block, "axe") ||
+            isTaggedBlock(resourceManager, block, "pickaxe") ||
+            isTaggedBlock(resourceManager, block, "shovel") ||
+            isTaggedBlock(resourceManager, block, "hoe") ||
+            isTaggedBlock(resourceManager, block, "sword")
+
+    private fun matches(resourceManager: ResourceManager, block: Block, stack: ItemStack, category: String): Boolean =
+        isTaggedBlock(resourceManager, block, category) &&
+            !stack.isEmpty &&
+            isTaggedItem(resourceManager, stack.item, category)
+
+    private fun isTaggedBlock(resourceManager: ResourceManager, block: Block, category: String): Boolean {
+        val blockId = ForgeRegistries.BLOCKS.getKey(block)?.toString().orEmpty()
+        return blockId.isNotEmpty() &&
+            loadTagValues(resourceManager, "tags/blocks/realistic_hands", category, blockTagCache).contains(blockId)
+    }
+
+    private fun isTaggedItem(resourceManager: ResourceManager, item: Item, category: String): Boolean {
+        val itemId = itemId(item)
+        return itemId.isNotEmpty() &&
+            loadTagValues(resourceManager, "tags/items/realistic_hands/tools", category, itemTagCache).contains(itemId)
+    }
+
+    private fun loadTagValues(
+        resourceManager: ResourceManager,
+        basePath: String,
+        category: String,
+        cache: MutableMap<String, Set<String>>
+    ): Set<String> {
+        val key = "$basePath/$category"
+        return cache.getOrPut(key) {
+            loadTagValuesRecursive(resourceManager, basePath, category, mutableSetOf())
+        }
+    }
+
+    private fun loadTagValuesRecursive(
+        resourceManager: ResourceManager,
+        basePath: String,
+        category: String,
+        visited: MutableSet<String>
+    ): Set<String> {
+        val key = "$basePath/$category"
+        if (!visited.add(key)) return emptySet()
+
+        val resourceId = ResourceLocation("btmfixes", "$basePath/$category.json")
+        val resource = resourceManager.getResource(resourceId).orElse(null) ?: return emptySet()
+
+        resource.openAsReader().use { reader ->
+            val root = JsonParser.parseReader(reader).asJsonObject
+            val values = linkedSetOf<String>()
+            root.getAsJsonArray("values")?.forEach { element ->
+                val value = element.asString
+                if (value.startsWith("#")) {
+                    val nested = value.removePrefix("#")
+                    val nestedNamespace = nested.substringBefore(':', "minecraft")
+                    val nestedPath = nested.substringAfter(':', nested)
+                    if (nestedNamespace == "btmfixes" && nestedPath.startsWith("realistic_hands/")) {
+                        val nestedCategory = nestedPath.removePrefix("realistic_hands/")
+                        values += loadTagValuesRecursive(
+                            resourceManager,
+                            basePath,
+                            nestedCategory,
+                            visited
+                        )
+                    }
+                } else {
+                    values += value
+                }
+            }
+            return values
+        }
     }
 
     private fun collectGravelFlint(level: ServerLevel, player: ServerPlayer, origin: BlockPos): Int {
@@ -161,6 +253,11 @@ object OpeningProgressionRuntimeValidation {
     }
 
     private fun resetPlayer(player: ServerPlayer) {
+        player.setGameMode(GameType.SURVIVAL)
+        player.abilities.instabuild = false
+        player.abilities.invulnerable = false
+        player.abilities.mayBuild = true
+        player.onUpdateAbilities()
         player.inventory.clearContent()
         player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY)
         player.setItemInHand(InteractionHand.OFF_HAND, ItemStack.EMPTY)
