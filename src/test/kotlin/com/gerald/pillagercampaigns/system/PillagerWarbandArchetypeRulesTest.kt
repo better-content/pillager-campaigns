@@ -76,10 +76,12 @@ class PillagerWarbandArchetypeRulesTest {
     fun `rare specialist outliers can appear once difficulty threshold is met`() {
         val rules = PillagerWarbandArchetypeRules.rules(WarbandArchetype.HEX, WarbandRole.SPECIALIST)
         val random = Random(4096L)
-        val chosen = generateSequence {
-            PillagerWarbandArchetypeRules.chooseMob(WarbandArchetype.HEX, WarbandRole.SPECIALIST, 12, random)
-        }.first { it in rules.rareMobs }
+        val chosen = (1..512)
+            .asSequence()
+            .map { PillagerWarbandArchetypeRules.chooseMob(WarbandArchetype.HEX, WarbandRole.SPECIALIST, 12, random) }
+            .firstOrNull { it in rules.rareMobs }
 
+        assertTrue(chosen != null, "expected a rare specialist within a bounded sample window")
         assertTrue(chosen in rules.rareMobs)
     }
 
