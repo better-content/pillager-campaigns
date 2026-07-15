@@ -200,12 +200,6 @@ object PillagerRuntime {
         }
     }
 
-    /** Every player-killed mob pays one low-tier coin; campaign rewards remain the premium encounter payout. */
-    fun globalPlayerKillCoinDrops(): List<ItemStack> {
-        val item = ForgeRegistries.ITEMS.getValue(ResourceLocation.tryParse("createdeco:copper_coin")) ?: return emptyList()
-        return listOf(ItemStack(item))
-    }
-
     fun placeFactionDeathBanner(level: ServerLevel, deathPos: BlockPos, bannerSeed: Int): BlockPos? {
         val banner = makeBaseBanner(bannerSeed)
         val block = (Block.byItem(banner.item) as? BannerBlock) ?: (Blocks.WHITE_BANNER as BannerBlock)

@@ -184,7 +184,6 @@ object PillagerCampaignsEvents {
         val tag = mob.persistentData
         PillagerRuntime.forgetLiveMob(mob)
         if (killerPlayer != null) {
-            PillagerRuntime.globalPlayerKillCoinDrops().forEach { reward -> mob.spawnAtLocation(reward) }
             PillagerRuntime.campaignCoinDropsForMob(mob, data).forEach { reward -> mob.spawnAtLocation(reward) }
         }
         if (tag.hasUUID(PillagerRuntime.OFFICER_TAG)) {
