@@ -20,10 +20,10 @@ Plain JUnit deliberately does not bootstrap full Forge networking or a Minecraft
 
 Deterministic harness lane:
 
-- `tools/btm test scenario pillager_campaigns --lane rally`
-- `tools/btm test scenario pillager_campaigns --lane nemesis_cycle`
-- `tools/btm test scenario pillager_campaigns --lane warlord_collapse`
-- `tools/btm test scenario pillager_campaigns --lane multiplayer_bias`
+- `tools/bc test scenario pillager_campaigns --lane rally`
+- `tools/bc test scenario pillager_campaigns --lane nemesis_cycle`
+- `tools/bc test scenario pillager_campaigns --lane warlord_collapse`
+- `tools/bc test scenario pillager_campaigns --lane multiplayer_bias`
 
 Required live-world validation before shipping as a pack-wide surface pressure replacement:
 

@@ -129,7 +129,7 @@ object OpeningProgressionRuntimeValidation {
     }
 
     private fun shouldDenyByResources(player: ServerPlayer, block: Block, stack: ItemStack): Boolean {
-        if (player.isCreative) return false
+        if (hasCreativeBypass(player)) return false
         if (!isPolicyBlock(player.server.resourceManager, block)) return false
         if (isTaggedBlock(player.server.resourceManager, block, "hand")) return false
         return !matches(player.server.resourceManager, block, stack, "knife") &&
@@ -153,6 +153,9 @@ object OpeningProgressionRuntimeValidation {
         isTaggedBlock(resourceManager, block, category) &&
             !stack.isEmpty &&
             isTaggedItem(resourceManager, stack.item, category)
+
+    private fun hasCreativeBypass(player: ServerPlayer): Boolean =
+        player.abilities.instabuild || player.gameMode.gameModeForPlayer == GameType.CREATIVE
 
     private fun isTaggedBlock(resourceManager: ResourceManager, block: Block, category: String): Boolean {
         val blockId = ForgeRegistries.BLOCKS.getKey(block)?.toString().orEmpty()
@@ -187,7 +190,7 @@ object OpeningProgressionRuntimeValidation {
         val key = "$basePath/$category"
         if (!visited.add(key)) return emptySet()
 
-        val resourceId = ResourceLocation("btmfixes", "$basePath/$category.json")
+        val resourceId = ResourceLocation("bcfixes", "$basePath/$category.json")
         val resource = resourceManager.getResource(resourceId).orElse(null) ?: return emptySet()
 
         resource.openAsReader().use { reader ->
@@ -199,7 +202,7 @@ object OpeningProgressionRuntimeValidation {
                     val nested = value.removePrefix("#")
                     val nestedNamespace = nested.substringBefore(':', "minecraft")
                     val nestedPath = nested.substringAfter(':', nested)
-                    if (nestedNamespace == "btmfixes" && nestedPath.startsWith("realistic_hands/")) {
+                    if (nestedNamespace == "bcfixes" && nestedPath.startsWith("realistic_hands/")) {
                         val nestedCategory = nestedPath.removePrefix("realistic_hands/")
                         values += loadTagValuesRecursive(
                             resourceManager,
