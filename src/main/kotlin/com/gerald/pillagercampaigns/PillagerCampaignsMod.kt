@@ -1,6 +1,5 @@
 package com.gerald.pillagercampaigns
 
-import com.gerald.pillagercampaigns.gametest.OpeningProgressionGameTests
 import com.gerald.pillagercampaigns.gametest.PillagerCampaignsGameTests
 import com.mojang.logging.LogUtils
 import net.minecraftforge.common.MinecraftForge
@@ -22,7 +21,6 @@ class PillagerCampaignsMod {
 
     private fun registerGameTests(event: RegisterGameTestsEvent) {
         event.register(PillagerCampaignsGameTests::class.java)
-        event.register(OpeningProgressionGameTests::class.java)
     }
 
     companion object {
