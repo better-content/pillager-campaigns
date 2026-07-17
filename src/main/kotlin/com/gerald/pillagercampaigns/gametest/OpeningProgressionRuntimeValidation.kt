@@ -1,11 +1,11 @@
 package com.gerald.pillagercampaigns.gametest
 
-import com.google.gson.JsonParser
 import net.minecraft.core.BlockPos
+import net.minecraft.core.registries.Registries
 import net.minecraft.resources.ResourceLocation
-import net.minecraft.server.packs.resources.ResourceManager
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.server.level.ServerPlayer
+import net.minecraft.tags.TagKey
 import net.minecraft.world.InteractionHand
 import net.minecraft.world.item.Item
 import net.minecraft.world.item.ItemStack
@@ -21,8 +21,14 @@ import net.minecraftforge.common.util.FakePlayerFactory
 import net.minecraftforge.registries.ForgeRegistries
 
 object OpeningProgressionRuntimeValidation {
-    private val blockTagCache = mutableMapOf<String, Set<String>>()
-    private val itemTagCache = mutableMapOf<String, Set<String>>()
+    private val gatedLogs: TagKey<Block> = TagKey.create(
+        Registries.BLOCK,
+        ResourceLocation("bcfixes", "realistic_hands/axe")
+    )
+    private val acceptedAxes: TagKey<Item> = TagKey.create(
+        Registries.ITEM,
+        ResourceLocation("bcfixes", "realistic_hands/tools/axe")
+    )
 
     fun validate(level: ServerLevel, origin: BlockPos = level.sharedSpawnPos.offset(8, 0, 8)) {
         level.getChunkAt(origin)
@@ -40,7 +46,10 @@ object OpeningProgressionRuntimeValidation {
         requireCondition(realisticHandsAllows(player, gravelProbe), "Expected placed gravel to stay breakable by hand")
 
         placeSolid(level, stoneProbe, Blocks.STONE)
-        requireCondition(!realisticHandsAllows(player, stoneProbe), "Expected placed stone to remain blocked for bare hands")
+        requireCondition(realisticHandsAllows(player, stoneProbe), "Expected placed stone to use normal harvesting behavior")
+
+        placeTallGrass(level, grassProbe)
+        requireCondition(realisticHandsAllows(player, grassProbe), "Expected vegetation to stay outside the no-tree-punching gate")
 
         val flintDrops = collectGravelFlint(level, player, origin.offset(1, 2, 4))
         requireCondition(
@@ -57,18 +66,6 @@ object OpeningProgressionRuntimeValidation {
         requireCondition(
             tagText(butcherKnife).contains("tconstruct:flint") && tagText(butcherKnife).contains("tconstruct:wood"),
             "Expected primitive butcher knife recipe output to preserve TConstruct flint/wood materials"
-        )
-
-        player.setItemInHand(InteractionHand.MAIN_HAND, butcherKnife.copy())
-        placeTallGrass(level, grassProbe)
-        requireCondition(
-            realisticHandsAllows(player, grassProbe),
-            "Expected butcher knife to pass the runtime break gate for tall grass"
-        )
-        requireCondition(
-            isTaggedBlock(player.server.resourceManager, level.getBlockState(grassProbe).block, "knife_straw") &&
-                isTaggedItem(player.server.resourceManager, butcherKnife.item, "knife"),
-            "Expected placed tall grass and the primitive butcher knife to satisfy the runtime straw-loot policy"
         )
 
         placeLog(level, logProbe)
@@ -130,94 +127,13 @@ object OpeningProgressionRuntimeValidation {
 
     private fun shouldDenyByResources(player: ServerPlayer, block: Block, stack: ItemStack): Boolean {
         if (hasCreativeBypass(player)) return false
-        if (!isPolicyBlock(player.server.resourceManager, block)) return false
-        if (isTaggedBlock(player.server.resourceManager, block, "hand")) return false
-        return !matches(player.server.resourceManager, block, stack, "knife") &&
-            !matches(player.server.resourceManager, block, stack, "axe") &&
-            !matches(player.server.resourceManager, block, stack, "pickaxe") &&
-            !matches(player.server.resourceManager, block, stack, "shovel") &&
-            !matches(player.server.resourceManager, block, stack, "hoe") &&
-            !matches(player.server.resourceManager, block, stack, "sword")
+        if (!block.defaultBlockState().`is`(gatedLogs)) return false
+        return stack.isEmpty || !stack.`is`(acceptedAxes)
     }
-
-    private fun isPolicyBlock(resourceManager: ResourceManager, block: Block): Boolean =
-        isTaggedBlock(resourceManager, block, "hand") ||
-            isTaggedBlock(resourceManager, block, "knife") ||
-            isTaggedBlock(resourceManager, block, "axe") ||
-            isTaggedBlock(resourceManager, block, "pickaxe") ||
-            isTaggedBlock(resourceManager, block, "shovel") ||
-            isTaggedBlock(resourceManager, block, "hoe") ||
-            isTaggedBlock(resourceManager, block, "sword")
-
-    private fun matches(resourceManager: ResourceManager, block: Block, stack: ItemStack, category: String): Boolean =
-        isTaggedBlock(resourceManager, block, category) &&
-            !stack.isEmpty &&
-            isTaggedItem(resourceManager, stack.item, category)
 
     private fun hasCreativeBypass(player: ServerPlayer): Boolean =
         player.abilities.instabuild || player.gameMode.gameModeForPlayer == GameType.CREATIVE
 
-    private fun isTaggedBlock(resourceManager: ResourceManager, block: Block, category: String): Boolean {
-        val blockId = ForgeRegistries.BLOCKS.getKey(block)?.toString().orEmpty()
-        return blockId.isNotEmpty() &&
-            loadTagValues(resourceManager, "tags/blocks/realistic_hands", category, blockTagCache).contains(blockId)
-    }
-
-    private fun isTaggedItem(resourceManager: ResourceManager, item: Item, category: String): Boolean {
-        val itemId = itemId(item)
-        return itemId.isNotEmpty() &&
-            loadTagValues(resourceManager, "tags/items/realistic_hands/tools", category, itemTagCache).contains(itemId)
-    }
-
-    private fun loadTagValues(
-        resourceManager: ResourceManager,
-        basePath: String,
-        category: String,
-        cache: MutableMap<String, Set<String>>
-    ): Set<String> {
-        val key = "$basePath/$category"
-        return cache.getOrPut(key) {
-            loadTagValuesRecursive(resourceManager, basePath, category, mutableSetOf())
-        }
-    }
-
-    private fun loadTagValuesRecursive(
-        resourceManager: ResourceManager,
-        basePath: String,
-        category: String,
-        visited: MutableSet<String>
-    ): Set<String> {
-        val key = "$basePath/$category"
-        if (!visited.add(key)) return emptySet()
-
-        val resourceId = ResourceLocation("bcfixes", "$basePath/$category.json")
-        val resource = resourceManager.getResource(resourceId).orElse(null) ?: return emptySet()
-
-        resource.openAsReader().use { reader ->
-            val root = JsonParser.parseReader(reader).asJsonObject
-            val values = linkedSetOf<String>()
-            root.getAsJsonArray("values")?.forEach { element ->
-                val value = element.asString
-                if (value.startsWith("#")) {
-                    val nested = value.removePrefix("#")
-                    val nestedNamespace = nested.substringBefore(':', "minecraft")
-                    val nestedPath = nested.substringAfter(':', nested)
-                    if (nestedNamespace == "bcfixes" && nestedPath.startsWith("realistic_hands/")) {
-                        val nestedCategory = nestedPath.removePrefix("realistic_hands/")
-                        values += loadTagValuesRecursive(
-                            resourceManager,
-                            basePath,
-                            nestedCategory,
-                            visited
-                        )
-                    }
-                } else {
-                    values += value
-                }
-            }
-            return values
-        }
-    }
 
     private fun collectGravelFlint(level: ServerLevel, player: ServerPlayer, origin: BlockPos): Int {
         var flint = 0
