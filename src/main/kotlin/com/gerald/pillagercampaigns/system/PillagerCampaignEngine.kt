@@ -48,7 +48,7 @@ object PillagerCampaignEngine {
         PillagerDiscoveryCoordinator.tick(server, data, now)
         val added = data.warbands.size - before
         if (added > 0) {
-            PillagerCampaignsMod.LOGGER.info("Discovered {} pillager warband(s)", added)
+            PillagerCampaignsMod.LOGGER.debug("Discovered {} pillager warband(s)", added)
         }
     }
 

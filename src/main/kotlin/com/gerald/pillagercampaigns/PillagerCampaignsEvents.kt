@@ -554,7 +554,7 @@ object PillagerCampaignsEvents {
     private fun flushMetricsWindow() {
         if (metricsSamples <= 0) return
         val samples = metricsSamples.coerceAtLeast(1)
-        PillagerCampaignsMod.LOGGER.info(
+        PillagerCampaignsMod.LOGGER.debug(
             "Perf window: discovery avg={}ms max={}ms | campaign avg={}ms max={}ms | bossEnsure avg={}ms max={}ms",
             "%.3f".format(discoveryTotalMs / samples),
             "%.3f".format(discoveryMaxMs),
