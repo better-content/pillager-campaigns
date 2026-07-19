@@ -29,3 +29,7 @@ Common commands:
 ## Notes
 
 The mod is designed to own pillager campaign scheduling. By default it can disable vanilla patrol spawning and intercept natural illager spawns near registered warbands according to common config values.
+
+## Community and support
+
+For modpack and mod discussion, playtest feedback, and bug reports, join the [Better Content Discord](https://discord.gg/EkRnZbzqS9).
