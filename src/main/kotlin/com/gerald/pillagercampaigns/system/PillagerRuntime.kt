@@ -328,7 +328,7 @@ object PillagerRuntime {
         applyOfficerVisuals(boss, warlord)
         applyWarlordTuning(boss)
         guaranteeEquipmentDrops(boss)
-        level.addFreshEntity(boss)
+        if (!level.noCollision(boss, boss.boundingBox) || !level.addFreshEntity(boss)) return null
         registerLiveMob(boss)
         syncOfficerVisuals(boss)
         return boss.uuid
@@ -360,17 +360,15 @@ object PillagerRuntime {
     fun holdBossAtAnchor(mob: Mob) {
         val tag = mob.persistentData
         if (!tag.getBoolean(BOSS_TAG)) return
-        mob.target = null
-        mob.navigation.stop()
-        if (mob.deltaMovement.lengthSqr() > 0.0) {
-            mob.deltaMovement = mob.deltaMovement.multiply(0.0, 0.0, 0.0)
-        }
         if (!tag.contains(ANCHOR_X_TAG) || !tag.contains(ANCHOR_Y_TAG) || !tag.contains(ANCHOR_Z_TAG)) return
         val anchorX = tag.getInt(ANCHOR_X_TAG) + 0.5
         val anchorY = tag.getInt(ANCHOR_Y_TAG).toDouble()
         val anchorZ = tag.getInt(ANCHOR_Z_TAG) + 0.5
-        if (mob.distanceToSqr(anchorX, anchorY, anchorZ) > 0.0625) {
+        // Warlords may fight and navigate normally around their rally. The anchor is a generous
+        // leash and recovery point, not a per-tick movement lock.
+        if (mob.distanceToSqr(anchorX, anchorY, anchorZ) > 48.0 * 48.0) {
             mob.moveTo(anchorX, anchorY, anchorZ, mob.yRot, mob.xRot)
+            mob.navigation.stop()
         }
     }
 

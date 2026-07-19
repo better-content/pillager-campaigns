@@ -34,6 +34,7 @@ import net.minecraftforge.event.CommandEvent
 import net.minecraftforge.event.TickEvent
 import net.minecraftforge.event.entity.EntityEvent
 import net.minecraftforge.event.entity.EntityJoinLevelEvent
+import net.minecraftforge.event.entity.EntityLeaveLevelEvent
 import net.minecraftforge.event.entity.living.LivingDeathEvent
 import net.minecraftforge.event.entity.living.LivingEvent
 import net.minecraftforge.event.entity.player.PlayerEvent
@@ -42,6 +43,7 @@ import net.minecraftforge.event.server.ServerStartedEvent
 import net.minecraftforge.eventbus.api.SubscribeEvent
 
 object PillagerCampaignsEvents {
+    private const val RESPAWN_PURGE_TAG = "classselector:respawn_purge"
     private var lastBossEnsureTick: Long = 0L
     private var lastMaterializationTick: Long = 0L
     private const val METRIC_LOG_INTERVAL_TICKS: Long = 200L
@@ -157,6 +159,38 @@ object PillagerCampaignsEvents {
         if (!mob.persistentData.hasUUID(PillagerRuntime.OFFICER_TAG)) return
         PillagerRuntime.registerLiveMob(mob)
         PillagerRuntime.syncOfficerVisuals(mob)
+    }
+
+    @SubscribeEvent
+    fun onEntityLeaveLevel(event: EntityLeaveLevelEvent) {
+        val mob = event.entity as? Mob ?: return
+        if (!mob.persistentData.getBoolean(RESPAWN_PURGE_TAG)) return
+        val level = event.level as? ServerLevel ?: return
+        val data = PillagerWorldData.get(level.server)
+        val tag = mob.persistentData
+        PillagerRuntime.forgetLiveMob(mob)
+
+        if (tag.hasUUID(PillagerRuntime.CAMPAIGN_TAG)) {
+            data.campaigns[tag.getUUID(PillagerRuntime.CAMPAIGN_TAG)]?.let { campaign ->
+                PillagerCampaignEngine.pauseCampaignsForPlayer(level.server, data, campaign.targetPlayerId)
+            }
+        }
+
+        if (tag.getBoolean(PillagerRuntime.BOSS_TAG) && tag.hasUUID(PillagerRuntime.OFFICER_TAG)) {
+            val officer = data.officers[tag.getUUID(PillagerRuntime.OFFICER_TAG)]
+            val warband = officer?.let { data.warbands[it.homeWarbandId] }
+            if (warband != null) {
+                warband.warlordEntityId = null
+                // The purge is part of respawn protection. Keep a purged warlord
+                // dormant for that same window instead of rematerializing it on
+                // the next presence retry.
+                warband.lastPresenceAttemptTick = level.gameTime + PillagerCampaignEngine.PLAYER_RESPAWN_PROTECTION_TICKS
+                warband.rallyPresence?.state = com.gerald.pillagercampaigns.data.RallyPresenceState.DORMANT
+                warband.rallyPresence?.entityId = null
+                data.factions[warband.factionId]?.bossEntityId = null
+            }
+        }
+        data.markChanged()
     }
 
     @SubscribeEvent
