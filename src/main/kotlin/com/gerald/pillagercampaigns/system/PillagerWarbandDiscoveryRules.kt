@@ -11,13 +11,11 @@ object PillagerWarbandDiscoveryRules {
         val jitterChunks: Int,
         val spawnChancePercent: Int,
         val minSpawnDistanceChunks: Int,
-        val structureIds: List<ResourceLocation>,
     )
 
     data class Candidate(
         val id: UUID,
         val dimension: ResourceLocation,
-        val structureId: ResourceLocation,
         val cellX: Int,
         val cellZ: Int,
         val chunkX: Int,
@@ -25,7 +23,6 @@ object PillagerWarbandDiscoveryRules {
     )
 
     fun candidateForCell(seed: Long, dimension: ResourceLocation, cellX: Int, cellZ: Int, settings: Settings): Candidate? {
-        val structures = settings.structureIds.ifEmpty { listOf(ResourceLocation("minecraft", "pillager_outpost")) }
         val spacing = settings.spacingChunks.coerceAtLeast(1)
         val jitter = settings.jitterChunks.coerceAtLeast(0).coerceAtMost(spacing / 2)
         val chance = settings.spawnChancePercent.coerceIn(1, 100)
@@ -42,9 +39,8 @@ object PillagerWarbandDiscoveryRules {
 
         if (CampaignMath.manhattan(0, 0, chunkX, chunkZ) < settings.minSpawnDistanceChunks) return null
 
-        val structureId = structures[positiveModulo(cellSeed ushr 51, structures.size)]
         val id = UUID.nameUUIDFromBytes("pillagercampaigns:warband:${dimension}:$cellX,$cellZ".toByteArray(StandardCharsets.UTF_8))
-        return Candidate(id, dimension, structureId, cellX, cellZ, chunkX, chunkZ)
+        return Candidate(id, dimension, cellX, cellZ, chunkX, chunkZ)
     }
 
     fun cellsAround(chunkX: Int, chunkZ: Int, radiusChunks: Int, spacingChunks: Int): Sequence<Pair<Int, Int>> = sequence {

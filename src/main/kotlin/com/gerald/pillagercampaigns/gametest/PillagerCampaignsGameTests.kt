@@ -2,7 +2,6 @@ package com.gerald.pillagercampaigns.gametest
 
 import com.gerald.pillagercampaigns.PillagerCampaignsMod
 import com.gerald.pillagercampaigns.data.CampaignState
-import com.gerald.pillagercampaigns.data.OfficerClass
 import com.gerald.pillagercampaigns.data.OfficerRank
 import com.gerald.pillagercampaigns.data.OfficerRole
 import com.gerald.pillagercampaigns.data.OfficerState
@@ -37,7 +36,6 @@ object PillagerCampaignsGameTests {
         val candidate = PillagerWarbandDiscoveryRules.Candidate(
             id = UUID.nameUUIDFromBytes("gametest:warband-registration".toByteArray()),
             dimension = level.dimension().location(),
-            structureId = location("minecraft:pillager_outpost"),
             cellX = 0,
             cellZ = 0,
             chunkX = anchor.x,
@@ -52,7 +50,7 @@ object PillagerCampaignsGameTests {
         helper.assertTrue(data.factions.containsKey(warband!!.factionId), "warband faction should exist")
         helper.assertTrue(data.officers.containsKey(warband.warlordOfficerId), "warband should have a warlord officer")
         helper.assertTrue(data.officers.getValue(warband.warlordOfficerId).role == OfficerRole.WARLORD, "rally leader should stay a warlord role")
-        helper.assertTrue(warband.strength == PillagerCampaignEngine.INITIAL_WARBAND_STRENGTH, "new warbands should start at the gentlest pressure tier")
+        helper.assertTrue(warband.reserve == PillagerCampaignEngine.INITIAL_RESERVE, "new warbands should start with the configured reserve")
         helper.succeed()
     }
 
@@ -65,7 +63,6 @@ object PillagerCampaignsGameTests {
         val candidate = PillagerWarbandDiscoveryRules.Candidate(
             id = UUID.nameUUIDFromBytes("gametest:sam-warband-command".toByteArray()),
             dimension = level.dimension().location(),
-            structureId = location("minecraft:pillager_outpost"),
             cellX = 0,
             cellZ = 0,
             chunkX = anchor.x,
@@ -98,7 +95,6 @@ object PillagerCampaignsGameTests {
         val candidate = PillagerWarbandDiscoveryRules.Candidate(
             id = UUID.nameUUIDFromBytes("gametest:materialize-warlord-command".toByteArray()),
             dimension = level.dimension().location(),
-            structureId = location("minecraft:pillager_outpost"),
             cellX = 0,
             cellZ = 0,
             chunkX = anchor.x,
@@ -131,11 +127,10 @@ object PillagerCampaignsGameTests {
             id = warbandId,
             factionId = factionId,
             dimension = helper.level.dimension().location(),
-            structureId = location("minecraft:pillager_outpost"),
             bannerSeed = 7,
             rallyChunkX = 0,
             rallyChunkZ = 0,
-            strength = 3,
+            reserve = 18,
             defeated = false,
             warlordOfficerId = officerId,
             warlordEntityId = UUID.randomUUID(),
@@ -152,7 +147,6 @@ object PillagerCampaignsGameTests {
             title = "the Warlord",
             role = OfficerRole.WARLORD,
             rank = OfficerRank.DREAD_CAPTAIN,
-            officerClass = OfficerClass.VINDICATOR,
             state = OfficerState.DEPLOYED,
             preferenceGraph = mutableMapOf(),
         )

@@ -38,14 +38,14 @@ object PillagerDiscoveryCoordinator {
     }
 
     fun tick(server: MinecraftServer, data: PillagerWorldData, now: Long) {
-        if (now - data.lastDiscoveryTick >= PillagerCampaignsConfig.warbandDiscoveryIntervalTicks.get()) {
+        if (now - data.lastDiscoveryTick >= PillagerCampaignsConfig.schedulerIntervalTicks.get() * 10L) {
             data.lastDiscoveryTick = now
             enqueuePlan(server, now)
         }
 
         val level = server.overworld()
         var added = 0
-        var budget = PillagerCampaignsConfig.warbandRegistrationsPerTick.get().coerceAtLeast(1)
+        var budget = PillagerCampaignsConfig.workBudgetPerTick.get().coerceAtLeast(1)
         while (budget > 0) {
             val task = pending.poll() ?: break
             if (PillagerWarbandDiscoveryService.registerDiscoveredWarband(level, data, task.candidate, task.requestedAtTick)) {
@@ -60,10 +60,7 @@ object PillagerDiscoveryCoordinator {
         if (!planning.compareAndSet(false, true)) return
         val settings = placementSettings()
         val seed = server.overworld().seed
-        val radius = PillagerWarbandDiscoveryService.effectiveDiscoveryRadius(
-            warbandDiscoveryRadiusChunks = PillagerCampaignsConfig.warbandDiscoveryRadiusChunks.get(),
-            maxCampaignDistanceChunks = PillagerCampaignsConfig.maxCampaignDistanceChunks.get(),
-        )
+        val radius = PillagerCampaignsConfig.territoryRadiusChunks.get()
         val snapshots = server.playerList.players.mapNotNull { it.snapshot() }
         planner.execute {
             try {
@@ -90,13 +87,11 @@ object PillagerDiscoveryCoordinator {
         }
 
     private fun placementSettings(): PillagerWarbandDiscoveryRules.Settings {
-        val structures = PillagerCampaignsConfig.structureWarbandIds.get().mapNotNull { ResourceLocation.tryParse(it) }
         return PillagerWarbandDiscoveryRules.Settings(
-            spacingChunks = PillagerCampaignsConfig.warbandGridSpacingChunks.get(),
-            jitterChunks = PillagerCampaignsConfig.warbandGridJitterChunks.get(),
-            spawnChancePercent = PillagerCampaignsConfig.warbandSpawnChancePercent.get(),
-            minSpawnDistanceChunks = PillagerCampaignsConfig.warbandMinSpawnDistanceChunks.get(),
-            structureIds = structures,
+            spacingChunks = PillagerCampaignsConfig.gridSpacingChunks.get(),
+            jitterChunks = PillagerCampaignsConfig.gridJitterChunks.get(),
+            spawnChancePercent = PillagerCampaignsConfig.spawnChancePercent.get(),
+            minSpawnDistanceChunks = PillagerCampaignsConfig.minSpawnDistanceChunks.get(),
         )
     }
 }

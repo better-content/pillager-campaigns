@@ -13,7 +13,6 @@ class PillagerWarbandDiscoveryRulesTest {
         jitterChunks = 8,
         spawnChancePercent = 100,
         minSpawnDistanceChunks = 24,
-        structureIds = listOf(ResourceLocation("minecraft", "pillager_outpost")),
     )
 
     @Test

@@ -62,11 +62,16 @@ repositories {
     mavenCentral()
     maven("https://maven.minecraftforge.net")
     maven("https://thedarkcolour.github.io/KotlinForForge/")
+    maven("https://www.cursemaven.com") { content { includeGroup("curse.maven") } }
 }
 
 dependencies {
     minecraft("net.minecraftforge:forge:$minecraftVersion-$forgeVersion")
     implementation("thedarkcolour:kotlinforforge:$kotlinForForgeVersion")
+    compileOnly(fg.deobf("curse.maven:mantle-74924:7563777"))
+    compileOnly(fg.deobf("curse.maven:tinkers-construct-74072:7449219"))
+    runtimeOnly(fg.deobf("curse.maven:mantle-74924:7563777"))
+    runtimeOnly(fg.deobf("curse.maven:tinkers-construct-74072:7449219"))
     testImplementation(kotlin("test"))
 }
 
@@ -159,6 +164,9 @@ tasks.jacocoTestReport {
                         "**/PillagerWarbandDiscoveryRules*",
                         "**/PillagerDiscoveryCoordinator*",
                         "**/PillagerSpawnPlacementRules*",
+                        "**/EnvironmentSampler*",
+                        "**/TinkersArmoryOptimizer*",
+                        "**/WarbandFormulaData*",
                         "**/gametest/**",
                         "**/sam/api/**",
                     )

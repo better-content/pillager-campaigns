@@ -36,10 +36,12 @@ import net.minecraftforge.event.entity.EntityEvent
 import net.minecraftforge.event.entity.EntityJoinLevelEvent
 import net.minecraftforge.event.entity.EntityLeaveLevelEvent
 import net.minecraftforge.event.entity.living.LivingDeathEvent
+import net.minecraftforge.event.entity.living.LivingHurtEvent
 import net.minecraftforge.event.entity.living.LivingEvent
 import net.minecraftforge.event.entity.player.PlayerEvent
 import net.minecraftforge.event.level.ChunkEvent
 import net.minecraftforge.event.server.ServerStartedEvent
+import net.minecraftforge.event.AddReloadListenerEvent
 import net.minecraftforge.eventbus.api.SubscribeEvent
 
 object PillagerCampaignsEvents {
@@ -115,7 +117,7 @@ object PillagerCampaignsEvents {
 
         val discoveryMs = measureMs { PillagerCampaignEngine.discoveryTick(server, data, now) }
         recordDiscovery(discoveryMs)
-        if (now - data.lastCampaignTick >= PillagerCampaignsConfig.campaignTickInterval.get()) {
+        if (now - data.lastCampaignTick >= PillagerCampaignsConfig.schedulerIntervalTicks.get()) {
             data.lastCampaignTick = now
             val campaignMs = measureMs { PillagerCampaignEngine.tick(server, data, now) }
             recordCampaign(campaignMs)
@@ -169,6 +171,7 @@ object PillagerCampaignsEvents {
         val data = PillagerWorldData.get(level.server)
         val tag = mob.persistentData
         PillagerRuntime.forgetLiveMob(mob)
+        if (tag.hasUUID(PillagerRuntime.WARBAND_TAG)) data.warbands[tag.getUUID(PillagerRuntime.WARBAND_TAG)]?.garrisonThreat?.remove(mob.uuid)
 
         if (tag.hasUUID(PillagerRuntime.CAMPAIGN_TAG)) {
             data.campaigns[tag.getUUID(PillagerRuntime.CAMPAIGN_TAG)]?.let { campaign ->
@@ -250,8 +253,12 @@ object PillagerCampaignsEvents {
         }
         if (!tag.hasUUID(PillagerRuntime.CAMPAIGN_TAG)) return
         val campaign = data.campaigns[tag.getUUID(PillagerRuntime.CAMPAIGN_TAG)] ?: return
+        campaign.memberEquipment.remove(mob.uuid)
+        campaign.memberThreat.remove(mob.uuid)
         if (tag.getBoolean(PillagerRuntime.LEADER_TAG)) {
-            PillagerCampaignEngine.resolveCampaign(data, campaign.id, observedTick = level.gameTime, outcome = CampaignOutcome.CAPTAIN_KILLED)
+            if (!PillagerRuntime.promoteSuccessor(level, campaign.id, campaign.officerId)) {
+                PillagerCampaignEngine.resolveCampaign(data, campaign.id, observedTick = level.gameTime, outcome = CampaignOutcome.CAPTAIN_KILLED)
+            }
         } else if (campaign.state == CampaignState.ACTIVE) {
             val survivors = level.getEntitiesOfClass(Mob::class.java, mob.boundingBox.inflate(80.0)) { candidate ->
                 candidate.persistentData.hasUUID(PillagerRuntime.CAMPAIGN_TAG) &&
@@ -261,6 +268,43 @@ object PillagerCampaignsEvents {
             if (survivors.isEmpty()) {
                 PillagerCampaignEngine.resolveCampaign(data, campaign.id, observedTick = level.gameTime, outcome = CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT)
             }
+        }
+    }
+
+    @SubscribeEvent
+    fun onLivingHurt(event: LivingHurtEvent) {
+        val level = event.entity.level() as? ServerLevel ?: return
+        val attacker = event.source.entity as? Mob
+        val victim = event.entity
+        val attackingPlayer = event.source.entity as? Player
+        if (attackingPlayer != null && victim is Mob && victim.persistentData.hasUUID(PillagerRuntime.OFFICER_TAG)) {
+            val data = PillagerWorldData.get(level.server)
+            data.officers[victim.persistentData.getUUID(PillagerRuntime.OFFICER_TAG)]?.let { officer ->
+                data.warbands[officer.homeWarbandId]?.playerRelations?.set(attackingPlayer.uuid, com.gerald.pillagercampaigns.system.TerritorialRelation.HOSTILE.name)
+                data.markChanged()
+            }
+        }
+        val campaignId = when {
+            attacker?.persistentData?.hasUUID(PillagerRuntime.CAMPAIGN_TAG) == true -> attacker.persistentData.getUUID(PillagerRuntime.CAMPAIGN_TAG)
+            victim is Mob && victim.persistentData.hasUUID(PillagerRuntime.CAMPAIGN_TAG) -> victim.persistentData.getUUID(PillagerRuntime.CAMPAIGN_TAG)
+            else -> null
+        } ?: return
+        val campaign = PillagerWorldData.get(level.server).campaigns[campaignId] ?: return
+        val playerId = when {
+            victim is Player -> victim.uuid
+            event.source.entity is Player -> event.source.entity!!.uuid
+            else -> null
+        }
+        if (playerId == campaign.targetPlayerId) {
+            campaign.lastCombatTick = level.gameTime
+            val campaignDealtDamage = attacker?.persistentData?.hasUUID(PillagerRuntime.CAMPAIGN_TAG) == true
+            val distance = event.source.entity?.distanceTo(victim)?.toDouble() ?: 0.0
+            val preference = when {
+                campaignDealtDamage && distance > 8.0 -> "range"
+                campaignDealtDamage -> "damage"
+                else -> "durability"
+            }
+            PillagerCampaignEngine.recordCombatObservation(PillagerWorldData.get(level.server), campaign, preference, if (campaignDealtDamage) 1.0 else -1.0)
         }
     }
 
@@ -386,7 +430,7 @@ object PillagerCampaignsEvents {
             }
             source.sendSuccess({
                 Component.literal(
-                    "  ${warband.id.toString().take(8)} dim=${warband.dimension} structure=${warband.structureId} archetype=${warband.archetype.name.lowercase()} rally_chunk=${warband.rallyChunkX},${warband.rallyChunkZ} rally_xyz=${rally.x},${rally.y},${rally.z} strength=${warband.strength} cooldown_ticks=$cooldown active=${activeCampaigns[warband.id] ?: 0}/${warband.activeCampaignLimit} warlord=$warlordState last_failure=${warband.lastPresenceFailure.name.lowercase()}"
+                    "  ${warband.id.toString().take(8)} dim=${warband.dimension} rally_chunk=${warband.rallyChunkX},${warband.rallyChunkZ} rally_xyz=${rally.x},${rally.y},${rally.z} reserve=${warband.reserve}/${warband.capacity} raid_pool=${"%.1f".format(warband.raidPool)} aggression=${warband.aggression} cooldown_ticks=$cooldown active=${activeCampaigns[warband.id] ?: 0}/${warband.activeCampaignLimit} warlord=$warlordState last_failure=${warband.lastPresenceFailure.name.lowercase()}"
                 ).append(" ").append(tpLink(warband.dimension.toString(), rally.x, rally.y, rally.z))
             }, false)
         }
@@ -429,7 +473,7 @@ object PillagerCampaignsEvents {
                         campaign.targetChunkX,
                         campaign.targetChunkZ
                     )
-                    val ticksPerChunk = PillagerCampaignsConfig.campaignSpeedTicksPerChunk.get().coerceAtLeast(1)
+                    val ticksPerChunk = 120
                     val remainingTicks = (remainingChunks * ticksPerChunk - campaign.tickDebt).coerceAtLeast(0)
                     formatEta(remainingTicks)
                 }
@@ -437,6 +481,7 @@ object PillagerCampaignsEvents {
                 CampaignState.MATERIALIZING -> "materializing"
                 CampaignState.ACTIVE -> "active"
                 CampaignState.PAUSED -> "paused"
+                CampaignState.RETURNING -> "returning"
                 CampaignState.RESOLVED -> "resolved"
             }
             source.sendSuccess({
@@ -493,7 +538,7 @@ object PillagerCampaignsEvents {
             val recentHistory = officer.nemesisHistory.takeLast(2).joinToString(",") { it.type.name.lowercase() }.ifBlank { "none" }
             source.sendSuccess({
                 val line = Component.literal(
-                    "  ${officer.id.toString().take(8)} role=${officer.role.name.lowercase()} ${officer.name} ${officer.title} rank=${officer.rank.name.lowercase()} state=${officer.state.name.lowercase()} style=${officer.combatStyle.name.lowercase()} victories=${officer.campaignVictories} defeats=${officer.campaignDefeats} grudge=${officer.lastTargetPlayerId?.toString()?.take(8) ?: "none"} recent=$recentHistory home_rally_xyz=$homePos"
+                    "  ${officer.id.toString().take(8)} role=${officer.role.name.lowercase()} ${officer.name} ${officer.title} rank=${officer.rank.name.lowercase()} state=${officer.state.name.lowercase()} preferences=${officer.preferenceGraph.entries.sortedByDescending { it.value }.take(3).joinToString { "${it.key}=${"%.2f".format(it.value)}" }} victories=${officer.campaignVictories} defeats=${officer.campaignDefeats} grudge=${officer.lastTargetPlayerId?.toString()?.take(8) ?: "none"} recent=$recentHistory home_rally_xyz=$homePos"
                 )
                 if (homeWarband != null) {
                     val rally = homeWarband.rallyBlockPos(source.level.seaLevel + 1)
@@ -517,7 +562,7 @@ object PillagerCampaignsEvents {
 
     internal fun formatWarbandLine(warband: com.gerald.pillagercampaigns.data.PillagerWarband): String {
         val rally = warband.rallyBlockPos()
-        return "  ${warband.id.toString().take(8)} dim=${warband.dimension} structure=${warband.structureId} archetype=${warband.archetype.name.lowercase()} rally_chunk=${warband.rallyChunkX},${warband.rallyChunkZ} rally_xyz=${rally.x},${rally.y},${rally.z} strength=${warband.strength} warlord=${warband.warlordOfficerId.toString().take(8)} rally_presence=${warband.rallyPresence?.state?.name?.lowercase() ?: "unknown"} failure=${warband.lastPresenceFailure.name.lowercase()}"
+        return "  ${warband.id.toString().take(8)} dim=${warband.dimension} rally_chunk=${warband.rallyChunkX},${warband.rallyChunkZ} rally_xyz=${rally.x},${rally.y},${rally.z} reserve=${warband.reserve}/${warband.capacity} raid_pool=${"%.1f".format(warband.raidPool)} aggression=${warband.aggression} warlord=${warband.warlordOfficerId.toString().take(8)} rally_presence=${warband.rallyPresence?.state?.name?.lowercase() ?: "unknown"} failure=${warband.lastPresenceFailure.name.lowercase()}"
     }
 
     private fun reset(source: CommandSourceStack): Int {
@@ -606,3 +651,7 @@ object PillagerCampaignsEvents {
         bossEnsureMaxMs = 0.0
     }
 }
+    @SubscribeEvent
+    fun onAddReloadListeners(event: AddReloadListenerEvent) {
+        event.addListener(com.gerald.pillagercampaigns.system.WarbandFormulaData)
+    }

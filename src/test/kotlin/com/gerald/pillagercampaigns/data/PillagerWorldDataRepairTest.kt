@@ -26,11 +26,10 @@ class PillagerWorldDataRepairTest {
             id = goodWarbandId,
             factionId = factionId,
             dimension = ResourceLocation("minecraft", "overworld"),
-            structureId = ResourceLocation("minecraft", "pillager_outpost"),
             bannerSeed = 2,
             rallyChunkX = 0,
             rallyChunkZ = 0,
-            strength = 1,
+            reserve = 18,
             defeated = false,
             warlordOfficerId = goodOfficerId,
             warlordEntityId = null,
@@ -47,7 +46,6 @@ class PillagerWorldDataRepairTest {
             name = "Good",
             title = "Captain",
             rank = OfficerRank.CAPTAIN,
-            officerClass = OfficerClass.PILLAGER,
             state = OfficerState.IDLE,
             preferenceGraph = mutableMapOf(),
         )
@@ -59,7 +57,6 @@ class PillagerWorldDataRepairTest {
             name = "Bad",
             title = "Dangling",
             rank = OfficerRank.CAPTAIN,
-            officerClass = OfficerClass.PILLAGER,
             state = OfficerState.IDLE,
             preferenceGraph = mutableMapOf(),
         )

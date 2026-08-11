@@ -32,3 +32,17 @@ mandatory=true
 versionRange="[${kotlinForForgeVersion},)"
 ordering="NONE"
 side="BOTH"
+
+[[dependencies.${modId}]]
+modId="mantle"
+mandatory=true
+versionRange="[1.11,)"
+ordering="AFTER"
+side="BOTH"
+
+[[dependencies.${modId}]]
+modId="tconstruct"
+mandatory=true
+versionRange="[3.11,)"
+ordering="AFTER"
+side="BOTH"

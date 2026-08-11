@@ -9,16 +9,18 @@ import kotlin.test.assertTrue
 
 class PillagerCampaignsEventsFormatTest {
     @Test
-    fun `warband list line always includes rally coordinates structure and failure`() {
+    fun `warband list line includes formula state rally and failure`() {
         val warband = PillagerWarband(
             id = UUID.fromString("11111111-2222-3333-4444-555555555555"),
             factionId = UUID.randomUUID(),
             dimension = ResourceLocation.tryParse("minecraft:overworld")!!,
-            structureId = ResourceLocation.tryParse("minecraft:pillager_outpost")!!,
             bannerSeed = 0,
             rallyChunkX = 12,
             rallyChunkZ = -3,
-            strength = 4,
+            reserve = 24,
+            capacity = 156,
+            raidPool = 2.0,
+            aggression = 8,
             defeated = false,
             warlordOfficerId = UUID.randomUUID(),
             warlordEntityId = null,
@@ -31,8 +33,9 @@ class PillagerCampaignsEventsFormatTest {
         val line = PillagerCampaignsEvents.formatWarbandLine(warband)
         assertTrue("rally_chunk=12,-3" in line)
         assertTrue("rally_xyz=200,64,-40" in line)
-        assertTrue("structure=minecraft:pillager_outpost" in line)
-        assertTrue("strength=4" in line)
+        assertTrue("reserve=24/156" in line)
+        assertTrue("raid_pool=2.0" in line)
+        assertTrue("aggression=8" in line)
         assertTrue("rally_presence=" in line)
         assertTrue("failure=cooldown" in line)
     }

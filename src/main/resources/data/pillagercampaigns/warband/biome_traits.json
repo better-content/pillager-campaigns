@@ -1,0 +1,13 @@
+{
+  "initial": {"habitability": 0.5, "biomass": 0.5, "mineral_potential": 0.5, "exotic_potential": 0.5, "travel_friction": 0.5},
+  "weights": {
+    "forest_or_jungle": {"habitability": 0.20, "biomass": 0.40, "mineral_potential": -0.10, "exotic_potential": 0.05, "travel_friction": 0.15},
+    "plains_or_savanna": {"habitability": 0.25, "biomass": 0.20, "travel_friction": -0.20},
+    "wet_or_swamp": {"habitability": 0.10, "biomass": 0.30, "mineral_potential": -0.10, "exotic_potential": 0.25, "travel_friction": 0.35},
+    "mountain_peak_or_hill": {"habitability": -0.20, "biomass": -0.10, "mineral_potential": 0.40, "exotic_potential": 0.10, "travel_friction": 0.40},
+    "ocean_river_or_coast": {"habitability": -0.15, "biomass": 0.05, "exotic_potential": 0.15, "travel_friction": 0.45},
+    "dry_desert_or_badlands": {"habitability": -0.30, "biomass": -0.35, "mineral_potential": 0.25, "exotic_potential": 0.10, "travel_friction": 0.10},
+    "cold_or_snow": {"habitability": -0.20, "biomass": -0.15, "mineral_potential": 0.10, "exotic_potential": 0.20, "travel_friction": 0.20},
+    "magical_or_rare": {"exotic_potential": 0.40}
+  }
+}

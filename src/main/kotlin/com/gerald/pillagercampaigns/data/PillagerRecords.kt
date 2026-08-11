@@ -5,6 +5,7 @@ import net.minecraft.nbt.CompoundTag
 import net.minecraft.nbt.ListTag
 import net.minecraft.nbt.Tag
 import net.minecraft.resources.ResourceLocation
+import com.gerald.pillagercampaigns.system.EnvironmentTraits
 import java.util.UUID
 
 data class PillagerFaction(
@@ -98,11 +99,21 @@ data class PillagerWarband(
     val id: UUID,
     val factionId: UUID,
     val dimension: ResourceLocation,
-    var structureId: ResourceLocation,
     var bannerSeed: Int,
     var rallyChunkX: Int,
     var rallyChunkZ: Int,
-    var strength: Int,
+    var reserve: Int,
+    var capacity: Int = 156,
+    var raidPool: Double = 0.0,
+    var aggression: Int = 6,
+    var environment: EnvironmentTraits = EnvironmentTraits(),
+    val preferences: MutableMap<String, Double> = mutableMapOf(),
+    val playerRelations: MutableMap<UUID, String> = mutableMapOf(),
+    val armory: MutableList<CompoundTag> = mutableListOf(),
+    val garrisonThreat: MutableMap<UUID, Double> = mutableMapOf(),
+    var lastEconomyTick: Long = 0L,
+    var recruitTickDebt: Double = 0.0,
+    var mobilizationTickDebt: Double = 0.0,
     var defeated: Boolean,
     var warlordOfficerId: UUID,
     var warlordEntityId: UUID?,
@@ -112,18 +123,33 @@ data class PillagerWarband(
     var lastPresenceFailure: PresenceMaterializationResult,
     var lastPresenceAttemptTick: Long = 0L,
     var activeCampaignLimit: Int = 1,
-    var archetype: WarbandArchetype = WarbandArchetype.SKIRMISHER,
     var rallyPresence: RallyPresenceRecord? = null,
 ) {
     fun save(): CompoundTag = CompoundTag().also {
         it.putUUID("id", id)
         it.putUUID("factionId", factionId)
         it.putString("dimension", dimension.toString())
-        it.putString("structureId", structureId.toString())
         it.putInt("bannerSeed", bannerSeed)
         it.putInt("rallyChunkX", rallyChunkX)
         it.putInt("rallyChunkZ", rallyChunkZ)
-        it.putInt("strength", strength)
+        it.putInt("reserve", reserve)
+        it.putInt("capacity", capacity)
+        it.putDouble("raidPool", raidPool)
+        it.putInt("aggression", aggression)
+        it.putLong("lastEconomyTick", lastEconomyTick)
+        it.putDouble("recruitTickDebt", recruitTickDebt)
+        it.putDouble("mobilizationTickDebt", mobilizationTickDebt)
+        it.put("environment", CompoundTag().also { env ->
+            env.putDouble("habitability", environment.habitability)
+            env.putDouble("biomass", environment.biomass)
+            env.putDouble("mineralPotential", environment.mineralPotential)
+            env.putDouble("exoticPotential", environment.exoticPotential)
+            env.putDouble("travelFriction", environment.travelFriction)
+        })
+        it.put("preferences", CompoundTag().also { prefs -> preferences.forEach(prefs::putDouble) })
+        it.put("playerRelations", CompoundTag().also { relations -> playerRelations.forEach { (id, value) -> relations.putString(id.toString(), value) } })
+        it.put("armory", saveRecordList(armory))
+        it.put("garrisonThreat", CompoundTag().also { values -> garrisonThreat.forEach { (id, threat) -> values.putDouble(id.toString(), threat) } })
         it.putBoolean("defeated", defeated)
         it.putUUID("warlordOfficerId", warlordOfficerId)
         warlordEntityId?.let { entity -> it.putUUID("warlordEntityId", entity) }
@@ -133,7 +159,6 @@ data class PillagerWarband(
         it.putString("lastPresenceFailure", lastPresenceFailure.name)
         it.putLong("lastPresenceAttemptTick", lastPresenceAttemptTick)
         it.putInt("activeCampaignLimit", activeCampaignLimit)
-        it.putString("archetype", archetype.name)
         rallyPresence?.let { presence -> it.put("rallyPresence", presence.save()) }
     }
 
@@ -144,11 +169,27 @@ data class PillagerWarband(
             id = tag.getUUID("id"),
             factionId = tag.getUUID("factionId"),
             dimension = ResourceLocation.tryParse(tag.getString("dimension")) ?: ResourceLocation.tryParse("minecraft:overworld")!!,
-            structureId = ResourceLocation.tryParse(tag.getString("structureId")) ?: ResourceLocation.tryParse("minecraft:pillager_outpost")!!,
             bannerSeed = if (tag.contains("bannerSeed")) tag.getInt("bannerSeed") else (tag.getUUID("id").mostSignificantBits xor tag.getUUID("id").leastSignificantBits).toInt(),
             rallyChunkX = tag.getInt("rallyChunkX"),
             rallyChunkZ = tag.getInt("rallyChunkZ"),
-            strength = if (tag.contains("strength")) tag.getInt("strength") else 1,
+            reserve = when {
+                tag.contains("reserve") -> tag.getInt("reserve")
+                tag.contains("strength") -> tag.getInt("strength").coerceAtLeast(1) * 6
+                else -> 18
+            },
+            capacity = if (tag.contains("capacity")) tag.getInt("capacity") else 156,
+            raidPool = if (tag.contains("raidPool")) tag.getDouble("raidPool") else 0.0,
+            aggression = if (tag.contains("aggression")) tag.getInt("aggression").coerceIn(6, 18) else 6,
+            environment = if (tag.contains("environment", Tag.TAG_COMPOUND.toInt())) tag.getCompound("environment").let { env -> EnvironmentTraits(
+                env.getDouble("habitability"), env.getDouble("biomass"), env.getDouble("mineralPotential"), env.getDouble("exoticPotential"), env.getDouble("travelFriction"),
+            ).bounded() } else EnvironmentTraits(),
+            preferences = mutableMapOf<String, Double>().also { values -> if (tag.contains("preferences", Tag.TAG_COMPOUND.toInt())) tag.getCompound("preferences").allKeys.forEach { values[it] = tag.getCompound("preferences").getDouble(it) } },
+            playerRelations = mutableMapOf<UUID, String>().also { values -> if (tag.contains("playerRelations", Tag.TAG_COMPOUND.toInt())) tag.getCompound("playerRelations").allKeys.forEach { key -> runCatching { UUID.fromString(key) }.getOrNull()?.let { values[it] = tag.getCompound("playerRelations").getString(key) } } },
+            armory = mutableListOf<CompoundTag>().also { values -> if (tag.contains("armory", Tag.TAG_LIST.toInt())) tag.getList("armory", Tag.TAG_COMPOUND.toInt()).forEach { values += (it as CompoundTag).copy() } },
+            garrisonThreat = mutableMapOf<UUID, Double>().also { values -> if (tag.contains("garrisonThreat", Tag.TAG_COMPOUND.toInt())) tag.getCompound("garrisonThreat").allKeys.forEach { key -> runCatching { UUID.fromString(key) }.getOrNull()?.let { values[it] = tag.getCompound("garrisonThreat").getDouble(key) } } },
+            lastEconomyTick = if (tag.contains("lastEconomyTick")) tag.getLong("lastEconomyTick") else 0L,
+            recruitTickDebt = if (tag.contains("recruitTickDebt")) tag.getDouble("recruitTickDebt") else 0.0,
+            mobilizationTickDebt = if (tag.contains("mobilizationTickDebt")) tag.getDouble("mobilizationTickDebt") else 0.0,
             defeated = if (tag.contains("defeated")) tag.getBoolean("defeated") else false,
             warlordOfficerId = tag.getUUID("warlordOfficerId"),
             warlordEntityId = if (tag.hasUUID("warlordEntityId")) tag.getUUID("warlordEntityId") else null,
@@ -160,9 +201,6 @@ data class PillagerWarband(
             } else PresenceMaterializationResult.SUCCESS,
             lastPresenceAttemptTick = if (tag.contains("lastPresenceAttemptTick")) tag.getLong("lastPresenceAttemptTick") else 0L,
             activeCampaignLimit = if (tag.contains("activeCampaignLimit")) tag.getInt("activeCampaignLimit") else 1,
-            archetype = if (tag.contains("archetype")) {
-                runCatching { WarbandArchetype.valueOf(tag.getString("archetype")) }.getOrDefault(archetypeForId(tag.getUUID("id")))
-            } else archetypeForId(tag.getUUID("id")),
             rallyPresence = when {
                 tag.contains("rallyPresence", Tag.TAG_COMPOUND.toInt()) -> RallyPresenceRecord.load(tag.getCompound("rallyPresence"))
                 tag.hasUUID("warlordOfficerId") -> RallyPresenceRecord(
@@ -174,11 +212,6 @@ data class PillagerWarband(
             },
         )
 
-        private fun archetypeForId(id: UUID): WarbandArchetype {
-            val values = WarbandArchetype.entries
-            val idx = Math.floorMod((id.mostSignificantBits xor id.leastSignificantBits).toInt(), values.size)
-            return values[idx]
-        }
     }
 }
 
@@ -190,9 +223,7 @@ data class PillagerOfficer(
     var title: String,
     var role: OfficerRole = OfficerRole.CAPTAIN,
     var rank: OfficerRank = OfficerRank.CAPTAIN,
-    var officerClass: OfficerClass = OfficerClass.PILLAGER,
     var state: OfficerState = OfficerState.IDLE,
-    var combatStyle: CombatStyle = CombatStyle.HUNTER,
     val preferenceGraph: MutableMap<String, Double>,
     var kills: Int = 0,
     var deathsInflicted: Int = 0,
@@ -212,9 +243,7 @@ data class PillagerOfficer(
         it.putString("title", title)
         it.putString("role", role.name)
         it.putString("rank", rank.name)
-        it.putString("officerClass", officerClass.name)
         it.putString("state", state.name)
-        it.putString("combatStyle", combatStyle.name)
         it.putInt("kills", kills)
         it.putInt("deathsInflicted", deathsInflicted)
         it.putInt("campaignVictories", campaignVictories)
@@ -243,21 +272,10 @@ data class PillagerOfficer(
                 "WARLORD" -> OfficerRank.DREAD_CAPTAIN
                 else -> runCatching { OfficerRank.valueOf(rawRank) }.getOrDefault(OfficerRank.CAPTAIN)
             },
-            officerClass = runCatching { OfficerClass.valueOf(tag.getString("officerClass")) }.getOrDefault(OfficerClass.PILLAGER),
             state = when (tag.getString("state")) {
                 "AVAILABLE" -> OfficerState.IDLE
                 else -> runCatching { OfficerState.valueOf(tag.getString("state")) }.getOrDefault(OfficerState.IDLE)
             },
-            combatStyle = if (tag.contains("combatStyle")) {
-                runCatching { CombatStyle.valueOf(tag.getString("combatStyle")) }.getOrDefault(CombatStyle.HUNTER)
-            } else inferCombatStyle(
-                mutableMapOf<String, Double>().also { graph ->
-                    if (tag.contains("preferenceGraph", Tag.TAG_COMPOUND.toInt())) {
-                        val prefs = tag.getCompound("preferenceGraph")
-                        prefs.allKeys.forEach { key -> graph[key] = prefs.getDouble(key) }
-                    }
-                },
-            ),
             preferenceGraph = mutableMapOf<String, Double>().also { graph ->
                 if (tag.contains("preferenceGraph", Tag.TAG_COMPOUND.toInt())) {
                     val prefs = tag.getCompound("preferenceGraph")
@@ -281,16 +299,6 @@ data class PillagerOfficer(
             },
         )
 
-        private fun inferCombatStyle(preferenceGraph: Map<String, Double>): CombatStyle {
-            val dominant = preferenceGraph.maxByOrNull { it.value }?.key ?: return CombatStyle.HUNTER
-            return when {
-                dominant.contains("melee", ignoreCase = true) -> CombatStyle.BUTCHER
-                dominant.contains("magic", ignoreCase = true) || dominant.contains("caster", ignoreCase = true) -> CombatStyle.HEXER
-                dominant.contains("stealth", ignoreCase = true) || dominant.contains("mobility", ignoreCase = true) -> CombatStyle.SABOTEUR
-                dominant.contains("ranged", ignoreCase = true) -> CombatStyle.HARRIER
-                else -> CombatStyle.HUNTER
-            }
-        }
     }
 }
 
@@ -313,6 +321,12 @@ data class PillagerCampaign(
     var materializeAttemptId: UUID?,
     var materializingUntilTick: Long,
     var squadMemberIds: MutableList<UUID>,
+    var lastCombatTick: Long = 0L,
+    var resolvedTick: Long = 0L,
+    var committedThreat: Int = 0,
+    val pendingEquipment: MutableList<CompoundTag> = mutableListOf(),
+    val memberEquipment: MutableMap<UUID, CompoundTag> = mutableMapOf(),
+    val memberThreat: MutableMap<UUID, Double> = mutableMapOf(),
 ) {
     fun save(): CompoundTag = CompoundTag().also {
         it.putUUID("id", id)
@@ -339,6 +353,12 @@ data class PillagerCampaign(
             members.add(entry)
         }
         it.put("squadMemberIds", members)
+        it.putLong("lastCombatTick", lastCombatTick)
+        it.putLong("resolvedTick", resolvedTick)
+        it.putInt("committedThreat", committedThreat)
+        it.put("pendingEquipment", saveRecordList(pendingEquipment))
+        it.put("memberEquipment", saveRecordList(memberEquipment.map { (id, stack) -> CompoundTag().also { entry -> entry.putUUID("id", id); entry.put("stack", stack.copy()) } }))
+        it.put("memberThreat", CompoundTag().also { values -> memberThreat.forEach { (id, threat) -> values.putDouble(id.toString(), threat) } })
     }
 
     companion object {
@@ -370,6 +390,12 @@ data class PillagerCampaign(
                     }
                 }
             },
+            lastCombatTick = if (tag.contains("lastCombatTick")) tag.getLong("lastCombatTick") else 0L,
+            resolvedTick = if (tag.contains("resolvedTick")) tag.getLong("resolvedTick") else 0L,
+            committedThreat = if (tag.contains("committedThreat")) tag.getInt("committedThreat") else 0,
+            pendingEquipment = mutableListOf<CompoundTag>().also { values -> if (tag.contains("pendingEquipment", Tag.TAG_LIST.toInt())) tag.getList("pendingEquipment", Tag.TAG_COMPOUND.toInt()).forEach { values += (it as CompoundTag).copy() } },
+            memberEquipment = mutableMapOf<UUID, CompoundTag>().also { values -> if (tag.contains("memberEquipment", Tag.TAG_LIST.toInt())) tag.getList("memberEquipment", Tag.TAG_COMPOUND.toInt()).forEach { raw -> (raw as CompoundTag).let { entry -> if (entry.hasUUID("id")) values[entry.getUUID("id")] = entry.getCompound("stack").copy() } } },
+            memberThreat = mutableMapOf<UUID, Double>().also { values -> if (tag.contains("memberThreat", Tag.TAG_COMPOUND.toInt())) tag.getCompound("memberThreat").allKeys.forEach { key -> runCatching { UUID.fromString(key) }.getOrNull()?.let { values[it] = tag.getCompound("memberThreat").getDouble(key) } } },
         )
     }
 }

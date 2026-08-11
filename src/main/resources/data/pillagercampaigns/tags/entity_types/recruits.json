@@ -1,0 +1,15 @@
+{
+  "replace": false,
+  "values": [
+    "#minecraft:raiders",
+    {"id": "takesapillage:archer", "required": false},
+    {"id": "takesapillage:skirmisher", "required": false},
+    {"id": "takesapillage:legioner", "required": false},
+    {"id": "savage_and_ravage:griefer", "required": false},
+    {"id": "savage_and_ravage:executioner", "required": false},
+    {"id": "savage_and_ravage:iceologer", "required": false},
+    {"id": "savage_and_ravage:trickster", "required": false},
+    {"id": "companions:illager_golem", "required": false},
+    {"id": "aquamirae:pillagers_patrol", "required": false}
+  ]
+}

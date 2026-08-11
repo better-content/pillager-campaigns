@@ -4,7 +4,6 @@ import com.gerald.pillagercampaigns.PillagerCampaignsConfig
 import com.gerald.pillagercampaigns.PillagerCampaignsMod
 import com.gerald.pillagercampaigns.data.CampaignOutcome
 import com.gerald.pillagercampaigns.data.CampaignState
-import com.gerald.pillagercampaigns.data.CombatStyle
 import com.gerald.pillagercampaigns.data.NemesisEvent
 import com.gerald.pillagercampaigns.data.NemesisEventType
 import com.gerald.pillagercampaigns.data.OfficerRank
@@ -18,18 +17,21 @@ import com.gerald.pillagercampaigns.util.PillagerIdentity
 import net.minecraft.server.MinecraftServer
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.server.level.ServerPlayer
+import net.minecraft.network.chat.Component
+import net.minecraft.nbt.CompoundTag
+import net.minecraft.sounds.SoundEvents
+import net.minecraft.sounds.SoundSource
 import net.minecraft.world.level.GameType
 import java.util.UUID
 import java.util.concurrent.ThreadLocalRandom
 import kotlin.math.max
 
 object PillagerCampaignEngine {
-    const val INITIAL_WARBAND_STRENGTH: Int = 1
-    const val PLAYER_RESPAWN_PROTECTION_TICKS: Long = 6_000L
+    const val INITIAL_RESERVE: Int = FormulaicWarbandRules.INITIAL_RESERVE
+    val PLAYER_RESPAWN_PROTECTION_TICKS: Long get() = PillagerCampaignsConfig.respawnProtectionTicks.get().toLong()
     private const val MATERIALIZE_LEASE_TICKS: Long = 200L
     private const val MIN_ACTIVE_LIVE_MEMBERS: Int = 1
     private const val RAID_COOLDOWN_TICKS: Long = 6_000L
-    private const val PLAYER_KILL_COOLDOWN_TICKS: Long = 24_000L
     private const val CAPTAIN_RECOVERY_TICKS: Long = 6_000L
     private const val CAPTAIN_SUCCESS_RECOVERY_TICKS: Long = 2_400L
     private const val MAX_HISTORY_EVENTS: Int = 8
@@ -39,6 +41,9 @@ object PillagerCampaignEngine {
     private var dispatchCursor: Int = 0
 
     fun tick(server: MinecraftServer, data: PillagerWorldData, now: Long) {
+        advanceEconomies(data, now)
+        updateTerritorialRelations(server, data)
+        pruneResolved(data, now)
         dispatch(server, data, now)
         advance(server, data, now)
     }
@@ -53,7 +58,7 @@ object PillagerCampaignEngine {
     }
 
     private fun dispatch(server: MinecraftServer, data: PillagerWorldData, now: Long) {
-        val maxRange = PillagerCampaignsConfig.maxCampaignDistanceChunks.get()
+        val maxRange = PillagerCampaignsConfig.territoryRadiusChunks.get()
         val players = server.playerList.players
         val warbands = data.warbands.values.toList()
         if (warbands.isEmpty()) return
@@ -62,25 +67,28 @@ object PillagerCampaignEngine {
             .filter { it.state != CampaignState.RESOLVED }
             .groupingBy { it.originWarbandId }
             .eachCount()
-        val targetedPlayersByWarband = data.campaigns.values
+        val targetedPlayers = data.campaigns.values
             .asSequence()
             .filter { it.state != CampaignState.RESOLVED }
-            .groupBy({ it.originWarbandId }, { it.targetPlayerId })
-        val budget = PillagerCampaignsConfig.campaignDispatchWarbandsPerTick.get().coerceAtLeast(1)
+            .map { it.targetPlayerId }
+            .toSet()
+        val budget = PillagerCampaignsConfig.workBudgetPerTick.get().coerceAtLeast(1)
         var inspected = 0
         while (inspected < budget && inspected < warbands.size) {
             val warband = warbands[Math.floorMod(dispatchCursor, warbands.size)]
             dispatchCursor++
             inspected++
-            if (warband.defeated || warband.strength <= 0) continue
+            if (warband.defeated || warband.raidPool < 1.0) continue
             if (now < warband.nextRaidTick || now < warband.cooldownUntilTick) continue
             val existing = activeCampaignsByWarband[warband.id] ?: 0
             if (existing >= warband.activeCampaignLimit) continue
             val level = server.allLevels.firstOrNull { it.dimension().location() == warband.dimension } ?: continue
-            val targetedPlayers = targetedPlayersByWarband[warband.id].orEmpty().toSet()
             val assignment = chooseAssignment(level, players, warband, data, now, maxRange, targetedPlayers) ?: continue
             val captain = assignment.first
             val target = assignment.second
+            val committedThreat = minOf(warband.raidPool.toInt(), warband.aggression.coerceAtLeast(1))
+            if (committedThreat <= 0) continue
+            warband.raidPool -= committedThreat
             val campaign = PillagerCampaign(
                 id = UUID.randomUUID(),
                 factionId = warband.factionId,
@@ -92,7 +100,7 @@ object PillagerCampaignEngine {
                 currentChunkZ = warband.rallyChunkZ,
                 targetChunkX = target.chunkPosition().x,
                 targetChunkZ = target.chunkPosition().z,
-                difficultySnapshot = campaignDifficultyForCaptain(warband.strength, captain),
+                difficultySnapshot = campaignDifficultyForCaptain(committedThreat, captain),
                 loadoutSeed = ThreadLocalRandom.current().nextLong(),
                 tickDebt = 0,
                 state = CampaignState.TRAVELING,
@@ -100,7 +108,10 @@ object PillagerCampaignEngine {
                 materializeAttemptId = null,
                 materializingUntilTick = 0L,
                 squadMemberIds = mutableListOf(),
+                lastCombatTick = now,
+                committedThreat = committedThreat,
             )
+            repeat(minOf(committedThreat, warband.armory.size)) { campaign.pendingEquipment += warband.armory.removeAt(0) }
             captain.state = OfficerState.DEPLOYED
             captain.lastTargetPlayerId = target.uuid
             captain.lastSeenTick = now
@@ -111,8 +122,8 @@ object PillagerCampaignEngine {
     }
 
     private fun advance(server: MinecraftServer, data: PillagerWorldData, now: Long) {
-        val speed = PillagerCampaignsConfig.campaignSpeedTicksPerChunk.get()
-        val dt = PillagerCampaignsConfig.campaignTickInterval.get()
+        val speed = 120
+        val dt = PillagerCampaignsConfig.schedulerIntervalTicks.get()
         val materializeDistance = PillagerCampaignsConfig.materializeDistanceChunks.get()
         val toResolve = mutableListOf<Pair<UUID, CampaignOutcome>>()
 
@@ -139,8 +150,17 @@ object PillagerCampaignEngine {
             when (campaign.state) {
                 CampaignState.ACTIVE -> {
                     val alive = PillagerRuntime.countLiveMembers(level, campaign.squadMemberIds)
+                    val liveThreat = PillagerRuntime.liveThreat(level, campaign)
+                    val conservation = data.officers[campaign.officerId]?.preferenceGraph?.get("conservation") ?: 0.5
+                    val retreatAt = FormulaicWarbandRules.retreatThreshold(conservation, data.warbands[campaign.originWarbandId]?.aggression ?: 6)
                     if (alive < MIN_ACTIVE_LIVE_MEMBERS) {
                         toResolve += campaign.id to CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT
+                    } else if (campaign.committedThreat > 0 && liveThreat / campaign.committedThreat <= retreatAt) {
+                        PillagerRuntime.dismissCampaign(level, campaign.id, campaign.squadMemberIds)
+                        returnCampaign(data, campaign, now, liveThreat)
+                    } else if (now - campaign.lastCombatTick >= PillagerCampaignsConfig.idleReturnTicks.get()) {
+                        PillagerRuntime.dismissCampaign(level, campaign.id, campaign.squadMemberIds)
+                        returnCampaign(data, campaign, now, liveThreat)
                     }
                     return@forEach
                 }
@@ -169,7 +189,7 @@ object PillagerCampaignEngine {
                     }
                     return@forEach
                 }
-                CampaignState.PAUSED -> return@forEach
+                CampaignState.PAUSED, CampaignState.RETURNING -> return@forEach
                 else -> {}
             }
             if (player.level().dimension().location() != campaign.targetDimension) {
@@ -240,6 +260,7 @@ object PillagerCampaignEngine {
         campaign.materializeAttemptId = null
         campaign.materializingUntilTick = 0L
         campaign.squadMemberIds.clear()
+        campaign.resolvedTick = observedTick.coerceAtLeast(0L)
 
         val captain = data.officers[campaign.officerId]
         val warband = data.warbands[campaign.originWarbandId]
@@ -249,17 +270,28 @@ object PillagerCampaignEngine {
 
     fun recordCampaignVictory(data: PillagerWorldData, warbandId: UUID, observedTick: Long = -1L) {
         data.warbands[warbandId]?.let { warband ->
-            warband.strength = max(warband.strength + 1, INITIAL_WARBAND_STRENGTH)
+            warband.aggression = (warband.aggression - 1).coerceAtLeast(PillagerCampaignsConfig.minimumAggression.get())
             if (observedTick >= 0L) warband.lastIntelTick = observedTick
         }
     }
 
     fun recordCampaignLoss(data: PillagerWorldData, warbandId: UUID, observedTick: Long = -1L) {
         data.warbands[warbandId]?.let { warband ->
-            warband.strength = (warband.strength - 1).coerceAtLeast(0)
-            if (warband.strength <= 0) warband.defeated = true
+            warband.aggression = (warband.aggression + 1).coerceAtMost(PillagerCampaignsConfig.maximumAggression.get())
             if (observedTick >= 0L) warband.lastIntelTick = observedTick
         }
+    }
+
+    fun recordCombatObservation(data: PillagerWorldData, campaign: PillagerCampaign, preference: String, contribution: Double) {
+        data.warbands[campaign.originWarbandId]?.let { warband ->
+            val current = warband.preferences[preference] ?: 0.0
+            warband.preferences[preference] = FormulaicWarbandRules.updatePreference(current, contribution, PillagerCampaignsConfig.warbandLearningRate.get())
+        }
+        data.officers[campaign.officerId]?.let { captain ->
+            val current = captain.preferenceGraph[preference] ?: 0.0
+            captain.preferenceGraph[preference] = FormulaicWarbandRules.updatePreference(current, contribution, PillagerCampaignsConfig.captainLearningRate.get())
+        }
+        data.markChanged()
     }
 
     fun abortCampaignAfterPlayerKill(data: PillagerWorldData, campaignId: UUID, observedTick: Long = -1L) {
@@ -267,7 +299,7 @@ object PillagerCampaignEngine {
         data.warbands[campaign.originWarbandId]?.let { warband ->
             if (observedTick >= 0L) {
                 warband.lastIntelTick = observedTick
-                warband.cooldownUntilTick = maxOf(warband.cooldownUntilTick, observedTick + PLAYER_KILL_COOLDOWN_TICKS)
+                warband.cooldownUntilTick = maxOf(warband.cooldownUntilTick, observedTick + PillagerCampaignsConfig.deathProtectionTicks.get())
                 warband.nextRaidTick = maxOf(warband.nextRaidTick, warband.cooldownUntilTick)
             }
         }
@@ -287,7 +319,8 @@ object PillagerCampaignEngine {
     fun collapseWarband(data: PillagerWorldData, warbandId: UUID, observedTick: Long = -1L) {
         val warband = data.warbands[warbandId] ?: return
         warband.defeated = true
-        warband.strength = 0
+        warband.reserve = 0
+        warband.raidPool = 0.0
         warband.warlordEntityId = null
         warband.rallyPresence?.state = com.gerald.pillagercampaigns.data.RallyPresenceState.LOST
         warband.rallyPresence?.entityId = null
@@ -337,11 +370,12 @@ object PillagerCampaignEngine {
             .filter { isCampaignTarget(it) }
             .filter { !data.isPlayerProtected(it.uuid, now) }
             .filter { it.uuid !in targetedPlayers }
+            .filter { warband.playerRelations[it.uuid] == TerritorialRelation.HOSTILE.name }
             .filter { CampaignMath.manhattan(warband.rallyChunkX, warband.rallyChunkZ, it.chunkPosition().x, it.chunkPosition().z) <= maxRange }
             .toList()
         if (eligiblePlayers.isEmpty()) return null
         val captains = availableCaptains(data, warband, now).ifEmpty {
-            listOf(obtainOfficer(data, warband.factionId, warband.id, warband.strength, now))
+            listOf(obtainOfficer(data, warband.factionId, warband.id, warband.aggression, now))
         }
         var best: Pair<PillagerOfficer, ServerPlayer>? = null
         var bestScore = Int.MIN_VALUE
@@ -440,16 +474,13 @@ object PillagerCampaignEngine {
         }
         if (pooled != null) return pooled
         val faction = data.factions[factionId] ?: PillagerIdentity.makeFaction(homeWarbandId.leastSignificantBits).also { data.factions[it.id] = it }
-        val style = combatStyleForDifficulty(homeWarbandId.mostSignificantBits xor homeWarbandId.leastSignificantBits xor data.officers.size.toLong())
         val officer = PillagerIdentity.makeOfficer(
             faction = faction,
             homeWarbandId = homeWarbandId,
             seed = homeWarbandId.leastSignificantBits xor data.officers.size.toLong(),
             role = OfficerRole.CAPTAIN,
             rank = OfficerRank.CAPTAIN,
-            officerClass = officerClassForStyle(style, baseDifficulty),
-            combatStyle = style,
-            preferenceGraph = CampaignDifficultyRules.defaultPreferenceGraph(homeWarbandId.mostSignificantBits xor homeWarbandId.leastSignificantBits xor data.officers.size.toLong()),
+            preferenceGraph = FormulaicWarbandRules.initialPreferences(homeWarbandId.mostSignificantBits xor homeWarbandId.leastSignificantBits xor data.officers.size.toLong()),
         )
         officer.lastSeenTick = now
         data.officers[officer.id] = officer
@@ -525,27 +556,9 @@ object PillagerCampaignEngine {
     }
 
     private fun titleForCaptain(captain: PillagerOfficer): String = when (captain.rank) {
-        OfficerRank.SCOUT -> when (captain.combatStyle) {
-            CombatStyle.HUNTER -> "the Scout"
-            CombatStyle.HARRIER -> "the Skirmisher"
-            CombatStyle.BUTCHER -> "the Axe-Hand"
-            CombatStyle.HEXER -> "the Whisper"
-            CombatStyle.SABOTEUR -> "the Sneak"
-        }
-        OfficerRank.CAPTAIN -> when (captain.combatStyle) {
-            CombatStyle.HUNTER -> "the Hound"
-            CombatStyle.HARRIER -> "the Longshot"
-            CombatStyle.BUTCHER -> "the Red Hand"
-            CombatStyle.HEXER -> "the Hexer"
-            CombatStyle.SABOTEUR -> "the Knife"
-        }
-        OfficerRank.DREAD_CAPTAIN -> when (captain.combatStyle) {
-            CombatStyle.HUNTER -> "the Pursuer"
-            CombatStyle.HARRIER -> "the Black Arrow"
-            CombatStyle.BUTCHER -> "the Banner-Breaker"
-            CombatStyle.HEXER -> "the Grave Hex"
-            CombatStyle.SABOTEUR -> "the Ash Knife"
-        }
+        OfficerRank.SCOUT -> "the Scout"
+        OfficerRank.CAPTAIN -> "the Captain"
+        OfficerRank.DREAD_CAPTAIN -> "the Dread Captain"
     }
 
     internal fun appendCaptainEvent(captain: PillagerOfficer, event: NemesisEvent) {
@@ -555,14 +568,72 @@ object PillagerCampaignEngine {
         }
     }
 
-    private fun combatStyleForDifficulty(seed: Long): CombatStyle {
-        val styles = CombatStyle.entries
-        return styles[Math.floorMod(seed.toInt(), styles.size)]
+
+    private fun advanceEconomies(data: PillagerWorldData, now: Long) {
+        data.warbands.values.asSequence().filter { !it.defeated }.forEach { warband ->
+            val elapsed = (now - warband.lastEconomyTick).coerceAtLeast(0L)
+            if (elapsed == 0L) return@forEach
+            warband.lastEconomyTick = now
+            warband.recruitTickDebt += elapsed
+            val recruitTicks = FormulaicWarbandRules.grossRecruitTicksPerStrength(warband.environment) * 20.0
+            while (warband.recruitTickDebt >= recruitTicks && warband.reserve + warband.raidPool < warband.capacity) {
+                warband.recruitTickDebt -= recruitTicks
+                warband.reserve += 1
+                if (warband.armory.size < warband.capacity) TinkersArmoryOptimizer.create(warband)?.let { warband.armory += it.save(CompoundTag()) }
+            }
+            warband.mobilizationTickDebt += elapsed
+            val mobilizeTicks = FormulaicWarbandRules.mobilizationTicksPerStrength(warband.environment) * 20.0
+            while (warband.mobilizationTickDebt >= mobilizeTicks && warband.reserve > 0) {
+                warband.mobilizationTickDebt -= mobilizeTicks
+                warband.reserve -= 1
+                warband.raidPool += 1.0
+            }
+        }
     }
 
-    private fun officerClassForStyle(style: CombatStyle, difficulty: Int): com.gerald.pillagercampaigns.data.OfficerClass = when (style) {
-        CombatStyle.HUNTER, CombatStyle.HARRIER, CombatStyle.SABOTEUR -> com.gerald.pillagercampaigns.data.OfficerClass.PILLAGER
-        CombatStyle.BUTCHER -> com.gerald.pillagercampaigns.data.OfficerClass.VINDICATOR
-        CombatStyle.HEXER -> if (difficulty >= 4) com.gerald.pillagercampaigns.data.OfficerClass.EVOKER else com.gerald.pillagercampaigns.data.OfficerClass.WITCH
+    private fun returnCampaign(data: PillagerWorldData, campaign: PillagerCampaign, now: Long, survivingThreat: Double) {
+        data.warbands[campaign.originWarbandId]?.let { warband ->
+            warband.raidPool = (warband.raidPool + survivingThreat).coerceAtMost(warband.capacity.toDouble())
+            warband.armory += campaign.pendingEquipment.map { it.copy() }
+            warband.armory += campaign.memberEquipment.values.map { it.copy() }
+            campaign.pendingEquipment.clear()
+            campaign.memberEquipment.clear()
+            campaign.memberThreat.clear()
+            warband.aggression = (warband.aggression + 1).coerceAtMost(PillagerCampaignsConfig.maximumAggression.get())
+            warband.lastIntelTick = now
+        }
+        campaign.committedThreat = 0
+        resolveCampaign(data, campaign.id, defeatedByPlayer = false, observedTick = now, outcome = CampaignOutcome.ABORTED)
+    }
+
+    private fun pruneResolved(data: PillagerWorldData, now: Long) {
+        val retention = PillagerCampaignsConfig.resolvedRetentionTicks.get().toLong()
+        if (data.campaigns.entries.removeIf { (_, campaign) -> campaign.state == CampaignState.RESOLVED && campaign.resolvedTick > 0L && now - campaign.resolvedTick >= retention }) {
+            data.markChanged()
+        }
+    }
+
+    private fun updateTerritorialRelations(server: MinecraftServer, data: PillagerWorldData) {
+        server.playerList.players.forEach { player ->
+            data.warbands.values.asSequence().filter { !it.defeated && it.dimension == player.level().dimension().location() }.forEach { warband ->
+                val distance = WarbandTerritoryRules.distanceChunks(warband.rallyChunkX, warband.rallyChunkZ, player.chunkPosition().x, player.chunkPosition().z)
+                val previous = runCatching { TerritorialRelation.valueOf(warband.playerRelations[player.uuid] ?: TerritorialRelation.UNCONTACTED.name) }.getOrDefault(TerritorialRelation.UNCONTACTED)
+                val next = when {
+                    previous == TerritorialRelation.HOSTILE -> previous
+                    else -> WarbandTerritoryRules.relation(distance, PillagerCampaignsConfig.territoryRadiusChunks.get(), PillagerCampaignsConfig.warningBandChunks.get())
+                }
+                if (next != previous) {
+                    warband.playerRelations[player.uuid] = next.name
+                    if (next == TerritorialRelation.WARNED) {
+                        player.displayClientMessage(Component.literal("A pillager horn warns you away from claimed ground"), true)
+                        player.playNotifySound(SoundEvents.RAID_HORN.get(), SoundSource.HOSTILE, 1.0f, 0.9f)
+                    } else if (next == TerritorialRelation.HOSTILE) {
+                        player.displayClientMessage(Component.literal("The warband now considers you hostile"), true)
+                        player.playNotifySound(SoundEvents.RAID_HORN.get(), SoundSource.HOSTILE, 1.25f, 0.75f)
+                    }
+                    data.markChanged()
+                }
+            }
+        }
     }
 }
