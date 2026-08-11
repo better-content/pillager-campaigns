@@ -104,21 +104,22 @@ class BalanceExplorer(private val json: Json = Json { prettyPrint = true; encode
         val mature = baseline.filter { it.name.startsWith("h30d-") }
         val findings = mutableListOf<BalanceFinding>()
 
-        val largestSquadMean = baseline.maxOfOrNull(ExperimentSummary::meanSquadSize) ?: 0.0
+        val dispatching = baseline.filter { it.campaignsDispatched > 0 }
+        val firstHorizonWithoutDispatch = baseline.count { it.name.startsWith("h1d-") && it.campaignsDispatched == 0 }
         findings += BalanceFinding(
-            1, "Squad formation collapses to minimum affordability",
-            "Mean squad size is at most ${decimal(largestSquadMean)} across all ${baseline.size} longitudinal cells. Dispatch occurs as soon as the pool reaches the cheapest recruit, before it can accumulate toward the aggression budget.",
-            listOfNotNull(baseline.firstOrNull()?.name, baseline.maxByOrNull(ExperimentSummary::campaignsDispatched)?.name),
-            "Separate dispatch readiness from affordability: wait for a formulaic desired-threat threshold before invoking the existing authoritative squad planner.",
-            "A threshold that ignores travel or recent losses could create infrequent burst raids.", "high",
+            1, "Formulaic squad readiness",
+            "Across ${dispatching.size} dispatching longitudinal cells, mean squad size ranges from ${decimal(dispatching.minOfOrNull(ExperimentSummary::meanSquadSize) ?: 0.0)} to ${decimal(dispatching.maxOfOrNull(ExperimentSummary::meanSquadSize) ?: 0.0)}. $firstHorizonWithoutDispatch of ${baseline.count { it.name.startsWith("h1d-") }} one-day cells do not dispatch yet; every three-day cell does.",
+            listOfNotNull(dispatching.minByOrNull(ExperimentSummary::meanSquadSize)?.name, baseline.filter { it.campaignsDispatched == 0 }.firstOrNull()?.name),
+            "Retain the preference-selected-lead plus distinct-support readiness formula. Adjust mobilization or cooldown separately if first-contact cadence needs tuning.",
+            "Weakening readiness directly can reintroduce singleton raids; strengthening it can delay contact in low-habitability terrain.", "high",
         )
 
         val dominant = early.maxByOrNull(ExperimentSummary::dominantRecruitShare)
         if (dominant != null) findings += BalanceFinding(
             2, "Low-level and mature roster variety",
-            "The worst three-day cell assigns ${percent(dominant.dominantRecruitShare)} of members to one recruit; the envelope mean is ${percent(early.map { it.dominantRecruitShare }.averageOrZero())}. Only ${mature.flatMap { it.recruitCounts.keys }.distinct().size} of ${catalog.recruits.size} live recruits appear in any mature cell.",
+            "The worst three-day cell assigns ${percent(dominant.dominantRecruitShare)} of members to one recruit; the envelope mean is ${percent(early.map { it.dominantRecruitShare }.averageOrZero())}. ${mature.flatMap { it.recruitCounts.keys }.distinct().size} of ${catalog.recruits.size} live recruits appear across mature cells, with ${mature.minOfOrNull(ExperimentSummary::distinctRecruits) ?: 0}–${mature.maxOfOrNull(ExperimentSummary::distinctRecruits) ?: 0} distinct recruits per cell.",
             early.sortedByDescending(ExperimentSummary::dominantRecruitShare).take(3).map(ExperimentSummary::name),
-            "Add a bounded marginal-utility penalty derived from recruits already selected in the current squad and recent deployment share.",
+            "Keep the within-squad diminishing marginal utility. Add a bounded, decaying recent-deployment share only if longer-term repetition remains visible in playtests.",
             "Too much penalty can force weak recruits despite strong environmental preferences.", "high",
         )
 

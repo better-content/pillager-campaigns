@@ -48,7 +48,9 @@ object WarbandEngine {
         val preferences = rules.effectivePreferences(warband, officer)
         return catalog.recruits.asSequence()
             .filter { observedThreat(warband, it) <= budget + EPSILON }
-            .maxWithOrNull(compareBy<RecruitDefinition> { recruitScore(warband, it, preferences) }
+            .maxWithOrNull(compareBy<RecruitDefinition> {
+                marginalRecruitScore(recruitScore(warband, it, preferences), members.count { member -> member.recruitId == it.id })
+            }
                 .thenByDescending { deterministicTie(warband.id, it.id, state.sequence + members.size) })
     }
 
@@ -58,6 +60,30 @@ object WarbandEngine {
         recruit: RecruitDefinition,
         rules: WarbandRules = WarbandRules(),
     ): Double = recruitScore(warband, recruit, rules.effectivePreferences(warband, officer))
+
+    /**
+     * Produces the exact budget gate used by both automatic and adapter-driven
+     * dispatch. Readiness expresses aggression while reserving enough room for
+     * the preference-selected lead recruit and the cheapest distinct support.
+     */
+    fun raidBudget(
+        state: EngineState,
+        warband: WarbandState,
+        officer: OfficerState?,
+        catalog: EngineCatalog,
+        rules: WarbandRules = WarbandRules(),
+    ): Double {
+        val minimum = catalog.recruits.minOfOrNull { observedThreat(warband, it) } ?: return 0.0
+        val lead = chooseRecruit(state, warband, officer, catalog, Double.MAX_VALUE, rules = rules) ?: return 0.0
+        val supportThreat = if (rules.maximumSquadMembers > 1) catalog.recruits.asSequence()
+            .filter { it.id != lead.id }
+            .minOfOrNull { observedThreat(warband, it) } ?: 0.0 else 0.0
+        val desired = maxOf(
+            rules.aggressionRaidThreat(warband, minimum),
+            observedThreat(warband, lead) + supportThreat,
+        )
+        return if (warband.raidPool + EPSILON >= desired) desired else 0.0
+    }
 
     /**
      * Builds the exact member/equipment manifest used by campaign dispatch.
@@ -244,11 +270,10 @@ object WarbandEngine {
     ): Boolean {
         if (state.campaigns.values.any { it.phase != CampaignPhase.RESOLVED && it.targetPlayerId == playerId }) return false
         val warband = state.warbands[warbandId] ?: return false
-        val minimum = catalog.recruits.minOfOrNull { observedThreat(warband, it) } ?: return false
-        val budget = rules.raidBudget(warband, minimum)
-        if (budget + EPSILON < minimum) return false
         val officer = state.officers.values.filter { it.homeWarbandId == warband.id && it.availableAtTick <= state.tick }
             .minByOrNull { it.id }
+        val budget = raidBudget(state, warband, officer, catalog, rules)
+        if (budget <= EPSILON) return false
         val plan = planSquad(state, warband, officer, catalog, budget, rules)
         if (plan.members.isEmpty()) return false
         val members = plan.members.toMutableList()
@@ -424,6 +449,9 @@ object WarbandEngine {
     private fun recruitScore(warband: WarbandState, recruit: RecruitDefinition, preferences: CapabilityVector): Double =
         recruit.capabilities.dot(preferences) / observedThreat(warband, recruit) -
             recruit.environmentalCost.dot(environmentVector(warband.environment))
+
+    private fun marginalRecruitScore(score: Double, matchingMembers: Int): Double =
+        if (score >= 0.0) score / (matchingMembers + 1.0) else score * (matchingMembers + 1.0)
 
     private fun preferences(warband: WarbandState) = CapabilityVector(
         warband.preferences["durability"] ?: 0.0,

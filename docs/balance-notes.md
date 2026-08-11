@@ -2,32 +2,44 @@
 
 Generated from catalog `forge-live-sha256:e71cd31ec5350bfdab2dd154e9f5883c4469e0e2025a0083e138af86f9833dfb` across 339 deterministic cells. Regenerate the full JSON, CSV, and Markdown evidence with the commands in `testing.md`.
 
+## Variety-fix result
+
+Dispatch readiness now derives its target from aggression, the preference-selected lead recruit, and the cheapest distinct support recruit. Repeated recruits receive diminishing marginal utility during squad planning. These are formulas over the live catalog and learned preferences, not kits, roles, or archetypes.
+
+| Measure | Before | After |
+|---|---:|---:|
+| Mean squad size, dispatching longitudinal cells | 1.00 | 2.00 |
+| Worst three-day dominant recruit share | 90.0% | 50.0% |
+| Recruits appearing across mature cells | 3 of 6 | 6 of 6 |
+| Mature distinct recruits per cell | 3 | 3–5 |
+
+All 318 longitudinal cells that dispatched formed exactly two-member squads. Six of 81 one-day cells in the harshest sampled environment had not dispatched yet; every three-day cell dispatched.
+
 ## Longitudinal overview
 
 | Horizon | Cells | Raids/day | Distinct recruits | Dominant share | Equipment coverage |
 |---:|---:|---:|---:|---:|---:|
-| 1 day | 81 | 3.22 | 1.86 | 71.7% | 30.8% |
-| 3 days | 81 | 2.26 | 2.60 | 62.2% | 41.7% |
-| 10 days | 81 | 1.36 | 2.96 | 52.8% | 48.6% |
-| 30 days | 81 | 1.06 | 3.00 | 45.5% | 54.5% |
+| 1 day | 81 | 1.30 | 2.07 | 46.3% | 46.3% |
+| 3 days | 81 | 1.00 | 2.90 | 48.9% | 52.9% |
+| 10 days | 81 | 0.60 | 3.41 | 39.3% | 61.8% |
+| 30 days | 81 | 0.43 | 3.95 | 36.5% | 62.6% |
 
 ## One-factor sensitivity
 
 | Factor | Dispatch range | Dominant-share range | Peak-threat range |
 |---|---:|---:|---:|
-| aggression | 10–10 | 50.0%–60.0% | 5.92–6.08 |
-| reserve | 8–17 | 52.9%–62.5% | 5.92–6.06 |
-| distance | 10–10 | 60.0%–60.0% | 5.92–5.92 |
-| idle return | 9–28 | 81.5%–100.0% | 9.55–16.80 |
-| learning | 10–12 | 40.0%–100.0% | 4.78–6.54 |
+| aggression | 2–6 | 25.0%–41.7% | 12.30–25.96 |
+| reserve | 5–9 | 38.9%–41.7% | 11.98–13.26 |
+| distance | 6–6 | 41.7%–41.7% | 12.30–12.30 |
+| idle return | 9–28 | 28.6%–39.1% | 18.94–26.71 |
+| learning | 4–6 | 37.5%–50.0% | 10.54–29.22 |
 
-## Findings and candidates
+## Remaining balance notes
 
-1. **Squad formation collapses to minimum affordability.** Mean squad size is exactly `1.0` throughout all 324 longitudinal cells. Dispatch fires as soon as the pool can afford the cheapest recruit, before it accumulates toward the aggression budget. Separate dispatch readiness from affordability by waiting for a formulaic desired-threat threshold. This is the highest-confidence candidate.
-2. **Roster variety remains narrow.** The worst three-day cell is 90% one recruit, and only three of six live recruits appear in any mature cell. Add a bounded marginal-utility penalty derived from members already selected and recent deployment share.
-3. **Material choice converges.** Mature cells can extract only two material types and manufacture one formulation. Add bounded ledger-abundance and recent-extraction scarcity terms to material utility.
-4. **Pressure cadence varies too widely.** The envelope ranges from `0.67` to `4.00` raids per day. Make cooldown recovery a smooth function of aggression, surviving threat, and recent cycle duration after fixing dispatch readiness.
-5. **Equipment expression is weak.** The lowest mature equipment coverage is `48.8%` despite retained armory stock. Score assignment by capability gain, action compatibility, and bounded stock age.
-6. **Idle aggression can run away.** Shortening idle return from 24,000 to 6,000 ticks raises ten-day completed campaigns from 8 to 27 and reaches maximum aggression. Scale the aggression increment by disengagement duration relative to travel time instead of applying one flat point per return.
+1. **Cadence is now lower but more substantial.** The mature envelope averages `0.43` raids/day versus `1.06` singleton raids/day before the fix. Tune mobilization or cooldown if playtests feel quiet; weakening readiness would directly reintroduce singleton raids.
+2. **Long-term variety is materially better.** Mature cells average `3.95` distinct recruits and all six appear across the envelope. A bounded, decaying recent-deployment term remains a possible later improvement if players notice repetition across consecutive campaigns.
+3. **Material choice still converges.** Some mature cells extract one material type and manufacture one formulation. Ledger abundance and recent extraction frequency remain the strongest next formula candidates.
+4. **Equipment expression remains uneven.** The weakest mature cell equips `42.9%` of members despite retained stock. Capability gain, action compatibility, and bounded stock age should inform later assignment scoring.
+5. **Idle-return pressure still works.** Idle-return sensitivity produces 9–28 dispatches over ten days, 28.6%–39.1% dominant share, and final aggression of 14–18.
 
-Minecraft pathfinding and combat remain bounded observations. Economy, selection, learning, travel, return, and reconciliation use the same compiled engine as Forge.
+Minecraft pathfinding and combat remain bounded observations. Economy, readiness, selection, learning, travel, return, and reconciliation use the same compiled engine as Forge.

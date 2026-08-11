@@ -75,10 +75,35 @@ class WarbandEngineTest {
         assertTrue(first.members.isNotEmpty())
         assertEquals(first.members.sumOf(MemberManifest::threat), first.committedThreat)
         assertEquals(2 - first.members.count { it.equipment != null }, firstState.warbands.getValue("warband").armory.size)
+        assertEquals(2, first.members.map { it.recruitId }.distinct().size)
+    }
+
+    @Test fun `dispatch waits for formulaic readiness instead of minimum affordability`() {
+        val state = state(reserve = 0.0, pool = 10.9)
+        val player = PlayerFact("player", ChunkPosition("overworld", 12, 0), setOf("warband"))
+        val waiting = WarbandEngine.transition(state, EngineFrame(0L, listOf(player)), catalog, rules)
+        assertTrue(waiting.events.none { it.type == "dispatched" })
+        state.warbands.getValue("warband").raidPool = 11.0
+        val dispatched = WarbandEngine.transition(state, EngineFrame(0L, listOf(player)), catalog, rules)
+        assertTrue(dispatched.events.any { it.type == "dispatched" })
+        assertEquals(2, state.campaigns.values.single().members.map { it.recruitId }.distinct().size)
+    }
+
+    @Test fun `readiness accounts for a preferred expensive lead and distinct support`() {
+        val state = state(reserve = 0.0, pool = 12.9)
+        val warband = state.warbands.getValue("warband")
+        warband.preferences["range"] = 8.0
+        val officer = state.officers.getValue("captain")
+        val expensiveCatalog = catalog.copy(recruits = catalog.recruits.map { recruit ->
+            if (recruit.id == "bowed") recruit.copy(baseThreat = 8.0) else recruit
+        })
+        assertEquals(0.0, WarbandEngine.raidBudget(state, warband, officer, expensiveCatalog, rules))
+        warband.raidPool = 13.0
+        assertEquals(13.0, WarbandEngine.raidBudget(state, warband, officer, expensiveCatalog, rules))
     }
 
     @Test fun `automatic dispatch travels materializes fights and returns conservatively`() {
-        val state = state(pool = 12.0)
+        val state = state(pool = 20.0)
         state.warbands.getValue("warband").aggression = 12
         val player = PlayerFact("player", ChunkPosition("overworld", 12, 0), setOf("warband"))
         val dispatched = WarbandEngine.transition(state, EngineFrame(0L, listOf(player)), catalog, rules)
@@ -108,7 +133,7 @@ class WarbandEngineTest {
     }
 
     @Test fun `idle active campaign requests snapshot return`() {
-        val state = state(pool = 6.0)
+        val state = state(pool = 12.0)
         WarbandEngine.transition(state, EngineFrame(0L, commands = listOf(EngineCommand.Dispatch("warband", "player"))), catalog, rules)
         val campaign = state.campaigns.values.single()
         campaign.phase = CampaignPhase.ACTIVE
@@ -133,7 +158,7 @@ class WarbandEngineTest {
     }
 
     @Test fun `combat updates warband captain and empirical threat`() {
-        val state = state(pool = 6.0)
+        val state = state(pool = 12.0)
         WarbandEngine.transition(state, EngineFrame(0L, commands = listOf(EngineCommand.Dispatch("warband", "player"))), catalog, rules)
         val campaign = state.campaigns.values.single().also { it.phase = CampaignPhase.ACTIVE; it.physical = true }
         val beforeWarband = state.warbands.getValue("warband").preferences.getValue("range")

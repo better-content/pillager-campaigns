@@ -118,7 +118,17 @@ object PillagerEngineBridge {
         }
     }
 
-    fun raidBudget(warband: PillagerWarband, minimumThreat: Double): Double = rules().raidBudget(coreWarband(warband), minimumThreat)
+    fun raidBudget(
+        warband: PillagerWarband,
+        officerPreferences: Map<String, Double>,
+        recruits: List<RecruitDefinition>,
+        sequence: Long,
+    ): Double {
+        val core = coreWarband(warband)
+        val officer = OfficerState("live-officer", core.factionId, core.id, officerPreferences.toMutableMap())
+        val state = EngineState(sequence = sequence.and(Long.MAX_VALUE), warbands = linkedMapOf(core.id to core), officers = linkedMapOf(officer.id to officer))
+        return WarbandEngine.raidBudget(state, core, officer, EngineCatalog("forge-live", recruits), rules())
+    }
 
     fun coreWarband(warband: PillagerWarband): WarbandState = WarbandState(
         id = warband.id.toString(),

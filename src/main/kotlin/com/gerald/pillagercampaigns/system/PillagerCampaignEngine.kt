@@ -85,11 +85,11 @@ object PillagerCampaignEngine {
             val assignment = chooseAssignment(level, players, warband, data, now, maxRange, targetedPlayers) ?: continue
             val captain = assignment.first
             val target = assignment.second
-            val minimumThreat = PillagerRuntime.minimumRecruitThreat(level, warband) ?: continue
-            if (warband.raidPool < minimumThreat) continue
-            val budgetThreat = PillagerEngineBridge.raidBudget(warband, minimumThreat)
             val loadoutSeed = ThreadLocalRandom.current().nextLong()
-            val plannedMembers = PillagerRuntime.planCampaignSquad(level, warband, captain, budgetThreat, loadoutSeed)
+            val recruits = PillagerRuntime.recruitDefinitions(level, warband)
+            val budgetThreat = PillagerEngineBridge.raidBudget(warband, captain.preferenceGraph, recruits, loadoutSeed)
+            if (budgetThreat <= 0.0) continue
+            val plannedMembers = PillagerRuntime.planCampaignSquad(level, warband, captain, budgetThreat, loadoutSeed, recruits)
             if (plannedMembers.isEmpty()) continue
             val committedThreat = plannedMembers.sumOf { it.threat }
             warband.raidPool -= committedThreat

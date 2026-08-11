@@ -203,10 +203,11 @@ object PillagerRuntime {
         officer: PillagerOfficer,
         budget: Double,
         sequence: Long,
+        recruits: List<RecruitDefinition> = recruitDefinitions(level, warband),
     ): List<PlannedCampaignMember> {
         val armory = warband.armory.toList()
         val plan = PillagerEngineBridge.planSquad(
-            warband, officer.preferenceGraph, budget, recruitDefinitions(level, warband), armory, sequence,
+            warband, officer.preferenceGraph, budget, recruits, armory, sequence,
         )
         plan.mapNotNull(PillagerEngineBridge.PlannedLiveMember::equipmentIndex).toSet().sortedDescending()
             .forEach { index -> if (index in warband.armory.indices) warband.armory.removeAt(index) }

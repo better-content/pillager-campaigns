@@ -27,8 +27,19 @@ data class WarbandRules(
 
     fun extractionTicks(environment: EnvironmentTraits): Double = recruitTicksPerThreat(environment) / 2.0
 
-    fun raidBudget(warband: WarbandState, minimumThreat: Double): Double =
-        minOf(warband.raidPool, maxOf(warband.aggression.toDouble(), minimumThreat))
+    /**
+     * Derives the threat needed to express the warband's current aggression.
+     * The additional recruit term grows
+     * continuously across the aggression range: young warbands wait long enough
+     * to form mixed squads, while highly aggressive warbands can field units
+     * whose individual threat exceeds the raw aggression value.
+     */
+    fun aggressionRaidThreat(warband: WarbandState, minimumThreat: Double): Double {
+        val aggressionRange = (maximumAggression - minimumAggression).coerceAtLeast(1)
+        val normalizedAggression =
+            (warband.aggression - minimumAggression).toDouble().div(aggressionRange).coerceIn(0.0, 1.0)
+        return warband.aggression + minimumThreat * (1.0 + normalizedAggression)
+    }
 
     fun effectivePreferences(warband: WarbandState, officer: OfficerState?): CapabilityVector {
         // Preserve the current live precedence as the extraction baseline: warband values
