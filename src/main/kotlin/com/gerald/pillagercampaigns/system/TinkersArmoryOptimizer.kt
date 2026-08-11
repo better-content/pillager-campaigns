@@ -1,6 +1,14 @@
 package com.gerald.pillagercampaigns.system
 
 import com.gerald.pillagercampaigns.data.PillagerWarband
+import com.gerald.pillagercampaigns.engine.CapabilityVector
+import com.gerald.pillagercampaigns.engine.ChunkPosition
+import com.gerald.pillagercampaigns.engine.EngineCatalog
+import com.gerald.pillagercampaigns.engine.EngineState
+import com.gerald.pillagercampaigns.engine.EquipmentDefinition
+import com.gerald.pillagercampaigns.engine.MaterialDefinition
+import com.gerald.pillagercampaigns.engine.WarbandEngine
+import com.gerald.pillagercampaigns.engine.WarbandState
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.server.MinecraftServer
 import net.minecraft.world.item.ItemStack
@@ -23,6 +31,8 @@ object TinkersArmoryOptimizer {
     private const val COST_TAG = "PillagerMaterialCost"
     private const val FORMULATION_TAG = "PillagerTconFormulation"
 
+    internal data class LiveEquipmentCandidate(val definition: EquipmentDefinition, val stack: ItemStack)
+
     fun seedLedger(warband: PillagerWarband, amount: Double = 24.0) {
         if (warband.materialLedger.isNotEmpty()) return
         val materials = extractableMaterials(warband).take(3)
@@ -31,27 +41,56 @@ object TinkersArmoryOptimizer {
     }
 
     fun extract(warband: PillagerWarband, amount: Double = 1.0): Boolean {
-        val material = extractableMaterials(warband).maxByOrNull {
-            it.tier * (warband.environment.mineralPotential + warband.environment.exoticPotential * it.tier) +
-                deterministicFraction(warband, it.identifier.toString(), warband.materialLedger.size)
-        } ?: return false
-        val id = material.identifier.toString()
+        val core = engineWarband(warband)
+        val state = EngineState(sequence = warband.materialLedger.size.toLong(), warbands = linkedMapOf(core.id to core))
+        val material = WarbandEngine.chooseMaterial(state, core, EngineCatalog("live-tcon", emptyList(), materialDefinitions(warband))) ?: return false
+        val id = material.id
         warband.materialLedger[id] = warband.materialLedger.getOrDefault(id, 0.0) + amount.coerceAtLeast(0.0)
         return true
     }
 
     fun create(warband: PillagerWarband, server: MinecraftServer): ItemStack? {
-        if (!MaterialRegistry.isFullyLoaded()) return null
+        val candidates = liveEquipmentCandidates(warband, server)
+        if (candidates.isEmpty()) return null
+        val core = engineWarband(warband)
+        val state = EngineState(sequence = warband.armory.size.toLong(), warbands = linkedMapOf(core.id to core))
+        val selected = WarbandEngine.chooseEquipment(
+            state, core, EngineCatalog("live-tcon", emptyList(), equipment = candidates.map(LiveEquipmentCandidate::definition)),
+        ) ?: return null
+        return realize(warband, candidates.single { it.definition.id == selected.id }, consume = true)
+    }
+
+    internal fun materialDefinitions(warband: PillagerWarband): List<MaterialDefinition> =
+        if (!MaterialRegistry.isFullyLoaded()) emptyList() else MaterialRegistry.getInstance().visibleMaterials.asSequence()
+            .filter { it.isCraftable && !it.isHidden }
+            .map { material ->
+                val id = material.identifier.toString()
+                MaterialDefinition(
+                    id,
+                    material.tier.coerceAtLeast(1),
+                    FormulaicWarbandRules.extractionThreshold(
+                        material.tier,
+                        WarbandFormulaData.ingredientWeights.keys.count { it.startsWith(id) },
+                    ),
+                    CapabilityVector(durability = material.tier.toDouble(), control = deterministicFraction(warband, id, 0)),
+                )
+            }.sortedBy(MaterialDefinition::id).toList()
+
+    internal fun liveEquipmentCandidates(warband: PillagerWarband, server: MinecraftServer): List<LiveEquipmentCandidate> {
+        if (!MaterialRegistry.isFullyLoaded()) return emptyList()
         val materials = MaterialRegistry.getInstance().visibleMaterials.asSequence()
             .filter { it.isCraftable && !it.isHidden && warband.materialLedger.getOrDefault(it.identifier.toString(), 0.0) > 0.0 }
             .sortedBy { it.identifier.toString() }.toList()
-        if (materials.isEmpty()) return null
+        if (materials.isEmpty()) return emptyList()
+        val materialDefinitions = materialDefinitions(warband).associateBy(MaterialDefinition::id)
+        val core = engineWarband(warband)
+        val engineState = EngineState(sequence = warband.armory.size.toLong(), warbands = linkedMapOf(core.id to core))
 
         val partCosts = server.recipeManager.getAllRecipesFor(TinkerRecipeTypes.PART_BUILDER.get())
             .groupBy { recipe -> ForgeRegistries.ITEMS.getKey(recipe.getResultItem(server.registryAccess()).item)?.toString().orEmpty() }
             .mapValues { (_, recipes) -> recipes.minOf { it.cost }.coerceAtLeast(1) }
 
-        val candidates = ForgeRegistries.ITEMS.values.asSequence().mapNotNull { item ->
+        return ForgeRegistries.ITEMS.values.asSequence().mapNotNull { item ->
             val modifiable = item as? IModifiable ?: return@mapNotNull null
             val definition = modifiable.toolDefinition
             if (!definition.hasMaterials() || !definition.isDataLoaded) return@mapNotNull null
@@ -62,9 +101,10 @@ object TinkersArmoryOptimizer {
             val chosen = parts.mapIndexedNotNull { index, part ->
                 val partId = ForgeRegistries.ITEMS.getKey(part.asItem())?.toString() ?: return@mapIndexedNotNull null
                 val units = partCosts[partId]?.toDouble() ?: return@mapIndexedNotNull null
-                materials.asSequence()
-                    .filter { part.canUseMaterial(it.identifier) && available.getOrDefault(it.identifier.toString(), 0.0) >= units }
-                    .maxByOrNull { material -> materialScore(warband, material, index) }
+                val compatible = materials.filter { part.canUseMaterial(it.identifier) }.mapTo(linkedSetOf()) { it.identifier.toString() }
+                WarbandEngine.choosePartMaterial(
+                    engineState, core, materialDefinitions.values, compatible, available, units, index,
+                )?.let { selected -> materials.firstOrNull { it.identifier.toString() == selected.id } }
                     ?.also { material ->
                         val id = material.identifier.toString()
                         available[id] = available.getOrDefault(id, 0.0) - units
@@ -74,28 +114,49 @@ object TinkersArmoryOptimizer {
             if (chosen.size != parts.size || cost.isEmpty()) return@mapNotNull null
             val tool = runCatching { ToolStack.createTool(item, definition, MaterialNBT(chosen)).also { it.rebuildStats() } }.getOrNull() ?: return@mapNotNull null
             val stats = tool.stats
-            val attributes = mapOf(
-                "durability" to stats.get(ToolStats.DURABILITY).toDouble() / 1000.0,
-                "damage" to stats.get(ToolStats.ATTACK_DAMAGE).toDouble() / 10.0,
-                "mobility" to stats.get(ToolStats.ATTACK_SPEED).toDouble() / 4.0,
-                "range" to (stats.get(ToolStats.VELOCITY).toDouble() + stats.get(ToolStats.DRAW_SPEED).toDouble()) / 4.0,
+            val attributes = CapabilityVector(
+                durability = stats.get(ToolStats.DURABILITY).toDouble() / 1000.0,
+                damage = stats.get(ToolStats.ATTACK_DAMAGE).toDouble() / 10.0,
+                mobility = stats.get(ToolStats.ATTACK_SPEED).toDouble() / 4.0,
+                range = (stats.get(ToolStats.VELOCITY).toDouble() + stats.get(ToolStats.DRAW_SPEED).toDouble()) / 4.0,
             )
-            val id = ForgeRegistries.ITEMS.getKey(item)?.toString() ?: return@mapNotNull null
-            Triple(tool.createStack(), FormulaicWarbandRules.score(FormulaCandidate(id, 1.0, attributes), warband.preferences, emptyMap()), cost)
-        }.toList()
+            val itemId = ForgeRegistries.ITEMS.getKey(item)?.toString() ?: return@mapNotNull null
+            val formulation = chosen.map { it.id.toString() }
+            val id = "$itemId|${formulation.joinToString(",")}"
+            val actions = when {
+                attributes.range > 0.0 -> setOf("ranged")
+                attributes.damage > 0.0 -> setOf("melee")
+                else -> emptySet()
+            }
+            LiveEquipmentCandidate(EquipmentDefinition(id, formulation, attributes, cost, actions), tool.createStack())
+        }.sortedBy { it.definition.id }.toList()
+    }
 
-        val selected = candidates.maxWithOrNull(
-            compareBy<Triple<ItemStack, Double, Map<String, Double>>> { it.second }
-                .thenByDescending { ForgeRegistries.ITEMS.getKey(it.first.item).toString() },
-        ) ?: return null
-        if (selected.third.any { (id, amount) -> warband.materialLedger.getOrDefault(id, 0.0) < amount }) return null
-        selected.third.forEach { (id, amount) -> warband.materialLedger[id] = (warband.materialLedger.getOrDefault(id, 0.0) - amount).coerceAtLeast(0.0) }
-        selected.first.orCreateTag.put(COST_TAG, CompoundTag().also { tag -> selected.third.forEach(tag::putDouble) })
-        selected.first.orCreateTag.putString(FORMULATION_TAG, selected.first.tag?.getString("tic_materials").orEmpty())
-        return selected.first
+    internal fun realize(warband: PillagerWarband, candidate: LiveEquipmentCandidate, consume: Boolean): ItemStack? {
+        if (consume && candidate.definition.cost.any { (id, amount) -> warband.materialLedger.getOrDefault(id, 0.0) < amount }) return null
+        if (consume) candidate.definition.cost.forEach { (id, amount) ->
+            warband.materialLedger[id] = (warband.materialLedger.getOrDefault(id, 0.0) - amount).coerceAtLeast(0.0)
+        }
+        return candidate.stack.copy().also { stack ->
+            stack.orCreateTag.put(COST_TAG, CompoundTag().also { tag -> candidate.definition.cost.forEach(tag::putDouble) })
+            stack.orCreateTag.putString(FORMULATION_TAG, candidate.definition.formulation.joinToString(","))
+        }
     }
 
     internal fun cost(stack: ItemStack): Map<String, Double> = stack.tag?.getCompound(COST_TAG)?.let { tag -> tag.allKeys.associateWith(tag::getDouble) }.orEmpty()
+
+    private fun engineWarband(warband: PillagerWarband) = WarbandState(
+        warband.id.toString(), warband.factionId.toString(),
+        ChunkPosition(warband.dimension.toString(), warband.rallyChunkX, warband.rallyChunkZ),
+        warband.capacity.toDouble(), warband.reserve.toDouble(), warband.raidPool,
+        garrisonThreat = warband.garrisonThreat.values.sum(), aggression = warband.aggression,
+        environment = com.gerald.pillagercampaigns.engine.EnvironmentTraits(
+            warband.environment.habitability, warband.environment.biomass, warband.environment.mineralPotential,
+            warband.environment.exoticPotential, warband.environment.travelFriction,
+        ),
+        preferences = warband.preferences.toMutableMap(), materialLedger = warband.materialLedger.toMutableMap(),
+        empiricalThreat = warband.empiricalThreat.toMutableMap(),
+    )
 
     private fun extractableMaterials(warband: PillagerWarband): List<IMaterial> {
         if (!MaterialRegistry.isFullyLoaded()) return emptyList()
@@ -104,10 +165,6 @@ object TinkersArmoryOptimizer {
             .filter { material -> FormulaicWarbandRules.extractionThreshold(material.tier, WarbandFormulaData.ingredientWeights.keys.count { it.startsWith(material.identifier.toString()) }) <= available }
             .sortedBy { it.identifier.toString() }.toList()
     }
-
-    private fun materialScore(warband: PillagerWarband, material: IMaterial, salt: Int): Double =
-        material.tier * (1.0 + warband.preferences.getOrDefault("exotic", 0.0) * warband.environment.exoticPotential) +
-            deterministicFraction(warband, material.identifier.toString(), salt)
 
     private fun deterministicFraction(warband: PillagerWarband, id: String, salt: Int): Double =
         ((warband.id.mostSignificantBits xor id.hashCode().toLong() xor salt.toLong()) and 1023L) / 1024.0

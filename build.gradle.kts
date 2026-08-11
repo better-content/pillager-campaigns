@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+import org.gradle.api.tasks.SourceSetContainer
 
 plugins {
     idea
@@ -27,6 +28,9 @@ base {
     archivesName.set(modId)
 }
 
+evaluationDependsOn(":engine")
+val engineMainSourceSet = project(":engine").extensions.getByType<SourceSetContainer>().getByName("main")
+
 java {
     toolchain.languageVersion.set(JavaLanguageVersion.of(17))
     withSourcesJar()
@@ -49,6 +53,7 @@ minecraft {
             mods {
                 create(modId) {
                     source(sourceSets.main.get())
+                    source(engineMainSourceSet)
                 }
             }
         }
@@ -98,8 +103,8 @@ tasks.processResources {
 
 tasks.jar {
     from("src/compat/resources")
-    dependsOn(":engine:jar")
-    from({ zipTree(project(":engine").tasks.named<Jar>("jar").get().archiveFile.get().asFile) })
+    dependsOn(":engine:classes")
+    from(engineMainSourceSet.output)
     finalizedBy("reobfJar")
 }
 
@@ -161,10 +166,12 @@ tasks.jacocoTestReport {
                         "**/PillagerCampaignsEvents*",
                         "**/PillagerCampaignsConfig*",
                         "**/PillagerCampaignEngine*",
+                        "**/PillagerEngineBridge*",
                         "**/PillagerRuntime*",
                         "**/PillagerWarbandPresenceSystem*",
                         "**/PillagerWarbandDiscoveryService*",
                         "**/PillagerWarbandDiscoveryRules*",
+                        "**/SquadRoutePlanner*",
                         "**/PillagerDiscoveryCoordinator*",
                         "**/PillagerSpawnPlacementRules*",
                         "**/EnvironmentSampler*",
@@ -206,6 +213,8 @@ tasks.register("verifyFast") {
     group = "verification"
     description = "Runs the fast deterministic verification lane."
     dependsOn(tasks.named("check"))
+    dependsOn(":engine:check")
+    dependsOn(":runner:test")
 }
 
 tasks.register("verifyFull") {

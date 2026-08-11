@@ -87,7 +87,7 @@ object PillagerCampaignEngine {
             val target = assignment.second
             val minimumThreat = PillagerRuntime.minimumRecruitThreat(level, warband) ?: continue
             if (warband.raidPool < minimumThreat) continue
-            val committedThreat = minOf(warband.raidPool.toInt(), maxOf(warband.aggression, kotlin.math.ceil(minimumThreat).toInt()))
+            val committedThreat = kotlin.math.ceil(PillagerEngineBridge.raidBudget(warband, minimumThreat)).toInt()
             if (committedThreat <= 0) continue
             warband.raidPool -= committedThreat
             val campaign = PillagerCampaign(
@@ -161,15 +161,22 @@ object PillagerCampaignEngine {
                     val alive = PillagerRuntime.countLiveMembers(level, campaign.squadMemberIds)
                     val liveThreat = PillagerRuntime.liveThreat(level, campaign)
                     val conservation = data.officers[campaign.officerId]?.preferenceGraph?.get("conservation") ?: 0.5
-                    val retreatAt = FormulaicWarbandRules.retreatThreshold(conservation, data.warbands[campaign.originWarbandId]?.aggression ?: 6)
-                    if (alive < MIN_ACTIVE_LIVE_MEMBERS) {
-                        toResolve += campaign.id to CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT
-                    } else if (campaign.committedThreat > 0 && liveThreat / campaign.committedThreat <= retreatAt) {
-                        startReturn(campaign, now, CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT, "morale")
-                        data.markChanged()
-                    } else if (now - campaign.lastCombatTick >= PillagerCampaignsConfig.idleReturnTicks.get()) {
-                        startReturn(campaign, now, CampaignOutcome.ABORTED, "idle", aggressionDelta = 1)
-                        data.markChanged()
+                    val coreRules = com.gerald.pillagercampaigns.engine.WarbandRules(idleReturnTicks = PillagerCampaignsConfig.idleReturnTicks.get().toLong())
+                    when (com.gerald.pillagercampaigns.engine.CampaignDecisions.activeDecision(
+                        alive, liveThreat, campaign.committedThreat.toDouble(), conservation,
+                        data.warbands[campaign.originWarbandId]?.aggression ?: 6, now, campaign.lastCombatTick, coreRules,
+                    )) {
+                        com.gerald.pillagercampaigns.engine.ActiveCampaignDecision.DEFEATED ->
+                            toResolve += campaign.id to CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT
+                        com.gerald.pillagercampaigns.engine.ActiveCampaignDecision.MORALE_RETURN -> {
+                            startReturn(campaign, now, CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT, "morale")
+                            data.markChanged()
+                        }
+                        com.gerald.pillagercampaigns.engine.ActiveCampaignDecision.IDLE_RETURN -> {
+                            startReturn(campaign, now, CampaignOutcome.ABORTED, "idle", aggressionDelta = 1)
+                            data.markChanged()
+                        }
+                        com.gerald.pillagercampaigns.engine.ActiveCampaignDecision.CONTINUE -> Unit
                     }
                     return@forEach
                 }
@@ -661,31 +668,7 @@ object PillagerCampaignEngine {
 
 
     private fun advanceEconomies(server: MinecraftServer, data: PillagerWorldData, now: Long) {
-        data.warbands.values.asSequence().filter { !it.defeated }.forEach { warband ->
-            val elapsed = (now - warband.lastEconomyTick).coerceAtLeast(0L)
-            if (elapsed == 0L) return@forEach
-            warband.lastEconomyTick = now
-            warband.recruitTickDebt += elapsed
-            val recruitTicks = FormulaicWarbandRules.grossRecruitTicksPerStrength(warband.environment) * 20.0
-            while (warband.recruitTickDebt >= recruitTicks && warband.reserve + warband.raidPool < warband.capacity) {
-                warband.recruitTickDebt -= recruitTicks
-                warband.reserve += 1
-                if (warband.armory.size < warband.capacity) TinkersArmoryOptimizer.create(warband, server)?.let { warband.armory += it.save(CompoundTag()) }
-            }
-            warband.extractionTickDebt += elapsed
-            val extractionTicks = recruitTicks / 2.0
-            while (warband.extractionTickDebt >= extractionTicks) {
-                warband.extractionTickDebt -= extractionTicks
-                TinkersArmoryOptimizer.extract(warband)
-            }
-            warband.mobilizationTickDebt += elapsed
-            val mobilizeTicks = FormulaicWarbandRules.mobilizationTicksPerStrength(warband.environment) * 20.0
-            while (warband.mobilizationTickDebt >= mobilizeTicks && warband.reserve > 0) {
-                warband.mobilizationTickDebt -= mobilizeTicks
-                warband.reserve -= 1
-                warband.raidPool += 1.0
-            }
-        }
+        PillagerEngineBridge.advanceEconomies(server, data, now)
     }
 
     private fun pruneResolved(data: PillagerWorldData, now: Long) {

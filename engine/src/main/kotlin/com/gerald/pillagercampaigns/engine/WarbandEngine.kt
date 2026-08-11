@@ -52,6 +52,40 @@ object WarbandEngine {
                 .thenByDescending { deterministicTie(warband.id, it.id, state.sequence + members.size) })
     }
 
+    fun chooseMaterial(state: EngineState, warband: WarbandState, catalog: EngineCatalog): MaterialDefinition? {
+        val available = warband.reserveThreat *
+            (0.5 + warband.environment.mineralPotential + warband.environment.exoticPotential)
+        return catalog.materials.asSequence().filter { it.extractionCost <= available + EPSILON }
+            .maxWithOrNull(compareBy<MaterialDefinition> {
+                it.tier * (warband.environment.mineralPotential + warband.environment.exoticPotential * it.tier) +
+                    it.capabilities.dot(preferences(warband))
+            }.thenByDescending { deterministicTie(warband.id, it.id, state.sequence) })
+    }
+
+    fun chooseEquipment(state: EngineState, warband: WarbandState, catalog: EngineCatalog): EquipmentDefinition? =
+        catalog.equipment.asSequence()
+            .filter { definition -> definition.cost.all { (id, amount) -> warband.materialLedger.getOrDefault(id, 0.0) + EPSILON >= amount } }
+            .maxWithOrNull(compareBy<EquipmentDefinition> { definition ->
+                // Preserve live baseline semantics: affordability is exact, then the
+                // functional maximum wins without an invented cost-efficiency curve.
+                definition.capabilities.dot(preferences(warband))
+            }.thenByDescending { deterministicTie(warband.id, it.id, state.sequence) })
+
+    fun choosePartMaterial(
+        state: EngineState,
+        warband: WarbandState,
+        materials: Collection<MaterialDefinition>,
+        compatibleIds: Set<String>,
+        available: Map<String, Double>,
+        requiredUnits: Double,
+        salt: Int,
+    ): MaterialDefinition? = materials.asSequence()
+        .filter { it.id in compatibleIds && available.getOrDefault(it.id, 0.0) + EPSILON >= requiredUnits }
+        .maxWithOrNull(compareBy<MaterialDefinition> { material ->
+            material.tier * (1.0 + warband.preferences.getOrDefault("exotic", 0.0) * warband.environment.exoticPotential) +
+                material.capabilities.dot(preferences(warband))
+        }.thenByDescending { deterministicTie(warband.id, it.id, state.sequence + salt) })
+
     fun validate(state: EngineState, catalog: EngineCatalog, rules: WarbandRules = WarbandRules()) {
         require(state.tick >= 0L && state.sequence >= 0L)
         state.warbands.values.forEach { warband ->
@@ -127,13 +161,7 @@ object WarbandEngine {
     }
 
     private fun extract(state: EngineState, warband: WarbandState, catalog: EngineCatalog, events: MutableList<EngineEvent>) {
-        val available = warband.reserveThreat *
-            (0.5 + warband.environment.mineralPotential + warband.environment.exoticPotential)
-        val selected = catalog.materials.asSequence().filter { it.extractionCost <= available + EPSILON }
-            .maxWithOrNull(compareBy<MaterialDefinition> {
-                it.tier * (warband.environment.mineralPotential + warband.environment.exoticPotential * it.tier) +
-                    it.capabilities.dot(preferences(warband))
-            }.thenByDescending { deterministicTie(warband.id, it.id, state.sequence) }) ?: return
+        val selected = chooseMaterial(state, warband, catalog) ?: return
         warband.materialLedger[selected.id] = warband.materialLedger.getOrDefault(selected.id, 0.0) + 1.0
         events += event(state, "extracted", warband.id, selected.id)
     }
@@ -145,11 +173,7 @@ object WarbandEngine {
         rules: WarbandRules,
         events: MutableList<EngineEvent>,
     ) {
-        val selected = catalog.equipment.asSequence()
-            .filter { definition -> definition.cost.all { (id, amount) -> warband.materialLedger.getOrDefault(id, 0.0) + EPSILON >= amount } }
-            .maxWithOrNull(compareBy<EquipmentDefinition> { definition ->
-                definition.capabilities.dot(preferences(warband)) / (definition.cost.values.sum() + 1.0)
-            }.thenByDescending { deterministicTie(warband.id, it.id, state.sequence) }) ?: return
+        val selected = chooseEquipment(state, warband, catalog) ?: return
         selected.cost.forEach { (id, amount) -> warband.materialLedger[id] = (warband.materialLedger.getOrDefault(id, 0.0) - amount).coerceAtLeast(0.0) }
         val manifest = EquipmentManifest(nextId(state, "equipment"), selected.id, selected.formulation, selected.cost, selected.capabilities, selected.actions)
         warband.armory += manifest
@@ -231,8 +255,16 @@ object WarbandEngine {
             if (player != null && (!player.eligible || player.protected) && campaign.phase != CampaignPhase.RETURNING) {
                 beginReturn(state, campaign.id, "target_ineligible", 0, events, effects)
             }
-            if (campaign.phase == CampaignPhase.ACTIVE && state.tick - campaign.lastCombatTick >= rules.idleReturnTicks) {
-                beginReturn(state, campaign.id, "idle", 1, events, effects)
+            if (campaign.phase == CampaignPhase.ACTIVE) {
+                val liveThreat = campaign.members.sumOf { it.threat * it.healthFraction }
+                val committed = campaign.members.sumOf(MemberManifest::threat)
+                val conservation = state.officers[campaign.officerId]?.preferences?.get("conservation") ?: 0.5
+                when (CampaignDecisions.activeDecision(campaign.members.size, liveThreat, committed, conservation, warband.aggression, state.tick, campaign.lastCombatTick, rules)) {
+                    ActiveCampaignDecision.DEFEATED, ActiveCampaignDecision.MORALE_RETURN ->
+                        beginReturn(state, campaign.id, "morale", 0, events, effects)
+                    ActiveCampaignDecision.IDLE_RETURN -> beginReturn(state, campaign.id, "idle", 1, events, effects)
+                    ActiveCampaignDecision.CONTINUE -> Unit
+                }
             }
             if (campaign.phase == CampaignPhase.ACTIVE || campaign.phase == CampaignPhase.MATERIALIZING || campaign.physical) return@forEach
 
@@ -292,8 +324,12 @@ object WarbandEngine {
         events += event(state, "combat_observed", campaign.id)
         val liveThreat = campaign.members.sumOf { it.threat * it.healthFraction }
         val committed = campaign.members.sumOf(MemberManifest::threat) + dead.sumOf(MemberManifest::threat)
-        if (campaign.members.isEmpty() || committed > 0.0 && liveThreat / committed <= 0.35) {
-            beginReturn(state, campaign.id, "morale", 0, events, effects)
+        val conservation = state.officers[campaign.officerId]?.preferences?.get("conservation") ?: 0.5
+        when (CampaignDecisions.activeDecision(campaign.members.size, liveThreat, committed, conservation, warband.aggression, state.tick, campaign.lastCombatTick, rules)) {
+            ActiveCampaignDecision.DEFEATED, ActiveCampaignDecision.MORALE_RETURN ->
+                beginReturn(state, campaign.id, "morale", 0, events, effects)
+            ActiveCampaignDecision.IDLE_RETURN -> beginReturn(state, campaign.id, "idle", 1, events, effects)
+            ActiveCampaignDecision.CONTINUE -> Unit
         }
     }
 
@@ -386,15 +422,12 @@ object WarbandEngine {
 
     private fun stepToward(from: ChunkPosition, to: ChunkPosition): ChunkPosition {
         if (from.dimension != to.dimension) return from
-        return when {
-            from.x != to.x -> from.copy(x = from.x + if (to.x > from.x) 1 else -1)
-            from.z != to.z -> from.copy(z = from.z + if (to.z > from.z) 1 else -1)
-            else -> from
-        }
+        val next = CampaignGeometry.stepToward(from.x, from.z, to.x, to.z)
+        return from.copy(x = next.first, z = next.second)
     }
 
     private fun manhattan(a: ChunkPosition, b: ChunkPosition): Int =
-        if (a.dimension != b.dimension) Int.MAX_VALUE else kotlin.math.abs(a.x - b.x) + kotlin.math.abs(a.z - b.z)
+        if (a.dimension != b.dimension) Int.MAX_VALUE else CampaignGeometry.manhattan(a.x, a.z, b.x, b.z)
 
     private fun deterministicTie(owner: String, candidate: String, sequence: Long): Long {
         var value = 0xcbf29ce484222325UL.toLong()

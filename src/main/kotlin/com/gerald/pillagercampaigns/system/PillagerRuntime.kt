@@ -276,17 +276,11 @@ object PillagerRuntime {
             val measured = empiricalThreat(mob) * WarbandFormulaData.threatCorrections.getOrDefault(id, 1.0)
             val threat = warband.empiricalThreat.getOrDefault(id, measured).coerceAtLeast(1.0)
             if (threat > budget && budget != Double.MAX_VALUE) { mob.discard(); return@mapNotNull null }
-            val attributes = mapOf(
-                "durability" to (mob.getAttributeValue(Attributes.MAX_HEALTH) + mob.getAttributeValue(Attributes.ARMOR) * 2.0) / 40.0,
-                "damage" to mob.getAttributeValue(Attributes.ATTACK_DAMAGE) / 8.0,
-                "mobility" to mob.getAttributeValue(Attributes.MOVEMENT_SPEED) / 0.3,
-                "range" to mob.getAttributeValue(Attributes.FOLLOW_RANGE) / 32.0,
-            )
-            Triple(mob, threat, FormulaicWarbandRules.score(FormulaCandidate(id, threat, attributes), preferences + warband.preferences, emptyMap()) + random.nextDouble() * 1.0e-6)
+            PillagerEngineBridge.LiveRecruit(mob, PillagerEngineBridge.recruitDefinition(id, threat, mob))
         }
-        val chosen = candidates.maxByOrNull { it.third } ?: return null
-        candidates.asSequence().filter { it !== chosen }.forEach { it.first.discard() }
-        return chosen.first to chosen.second
+        val chosen = PillagerEngineBridge.chooseRecruit(warband, preferences, budget, candidates, random.nextLong()) ?: return null
+        candidates.asSequence().filter { it !== chosen }.forEach { it.mob.discard() }
+        return chosen.mob to chosen.definition.baseThreat
     }
 
     private fun recruitCandidates(level: ServerLevel, warband: PillagerWarband): List<Pair<String, Double>> =
