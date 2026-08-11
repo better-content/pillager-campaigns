@@ -62,6 +62,7 @@ data class ResourceDefinition(
     val unitsPerItem: ResourceVector,
     val mass: Double = 1.0,
     val environmentalAffinity: EnvironmentTraits = EnvironmentTraits(),
+    val environmentalAvailability: Double = 1.0,
     val maximumStackSize: Int = 64,
 )
 

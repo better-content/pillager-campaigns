@@ -11,7 +11,11 @@ import net.minecraftforge.registries.ForgeRegistries
 
 /** Derives logistics uses from registry-visible item behavior and tags. */
 object WarbandResourceCatalog {
-    fun definitions(): List<ResourceDefinition> = ForgeRegistries.ITEMS.values.asSequence().mapNotNull { item ->
+    @Volatile private var cached: List<ResourceDefinition>? = null
+
+    fun definitions(): List<ResourceDefinition> = cached ?: buildDefinitions().also { cached = it }
+
+    private fun buildDefinitions(): List<ResourceDefinition> = ForgeRegistries.ITEMS.values.asSequence().mapNotNull { item ->
         val id = ForgeRegistries.ITEMS.getKey(item)?.toString() ?: return@mapNotNull null
         val stack = ItemStack(item)
         val food = item.foodProperties
@@ -38,6 +42,7 @@ object WarbandResourceCatalog {
                 exoticPotential = if (stack.rarity.ordinal > 1) 0.8 else 0.1,
                 travelFriction = if (mineral) 0.7 else 0.2,
             ),
+            environmentalAvailability = 1.0 / (1.0 + units.sum() * 0.25 + stack.rarity.ordinal * 2.0),
             maximumStackSize = stack.maxStackSize.coerceAtLeast(1),
         )
     }.sortedBy(ResourceDefinition::itemId).toList()

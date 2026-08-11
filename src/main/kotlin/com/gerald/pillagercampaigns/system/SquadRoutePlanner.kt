@@ -1,5 +1,9 @@
 package com.gerald.pillagercampaigns.system
 
+import com.gerald.pillagercampaigns.engine.CapabilityVector
+import com.gerald.pillagercampaigns.engine.ChunkPosition
+import com.gerald.pillagercampaigns.engine.EcologyMath
+import com.gerald.pillagercampaigns.engine.TacticalPosition
 import net.minecraft.core.BlockPos
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.world.entity.Mob
@@ -33,7 +37,16 @@ object SquadRoutePlanner {
 
     fun reset() = plans.clear()
 
-    fun pursue(level: ServerLevel, mob: Mob, campaignId: UUID, target: Player, weaponRange: Double) {
+    fun pursue(
+        level: ServerLevel,
+        mob: Mob,
+        campaignId: UUID,
+        target: Player,
+        weaponRange: Double,
+        capabilities: CapabilityVector,
+        preferences: CapabilityVector,
+        cohesionRadius: Double,
+    ) {
         mob.target = target
         if (mob.distanceToSqr(target) <= weaponRange * weaponRange) return
         val now = level.gameTime
@@ -57,7 +70,7 @@ object SquadRoutePlanner {
         }
         if (now - plan.lastProbeTick >= PROBE_INTERVAL) {
             plan.lastProbeTick = now
-            probe(level, mob, target, plan)
+            probe(level, mob, campaignId, target, plan, capabilities, preferences, cohesionRadius)
         }
         val chosen = plan.chosen
         if (chosen != null) mob.navigation.moveTo(chosen.x + .5, chosen.y.toDouble(), chosen.z + .5, 1.15)
@@ -66,7 +79,16 @@ object SquadRoutePlanner {
 
     fun forget(campaignId: UUID) { plans.remove(campaignId) }
 
-    private fun probe(level: ServerLevel, mob: Mob, target: Player, plan: Plan) {
+    private fun probe(
+        level: ServerLevel,
+        mob: Mob,
+        campaignId: UUID,
+        target: Player,
+        plan: Plan,
+        capabilities: CapabilityVector,
+        preferences: CapabilityVector,
+        cohesionRadius: Double,
+    ) {
         val index = Math.floorMod(plan.probeIndex++, APPROACH_COUNT)
         val phase = ((target.uuid.mostSignificantBits xor target.uuid.leastSignificantBits) and 0xffffL) / 65536.0 * 2.0 * PI
         val angle = phase + index * (2.0 * PI / APPROACH_COUNT)
@@ -78,11 +100,25 @@ object SquadRoutePlanner {
         val candidate = BlockPos(x, y, z)
         val path = mob.navigation.createPath(candidate, 0) ?: return
         if (!path.canReach()) return
-        val score = -candidate.distSqr(target.blockPosition()).toDouble() - path.nodeCount * 0.25
+        val cover = listOf(candidate.north(), candidate.south(), candidate.east(), candidate.west())
+            .count { level.getBlockState(it).isCollisionShapeFullBlock(level, it) } / 4.0
+        val directionX = candidate.x + 0.5 - target.x
+        val directionZ = candidate.z + 0.5 - target.z
+        val length = kotlin.math.sqrt(directionX * directionX + directionZ * directionZ).coerceAtLeast(1.0e-6)
+        val flank = ((1.0 - (target.lookAngle.x * directionX + target.lookAngle.z * directionZ) / length) * 0.5).coerceIn(0.0, 1.0)
+        val nearestAlly = level.getEntitiesOfClass(Mob::class.java, mob.boundingBox.inflate(cohesionRadius.coerceAtLeast(4.0))) { ally ->
+            ally !== mob && ally.persistentData.hasUUID(PillagerRuntime.CAMPAIGN_TAG) &&
+                ally.persistentData.getUUID(PillagerRuntime.CAMPAIGN_TAG) == campaignId
+        }.minOfOrNull { it.distanceTo(mob).toDouble() } ?: cohesionRadius * 0.5
+        val tactical = TacticalPosition(
+            "$x:$y:$z", ChunkPosition(level.dimension().location().toString(), x shr 4, z shr 4),
+            path.nodeCount.toDouble(), kotlin.math.sqrt(candidate.distSqr(target.blockPosition()).toDouble()),
+            ((y - target.y) / 8.0).coerceIn(-1.0, 1.0), cover, flank, nearestAlly,
+        )
+        val score = EcologyMath.tacticalScore(tactical, capabilities, preferences, cohesionRadius)
         if (score > plan.chosenScore || plan.chosen == null) {
             plan.chosen = candidate
             plan.chosenScore = score
         }
     }
 }
-

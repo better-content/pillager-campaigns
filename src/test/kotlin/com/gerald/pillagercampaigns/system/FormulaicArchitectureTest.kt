@@ -34,7 +34,8 @@ class FormulaicArchitectureTest {
         val campaignSource = Files.readString(Path("src/main/kotlin/com/gerald/pillagercampaigns/system/PillagerCampaignEngine.kt"))
         assertTrue("FormulaMath" in formulaSource && "WarbandRules" in formulaSource)
         assertTrue("CampaignGeometry" in geometrySource)
-        assertTrue("PillagerEngineBridge.chooseRecruit" in runtimeSource)
+        assertTrue("PillagerEngineBridge.chooseRecruit" in runtimeSource && "PillagerEngineBridge.planCampaign" in runtimeSource)
         assertTrue("PillagerEngineBridge.advanceEconomies" in campaignSource && "PillagerEngineBridge.raidBudget" in campaignSource)
+        assertTrue("EcologyMath.consumeCargo" in campaignSource && "EcologyMath.tacticalScore" in Files.readString(Path("src/main/kotlin/com/gerald/pillagercampaigns/system/SquadRoutePlanner.kt")))
     }
 }

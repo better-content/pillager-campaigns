@@ -12,10 +12,16 @@ class ExperimentRunnerTest {
     private fun scenario() = ExperimentScenario(
         "runner-test", 16_000L, 20L,
         EngineState(
-            warbands = linkedMapOf("w" to WarbandState("w", "f", ChunkPosition("overworld", 0, 0), 96.0, 18.0, 12.0, preferences = linkedMapOf("damage" to 1.0))),
+            warbands = linkedMapOf("w" to WarbandState(
+                "w", "f", ChunkPosition("overworld", 0, 0), 96.0, 18.0, 12.0,
+                preferences = linkedMapOf("damage" to 1.0), stockpile = linkedMapOf("ration" to 24),
+            )),
             officers = linkedMapOf("o" to OfficerState("o", "f", "w")),
         ),
-        EngineCatalog("v1", listOf(RecruitDefinition("r", 5.0, CapabilityVector(damage = 1.0)))),
+        EngineCatalog(
+            "v1", listOf(RecruitDefinition("r", 5.0, CapabilityVector(damage = 1.0))),
+            resources = listOf(ResourceDefinition("ration", ResourceVector(sustenance = 1.0))),
+        ),
         players = listOf(PlayerFact("p", ChunkPosition("overworld", 7, 0), setOf("w"))),
     )
 
@@ -27,6 +33,8 @@ class ExperimentRunnerTest {
         assertTrue(first.summary.campaignsDispatched >= 1)
         assertTrue(first.summary.campaignsReturned >= 1)
         assertTrue(first.summary.eventCounts.getOrDefault("dematerialized", 0) >= 1)
+        assertTrue(first.summary.resourcesConsumed > 0)
+        assertTrue(first.summary.meanSupplySatisfaction in 0.0..1.0)
         val output = Files.createTempDirectory("warband-runner-test").toFile()
         ExperimentRunner(json).write(first, output)
         assertTrue(output.resolve("trace.jsonl").readLines().isNotEmpty())

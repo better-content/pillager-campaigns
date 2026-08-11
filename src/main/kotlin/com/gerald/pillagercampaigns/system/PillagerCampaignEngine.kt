@@ -14,6 +14,8 @@ import com.gerald.pillagercampaigns.data.PillagerOfficer
 import com.gerald.pillagercampaigns.data.PillagerWarband
 import com.gerald.pillagercampaigns.data.PillagerWorldData
 import com.gerald.pillagercampaigns.util.PillagerIdentity
+import com.gerald.pillagercampaigns.engine.EcologyMath
+import com.gerald.pillagercampaigns.engine.ResourceDefinition
 import net.minecraft.server.MinecraftServer
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.server.level.ServerPlayer
@@ -21,6 +23,8 @@ import net.minecraft.nbt.CompoundTag
 import net.minecraft.sounds.SoundEvents
 import net.minecraft.sounds.SoundSource
 import net.minecraft.world.level.GameType
+import net.minecraft.world.item.ItemStack
+import net.minecraft.world.item.ProjectileWeaponItem
 import java.util.UUID
 import java.util.concurrent.ThreadLocalRandom
 import kotlin.math.max
@@ -89,10 +93,10 @@ object PillagerCampaignEngine {
             val recruits = PillagerRuntime.recruitDefinitions(level, warband)
             val budgetThreat = PillagerEngineBridge.raidBudget(warband, captain.preferenceGraph, recruits, loadoutSeed)
             if (budgetThreat <= 0.0) continue
-            val plannedMembers = PillagerRuntime.planCampaignSquad(level, warband, captain, budgetThreat, loadoutSeed, recruits)
+            val manifest = PillagerRuntime.planCampaignManifest(level, warband, captain, target, loadoutSeed, now, recruits) ?: continue
+            val plannedMembers = manifest.members
             if (plannedMembers.isEmpty()) continue
             val committedThreat = plannedMembers.sumOf { it.threat }
-            warband.raidPool -= committedThreat
             val campaign = PillagerCampaign(
                 id = UUID.randomUUID(),
                 factionId = warband.factionId,
@@ -115,6 +119,7 @@ object PillagerCampaignEngine {
                 lastCombatTick = now,
                 committedThreat = committedThreat,
                 plannedMembers = plannedMembers.toMutableList(),
+                route = manifest.route.toMutableList(),
             )
             captain.state = OfficerState.DEPLOYED
             captain.lastTargetPlayerId = target.uuid
@@ -136,6 +141,7 @@ object PillagerCampaignEngine {
             val warband = data.warbands[campaign.originWarbandId] ?: return@forEach
             val player = server.playerList.players.firstOrNull { it.uuid == campaign.targetPlayerId }
             val level = player?.serverLevel() ?: server.allLevels.firstOrNull { it.dimension().location() == warband.dimension } ?: return@forEach
+            if (PillagerRuntime.releaseLoadedCaches(level, campaign) > 0) data.markChanged()
             if (campaign.state == CampaignState.RETURNING) {
                 advanceReturn(level, data, warband, campaign, now, dt, speed)
                 return@forEach
@@ -217,11 +223,20 @@ object PillagerCampaignEngine {
             campaign.targetChunkX = player.chunkPosition().x
             campaign.targetChunkZ = player.chunkPosition().z
             campaign.tickDebt += dt
-            while (campaign.tickDebt >= speed && campaign.state == CampaignState.TRAVELING) {
-                campaign.tickDebt -= speed
-                val next = CampaignMath.stepToward(campaign.currentChunkX, campaign.currentChunkZ, campaign.targetChunkX, campaign.targetChunkZ)
+            while (campaign.tickDebt >= travelTicks(speed, campaign) && campaign.state == CampaignState.TRAVELING) {
+                campaign.tickDebt -= travelTicks(speed, campaign)
+                val next = campaign.route.getOrNull(campaign.routeIndex++)?.let { it.chunkX to it.chunkZ }
+                    ?: CampaignMath.stepToward(campaign.currentChunkX, campaign.currentChunkZ, campaign.targetChunkX, campaign.targetChunkZ)
                 campaign.currentChunkX = next.first
                 campaign.currentChunkZ = next.second
+                if (!applyLogisticsSegment(level, warband, campaign)) {
+                    startReturn(campaign, now, CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT, "supply_attrition")
+                    break
+                }
+                if (EcologyMath.shouldRetreatFromShortage(campaign.deficitExposure, warband.aggression, PillagerEngineBridge.rules())) {
+                    startReturn(campaign, now, CampaignOutcome.ABORTED, "supply_shortage")
+                    break
+                }
                 val distance = CampaignMath.manhattan(campaign.currentChunkX, campaign.currentChunkZ, campaign.targetChunkX, campaign.targetChunkZ)
                 if (distance <= materializeDistance) {
                     campaign.state = CampaignState.READY_TO_MATERIALIZE
@@ -254,11 +269,12 @@ object PillagerCampaignEngine {
             return
         }
         campaign.tickDebt += dt
-        while (campaign.tickDebt >= speed && campaign.state == CampaignState.RETURNING) {
-            campaign.tickDebt -= speed
+        while (campaign.tickDebt >= travelTicks(speed, campaign) && campaign.state == CampaignState.RETURNING) {
+            campaign.tickDebt -= travelTicks(speed, campaign)
             val next = CampaignMath.stepToward(campaign.currentChunkX, campaign.currentChunkZ, warband.rallyChunkX, warband.rallyChunkZ)
             campaign.currentChunkX = next.first
             campaign.currentChunkZ = next.second
+            applyLogisticsSegment(level, warband, campaign)
             if (next.first == warband.rallyChunkX && next.second == warband.rallyChunkZ) {
                 finishReturn(data, campaign, now)
                 return
@@ -293,13 +309,15 @@ object PillagerCampaignEngine {
     private fun finishReturn(data: PillagerWorldData, campaign: PillagerCampaign, now: Long) {
         val warband = data.warbands[campaign.originWarbandId]
         if (warband != null) {
-            val survivingThreat = campaign.memberThreat.values.sum()
+            val survivingThreat = campaign.memberThreat.values.sum().takeIf { it > 0.0 }
+                ?: campaign.plannedMembers.sumOf { it.threat * it.healthFraction }
             warband.raidPool = (warband.raidPool + survivingThreat).coerceAtMost(warband.capacity.toDouble())
             warband.armory += campaign.pendingEquipment.map { it.copy() }
             warband.armory += campaign.memberEquipment.values.map { it.copy() }
             warband.aggression = (warband.aggression + campaign.returnAggressionDelta)
                 .coerceIn(PillagerCampaignsConfig.minimumAggression.get(), PillagerCampaignsConfig.maximumAggression.get())
             warband.lastIntelTick = now
+            PillagerRuntime.refundCampaignCargo(warband, campaign)
         }
         campaign.pendingEquipment.clear()
         campaign.memberEquipment.clear()
@@ -307,6 +325,65 @@ object PillagerCampaignEngine {
         campaign.memberSnapshots.clear()
         campaign.committedThreat = 0.0
         resolveCampaign(data, campaign.id, defeatedByPlayer = false, observedTick = now, outcome = campaign.returnOutcome ?: CampaignOutcome.ABORTED)
+    }
+
+    private fun travelTicks(base: Int, campaign: PillagerCampaign): Int =
+        (base * (2.0 - campaign.supplySatisfaction.coerceIn(0.0, 1.0))).toInt().coerceAtLeast(1)
+
+    private fun applyLogisticsSegment(level: ServerLevel, warband: PillagerWarband, campaign: PillagerCampaign): Boolean {
+        if (campaign.plannedMembers.isEmpty()) return false
+        val rules = PillagerEngineBridge.rules()
+        val resources = WarbandResourceCatalog.definitions()
+        if (resources.isEmpty()) return true
+        val local = EnvironmentSampler.sample(level, campaign.currentChunkX, campaign.currentChunkZ)
+        val environment = com.gerald.pillagercampaigns.engine.EnvironmentTraits(
+            local.habitability, local.biomass, local.mineralPotential, local.exoticPotential, local.travelFriction,
+        )
+        if (campaign.deficitExposure > 0.0) {
+            val aggression = ((warband.aggression - rules.minimumAggression).toDouble() /
+                (rules.maximumAggression - rules.minimumAggression).coerceAtLeast(1)).coerceIn(0.0, 1.0)
+            campaign.forageDebt += rules.forageUnitsPerDeficitChunk * campaign.deficitExposure.coerceAtMost(1.0) * (1.0 - aggression * 0.5)
+            while (campaign.forageDebt >= 1.0) {
+                campaign.forageDebt -= 1.0
+                val carrier = campaign.plannedMembers.minByOrNull { it.cargo.values.sum() } ?: break
+                val selected = EcologyMath.chooseEnvironmentalResource(resources, environment, carrier.cargo) { id ->
+                    (campaign.id.toString() + id).fold(0L) { hash, character -> hash * 31L + character.code }
+                } ?: break
+                carrier.cargo[selected.itemId] = carrier.cargo.getOrDefault(selected.itemId, 0) + 1
+            }
+        }
+        val recruitActions = PillagerRuntime.recruitDefinitions(level, warband).associate { it.id to it.supportedEquipmentActions }
+        val livingThreat = campaign.plannedMembers.sumOf { it.threat * it.healthFraction }
+        val rangedThreat = campaign.plannedMembers.filter { member ->
+            "ranged" in recruitActions.getOrDefault(member.recruitId.toString(), emptySet()) ||
+                member.equipment?.let(ItemStack::of)?.item is ProjectileWeaponItem
+        }.sumOf { it.threat * it.healthFraction }
+        val demand = EcologyMath.segmentDemand(
+            livingThreat, rangedThreat, campaign.plannedMembers.count { it.equipment != null },
+            campaign.plannedMembers.sumOf { 1.0 - it.healthFraction }, environment, rules,
+        )
+        val consumption = EcologyMath.consumeCargo(
+            campaign.plannedMembers.map { it.cargo }, resources.associateBy(ResourceDefinition::itemId), demand,
+        )
+        campaign.supplySatisfaction = EcologyMath.supplySatisfaction(demand, consumption.remaining)
+        campaign.deficitExposure = (campaign.deficitExposure + 1.0 - campaign.supplySatisfaction).coerceAtLeast(0.0)
+        val wear = EcologyMath.equipmentWear(environment, campaign.supplySatisfaction, rules)
+        campaign.plannedMembers.mapNotNull { it.equipment }.forEach { tag ->
+            val stack = ItemStack.of(tag)
+            if (stack.isDamageableItem && wear > 0.0) {
+                stack.damageValue = (stack.damageValue + kotlin.math.ceil(stack.maxDamage * wear).toInt()).coerceAtMost(stack.maxDamage)
+                tag.allKeys.toList().forEach(tag::remove)
+                tag.merge(stack.save(CompoundTag()))
+            }
+        }
+        val loss = EcologyMath.attritionLoss(environment, campaign.supplySatisfaction, campaign.deficitExposure, rules)
+        if (loss > 0.0) {
+            campaign.plannedMembers.forEach { it.healthFraction = (it.healthFraction - loss).coerceAtLeast(0.0) }
+            val dead = campaign.plannedMembers.filter { it.healthFraction <= 1.0e-9 }
+            dead.forEach { PillagerRuntime.cacheAbstractMember(campaign, it) }
+            campaign.plannedMembers.removeAll(dead.toSet())
+        }
+        return campaign.plannedMembers.isNotEmpty()
     }
 
     private fun tryMaterialize(level: ServerLevel, campaign: PillagerCampaign, player: ServerPlayer, distanceChunks: Int, data: PillagerWorldData, now: Long) {

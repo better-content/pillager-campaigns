@@ -30,6 +30,7 @@ data class ExperimentScenario(
     val catalog: EngineCatalog,
     val rules: WarbandRules = WarbandRules(),
     val players: List<PlayerFact> = emptyList(),
+    val terrain: List<TerrainObservation> = emptyList(),
     val assumptions: BoundedAssumptions = BoundedAssumptions(),
 ) {
     fun validate() {
@@ -66,6 +67,15 @@ data class ExperimentSummary(
     val empiricalThreatEntries: Int = 0,
     val extractedMaterialCounts: Map<String, Int> = emptyMap(),
     val manufacturedEquipmentCounts: Map<String, Int> = emptyMap(),
+    val stockpileItems: Int = 0,
+    val resourcesAcquired: Int = 0,
+    val resourcesConsumed: Int = 0,
+    val meanSupplySatisfaction: Double = 1.0,
+    val shortageReturns: Int = 0,
+    val attritionLosses: Int = 0,
+    val recoverableCaches: Int = 0,
+    val meanRouteChunks: Double = 0.0,
+    val meanEquipmentDurability: Double = 1.0,
 )
 
 @Serializable

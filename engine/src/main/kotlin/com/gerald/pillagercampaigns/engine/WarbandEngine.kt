@@ -165,11 +165,13 @@ object WarbandEngine {
         available: Map<String, Double>,
         requiredUnits: Double,
         salt: Int,
+        rules: WarbandRules = WarbandRules(),
     ): MaterialDefinition? = materials.asSequence()
         .filter { it.id in compatibleIds && available.getOrDefault(it.id, 0.0) + EPSILON >= requiredUnits }
         .maxWithOrNull(compareBy<MaterialDefinition> { material ->
             material.tier * (1.0 + warband.preferences.getOrDefault("exotic", 0.0) * warband.environment.exoticPotential) +
-                material.capabilities.dot(preferences(warband))
+                material.capabilities.dot(preferences(warband)) -
+                EcologyMath.repetitionPenalty(warband.selectionMemory.materials, material.id, rules.diversityWeight)
         }.thenByDescending { deterministicTie(warband.id, it.id, state.sequence + salt) })
 
     fun validate(state: EngineState, catalog: EngineCatalog, rules: WarbandRules = WarbandRules()) {
@@ -506,7 +508,8 @@ object WarbandEngine {
         require(catalog.environmentSamples.all { it == it.bounded() })
         require(catalog.resources.map { it.itemId }.distinct().size == catalog.resources.size)
         require(catalog.resources.all {
-            it.itemId.isNotBlank() && it.mass > 0.0 && it.maximumStackSize > 0 && it.unitsPerItem.finite() &&
+            it.itemId.isNotBlank() && it.mass > 0.0 && it.environmentalAvailability.isFinite() &&
+                it.environmentalAvailability >= 0.0 && it.maximumStackSize > 0 && it.unitsPerItem.finite() &&
                 listOf(it.unitsPerItem.sustenance, it.unitsPerItem.munitions, it.unitsPerItem.maintenance, it.unitsPerItem.recovery).all { value -> value >= 0.0 }
         })
     }
@@ -539,25 +542,21 @@ object WarbandEngine {
                 catalog.recruits.firstOrNull { it.id == member.recruitId }?.supportedEquipmentActions?.contains("ranged") == true
         }.sumOf { it.threat * it.healthFraction }
         val equipped = campaign.members.count { it.equipment != null }
-        val demand = ResourceVector(
-            sustenance = livingThreat * rules.sustenancePerThreatChunk,
-            munitions = rangedThreat * rules.munitionsPerRangedThreatChunk,
-            maintenance = equipped * rules.maintenancePerEquipmentChunk * (0.5 + environment.travelFriction),
-            recovery = campaign.members.sumOf { 1.0 - it.healthFraction } * 0.05,
+        val demand = EcologyMath.segmentDemand(
+            livingThreat, rangedThreat, equipped, campaign.members.sumOf { 1.0 - it.healthFraction }, environment, rules,
         )
-        val consumption = consumeCargo(campaign.members, catalog.resources.associateBy(ResourceDefinition::itemId), demand)
+        val consumption = EcologyMath.consumeCargo(campaign.members.map(MemberManifest::cargo), catalog.resources.associateBy(ResourceDefinition::itemId), demand)
         consumption.items.forEach { (id, count) ->
             events += event(state, "resource_consumed", campaign.id, "$id=$count")
         }
         val remaining = consumption.remaining
-        campaign.supplySatisfaction = if (demand.sum() <= EPSILON) 1.0 else (1.0 - remaining.sum() / demand.sum()).coerceIn(0.0, 1.0)
+        campaign.supplySatisfaction = EcologyMath.supplySatisfaction(demand, remaining)
         campaign.deficitExposure = (campaign.deficitExposure + 1.0 - campaign.supplySatisfaction).coerceAtLeast(0.0)
         campaign.members.mapNotNull(MemberManifest::equipment).forEach { equipment ->
-            equipment.durabilityFraction = (equipment.durabilityFraction -
-                rules.equipmentWearPerFrictionChunk * environment.travelFriction * (2.0 - campaign.supplySatisfaction)).coerceAtLeast(0.0)
+            equipment.durabilityFraction = (equipment.durabilityFraction - EcologyMath.equipmentWear(environment, campaign.supplySatisfaction, rules)).coerceAtLeast(0.0)
         }
-        if (campaign.deficitExposure > rules.deficitGraceChunks) {
-            val loss = rules.attritionPerDeficitChunk * (1.0 - campaign.supplySatisfaction) * (0.5 + environment.travelFriction)
+        val loss = EcologyMath.attritionLoss(environment, campaign.supplySatisfaction, campaign.deficitExposure, rules)
+        if (loss > EPSILON) {
             val dead = campaign.members.onEach { it.healthFraction = (it.healthFraction - loss).coerceAtLeast(0.0) }
                 .filter { it.healthFraction <= EPSILON }
             dead.forEach { member ->
@@ -566,31 +565,12 @@ object WarbandEngine {
                 events += event(state, "member_lost_to_attrition", member.id, campaign.id)
             }
         }
-        events += event(state, "logistics_segment", campaign.id, "satisfaction=${campaign.supplySatisfaction}")
-    }
-
-    private data class CargoConsumption(val remaining: ResourceVector, val items: Map<String, Int>)
-
-    private fun consumeCargo(
-        members: List<MemberManifest>,
-        resources: Map<String, ResourceDefinition>,
-        demand: ResourceVector,
-    ): CargoConsumption {
-        var remaining = demand.positive()
-        val consumed = linkedMapOf<String, Int>()
-        while (remaining.sum() > EPSILON) {
-            val choice = members.asSequence().flatMap { member -> member.cargo.asSequence().filter { it.value > 0 }.map { Triple(member, it.key, it.value) } }
-                .mapNotNull { (member, id, _) -> resources[id]?.let { Triple(member, id, it) } }
-                .maxWithOrNull(compareBy<Triple<MemberManifest, String, ResourceDefinition>> {
-                    it.third.unitsPerItem.dot(remaining) / it.third.mass
-                }.thenByDescending { it.second }) ?: break
-            if (choice.third.unitsPerItem.dot(remaining) <= EPSILON) break
-            choice.first.cargo[choice.second] = choice.first.cargo.getValue(choice.second) - 1
-            if (choice.first.cargo.getValue(choice.second) == 0) choice.first.cargo.remove(choice.second)
-            consumed[choice.second] = consumed.getOrDefault(choice.second, 0) + 1
-            remaining = (remaining - choice.third.unitsPerItem).positive()
+        if (campaign.phase == CampaignPhase.OUTBOUND && EcologyMath.shouldRetreatFromShortage(campaign.deficitExposure, warband.aggression, rules)) {
+            campaign.phase = CampaignPhase.RETURNING
+            campaign.returnReason = "supply_shortage"
+            events += event(state, "return_started", campaign.id, "supply_shortage")
         }
-        return CargoConsumption(remaining, consumed)
+        events += event(state, "logistics_segment", campaign.id, "satisfaction=${campaign.supplySatisfaction}")
     }
 
     private fun acquireEnvironmentalResource(
@@ -602,11 +582,9 @@ object WarbandEngine {
         events: MutableList<EngineEvent>,
         subject: String = warband.id,
     ) {
-        val selected = catalog.resources.maxWithOrNull(compareBy<ResourceDefinition> {
-            EcologyMath.environmentalYield(it, environment) /
-                (1.0 + destination.getOrDefault(it.itemId, 0))
-        }.thenByDescending { deterministicTie(warband.id, it.itemId, state.sequence) }) ?: return
-        if (EcologyMath.environmentalYield(selected, environment) <= EPSILON) return
+        val selected = EcologyMath.chooseEnvironmentalResource(catalog.resources, environment, destination) {
+            deterministicTie(warband.id, it, state.sequence)
+        } ?: return
         destination[selected.itemId] = destination.getOrDefault(selected.itemId, 0) + 1
         events += event(state, "resource_acquired", subject, selected.itemId)
     }

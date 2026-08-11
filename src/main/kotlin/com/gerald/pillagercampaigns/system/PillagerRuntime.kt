@@ -6,7 +6,10 @@ import com.gerald.pillagercampaigns.data.PillagerOfficer
 import com.gerald.pillagercampaigns.data.PillagerWarband
 import com.gerald.pillagercampaigns.data.PillagerWorldData
 import com.gerald.pillagercampaigns.data.PlannedCampaignMember
+import com.gerald.pillagercampaigns.data.CampaignRouteStep
+import com.gerald.pillagercampaigns.data.LostAssetCache
 import com.gerald.pillagercampaigns.engine.RecruitDefinition
+import com.gerald.pillagercampaigns.engine.CapabilityVector
 import net.minecraft.ChatFormatting
 import net.minecraft.core.BlockPos
 import net.minecraft.core.particles.DustParticleOptions
@@ -25,6 +28,7 @@ import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.ArmorItem
 import net.minecraft.world.item.ProjectileWeaponItem
 import net.minecraft.world.item.Items
+import net.minecraft.world.level.levelgen.Heightmap
 import net.minecraftforge.registries.ForgeRegistries
 import org.joml.Vector3f
 import java.util.Random
@@ -32,6 +36,10 @@ import java.util.UUID
 import kotlin.math.ceil
 
 object PillagerRuntime {
+    internal data class PlannedCampaignManifest(
+        val members: List<PlannedCampaignMember>,
+        val route: List<CampaignRouteStep>,
+    )
     const val CAMPAIGN_TAG = "PillagerCampaignId"
     const val OFFICER_TAG = "PillagerOfficerId"
     const val LEADER_TAG = "PillagerOfficerLeader"
@@ -41,6 +49,8 @@ object PillagerRuntime {
     const val THREAT_TAG = "PillagerThreat"
     const val WARBAND_TAG = "PillagerWarbandId"
     const val ENTITY_TYPE_TAG = "PillagerEntityType"
+    const val MANIFEST_ID_TAG = "PillagerManifestId"
+    const val CARGO_TAG = "PillagerCargo"
     private const val TARGET_TAG = "PillagerTargetPlayer"
     private const val ORIGIN_X_TAG = "PillagerOriginChunkX"
     private const val ORIGIN_Z_TAG = "PillagerOriginChunkZ"
@@ -49,6 +59,11 @@ object PillagerRuntime {
     private const val ANCHOR_Z_TAG = "PillagerAnchorZ"
     private const val OFFICER_NAME_TAG = "PillagerOfficerName"
     private const val OFFICER_TITLE_TAG = "PillagerOfficerTitle"
+    private const val TACTIC_DURABILITY_TAG = "PillagerTacticDurability"
+    private const val TACTIC_DAMAGE_TAG = "PillagerTacticDamage"
+    private const val TACTIC_MOBILITY_TAG = "PillagerTacticMobility"
+    private const val TACTIC_RANGE_TAG = "PillagerTacticRange"
+    private const val TACTIC_CONTROL_TAG = "PillagerTacticControl"
     private val recruitTag = TagKey.create(Registries.ENTITY_TYPE, ResourceLocation("pillagercampaigns", "recruits"))
     private val liveOfficerLeaderEntityIds = linkedMapOf<UUID, UUID>()
     private val liveCampaignMemberEntityIds = linkedMapOf<UUID, MutableSet<UUID>>()
@@ -216,8 +231,40 @@ object PillagerRuntime {
                 ResourceLocation.tryParse(member.recruitId) ?: error("engine selected invalid recruit id ${member.recruitId}"),
                 member.threat,
                 member.equipmentIndex?.let { armory.getOrNull(it)?.copy() },
+                member.cargo.toMutableMap(),
+                member.manifestId,
+                member.healthFraction,
             )
         }
+    }
+
+    internal fun planCampaignManifest(
+        level: ServerLevel,
+        warband: PillagerWarband,
+        officer: PillagerOfficer,
+        target: ServerPlayer,
+        sequence: Long,
+        now: Long,
+        recruits: List<RecruitDefinition> = recruitDefinitions(level, warband),
+    ): PlannedCampaignManifest? {
+        val armory = warband.armory.toList()
+        val plan = PillagerEngineBridge.planCampaign(
+            level, warband, officer.preferenceGraph, recruits, armory, target.uuid,
+            target.chunkPosition().x, target.chunkPosition().z, now, sequence,
+        ) ?: return null
+        plan.members.mapNotNull(PillagerEngineBridge.PlannedLiveMember::equipmentIndex).toSet().sortedDescending()
+            .forEach { index -> if (index in warband.armory.indices) warband.armory.removeAt(index) }
+        return PlannedCampaignManifest(
+            plan.members.map { member ->
+                PlannedCampaignMember(
+                    ResourceLocation.tryParse(member.recruitId) ?: error("engine selected invalid recruit id ${member.recruitId}"),
+                    member.threat,
+                    member.equipmentIndex?.let { armory.getOrNull(it)?.copy() },
+                    member.cargo.toMutableMap(), member.manifestId, member.healthFraction,
+                )
+            },
+            plan.route.map { CampaignRouteStep(it.x, it.z) },
+        )
     }
 
     fun materializeWarbandSquad(
@@ -240,6 +287,9 @@ object PillagerRuntime {
             val type = ForgeRegistries.ENTITY_TYPES.getValue(member.recruitId) ?: return@forEachIndexed
             val mob = type.create(level) as? Mob ?: return@forEachIndexed
             prepareCampaignMob(mob, warband, campaign, officerRecord, member.threat, index == 0, x + random.nextDouble() * 4.0 - 2.0, y, z + random.nextDouble() * 4.0 - 2.0)
+            mob.health = (mob.maxHealth * member.healthFraction.coerceIn(0.0, 1.0).toFloat()).coerceAtLeast(1.0f)
+            mob.persistentData.putString(MANIFEST_ID_TAG, member.manifestId)
+            mob.persistentData.put(CARGO_TAG, CompoundTag().also { cargo -> member.cargo.forEach(cargo::putInt) })
             if (index == 0) mob.setItemSlot(EquipmentSlot.HEAD, makeBanner(bannerSeed))
             mob.target = player
             if (level.addFreshEntity(mob)) {
@@ -255,6 +305,58 @@ object PillagerRuntime {
             } else mob.discard()
         }
         return result
+    }
+
+    fun dropCampaignCargo(mob: Mob, campaign: PillagerCampaign) {
+        val manifestId = mob.persistentData.getString(MANIFEST_ID_TAG)
+        val member = campaign.plannedMembers.firstOrNull { it.manifestId == manifestId } ?: return
+        cargoStacks(member.cargo).forEach(mob::spawnAtLocation)
+        member.cargo.clear()
+    }
+
+    fun cacheAbstractMember(campaign: PillagerCampaign, member: PlannedCampaignMember) {
+        val stacks = cargoStacks(member.cargo).mapTo(mutableListOf()) { it.save(CompoundTag()) }
+        member.equipment?.copy()?.let(stacks::add)
+        member.cargo.clear()
+        if (stacks.isNotEmpty()) campaign.lostAssetCaches += LostAssetCache(campaign.currentChunkX, campaign.currentChunkZ, stacks)
+    }
+
+    fun releaseLoadedCaches(level: ServerLevel, campaign: PillagerCampaign): Int {
+        var released = 0
+        val iterator = campaign.lostAssetCaches.iterator()
+        while (iterator.hasNext()) {
+            val cache = iterator.next()
+            if (!level.hasChunk(cache.chunkX, cache.chunkZ)) continue
+            val x = (cache.chunkX shl 4) + 8
+            val z = (cache.chunkZ shl 4) + 8
+            val y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z)
+            cache.stacks.map(ItemStack::of).filterNot(ItemStack::isEmpty).forEach { stack ->
+                level.addFreshEntity(ItemEntity(level, x + .5, y + .5, z + .5, stack))
+                released += stack.count
+            }
+            iterator.remove()
+        }
+        return released
+    }
+
+    fun refundCampaignCargo(warband: PillagerWarband, campaign: PillagerCampaign) {
+        campaign.plannedMembers.forEach { member ->
+            member.cargo.forEach { (id, count) -> warband.stockpile[id] = warband.stockpile.getOrDefault(id, 0) + count }
+            member.cargo.clear()
+        }
+    }
+
+    private fun cargoStacks(cargo: Map<String, Int>): List<ItemStack> = cargo.entries.flatMap { (id, total) ->
+        val item = ResourceLocation.tryParse(id)?.let(ForgeRegistries.ITEMS::getValue) ?: return@flatMap emptyList()
+        val maximum = ItemStack(item).maxStackSize.coerceAtLeast(1)
+        buildList {
+            var remaining = total.coerceAtLeast(0)
+            while (remaining > 0) {
+                val count = minOf(remaining, maximum)
+                add(ItemStack(item, count))
+                remaining -= count
+            }
+        }
     }
 
     fun materializeWarlord(level: ServerLevel, warband: PillagerWarband, faction: PillagerFaction, warlord: PillagerOfficer, x: Double, y: Double, z: Double): UUID? {
@@ -336,6 +438,12 @@ object PillagerRuntime {
         mob.persistentData.putInt(ORIGIN_X_TAG, warband.rallyChunkX)
         mob.persistentData.putInt(ORIGIN_Z_TAG, warband.rallyChunkZ)
         mob.persistentData.putDouble(THREAT_TAG, threat)
+        val preferences = officer.preferenceGraph + warband.preferences
+        mob.persistentData.putDouble(TACTIC_DURABILITY_TAG, preferences["durability"] ?: 0.0)
+        mob.persistentData.putDouble(TACTIC_DAMAGE_TAG, preferences["damage"] ?: 0.0)
+        mob.persistentData.putDouble(TACTIC_MOBILITY_TAG, preferences["mobility"] ?: 0.0)
+        mob.persistentData.putDouble(TACTIC_RANGE_TAG, preferences["range"] ?: 0.0)
+        mob.persistentData.putDouble(TACTIC_CONTROL_TAG, preferences["control"] ?: 0.0)
         ForgeRegistries.ENTITY_TYPES.getKey(mob.type)?.let { mob.persistentData.putString(ENTITY_TYPE_TAG, it.toString()) }
         if (leader) applyOfficerVisuals(mob, officer)
         guaranteeEquipmentDrops(mob)
@@ -360,7 +468,14 @@ object PillagerRuntime {
         }
         val target = level.getPlayerByUUID(tag.getUUID(TARGET_TAG)) ?: return
         val policy = policyFor(mob)
-        SquadRoutePlanner.pursue(level, mob, tag.getUUID(CAMPAIGN_TAG), target, policy.weaponRange)
+        val measured = PillagerEngineBridge.recruitDefinition(
+            tag.getString(ENTITY_TYPE_TAG), tag.getDouble(THREAT_TAG).coerceAtLeast(1.0), mob,
+        ).capabilities
+        val preferences = CapabilityVector(
+            tag.getDouble(TACTIC_DURABILITY_TAG), tag.getDouble(TACTIC_DAMAGE_TAG), tag.getDouble(TACTIC_MOBILITY_TAG),
+            tag.getDouble(TACTIC_RANGE_TAG), tag.getDouble(TACTIC_CONTROL_TAG),
+        )
+        SquadRoutePlanner.pursue(level, mob, tag.getUUID(CAMPAIGN_TAG), target, policy.weaponRange, measured, preferences, policy.cohesionRadius)
     }
 
     fun holdBossAtAnchor(mob: Mob) {

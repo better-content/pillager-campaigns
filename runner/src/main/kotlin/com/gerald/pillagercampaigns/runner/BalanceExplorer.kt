@@ -59,6 +59,9 @@ class BalanceExplorer(private val json: Json = Json { prettyPrint = true; encode
                 val rules = WarbandRules(warbandLearningRate = rate, captainLearningRate = rate * 2.0, threatLearningRate = rate * 2.0)
                 summaries += runner.run(scenario("sensitivity-learning-$rate", 10 * TICKS_PER_DAY, catalog, baseEnvironment, nominal, 11L, rules = rules), false).summary
             }
+            listOf(0, 24, 96).forEach { items ->
+                summaries += runner.run(scenario("sensitivity-supply-$items", 10 * TICKS_PER_DAY, catalog, baseEnvironment, nominal, 11L, supplyItems = items), false).summary
+            }
         }
 
         val exploration = BalanceExploration(catalog.revision, summaries, findings(summaries, catalog))
@@ -77,6 +80,7 @@ class BalanceExplorer(private val json: Json = Json { prettyPrint = true; encode
         reserve: Double = 18.0,
         distance: Int = 12,
         rules: WarbandRules = WarbandRules(),
+        supplyItems: Int = 24,
     ): ExperimentScenario {
         val preferences = FormulaMath.initialPreferences(seed, environment)
         val ledger = catalog.materials.sortedBy(MaterialDefinition::id).take(3).associateTo(linkedMapOf()) { it.id to 8.0 }
@@ -84,6 +88,15 @@ class BalanceExplorer(private val json: Json = Json { prettyPrint = true; encode
             "warband", "faction", ChunkPosition("minecraft:overworld", 0, 0), rules.capacity(environment).toDouble(), reserve,
             aggression = aggression, environment = environment, preferences = preferences, materialLedger = ledger,
         )
+        val usefulResources = listOf<(ResourceDefinition) -> Double>(
+            { it.unitsPerItem.sustenance }, { it.unitsPerItem.munitions },
+            { it.unitsPerItem.maintenance }, { it.unitsPerItem.recovery },
+        ).mapNotNull { value -> catalog.resources.maxByOrNull { value(it) / it.mass }?.takeIf { value(it) > 0.0 } }.distinctBy { it.itemId }
+        if (usefulResources.isNotEmpty() && supplyItems > 0) usefulResources.forEachIndexed { index, resource ->
+            warband.stockpile[resource.itemId] = supplyItems / usefulResources.size + if (index < supplyItems % usefulResources.size) 1 else 0
+        }
+        val target = ChunkPosition("minecraft:overworld", distance, (distance / 2).coerceAtLeast(1))
+        val terrain = routeTerrain(warband.rally, target, environment)
         return ExperimentScenario(
             name, duration, 20L,
             EngineState(
@@ -93,9 +106,26 @@ class BalanceExplorer(private val json: Json = Json { prettyPrint = true; encode
                 officers = linkedMapOf("captain" to OfficerState("captain", "faction", warband.id)),
             ),
             catalog, rules,
-            listOf(PlayerFact("player", ChunkPosition("minecraft:overworld", distance, 0), setOf(warband.id))),
+            listOf(PlayerFact("player", target, setOf(warband.id))),
+            terrain,
             assumptions,
         )
+    }
+
+    private fun routeTerrain(start: ChunkPosition, target: ChunkPosition, environment: EnvironmentTraits): List<TerrainObservation> {
+        val values = linkedMapOf<String, TerrainObservation>()
+        fun add(position: ChunkPosition, traits: EnvironmentTraits) { values["${position.x}:${position.z}"] = TerrainObservation(position, traits.bounded()) }
+        var cursor = start
+        while (cursor != target) {
+            val step = CampaignGeometry.stepToward(cursor.x, cursor.z, target.x, target.z)
+            cursor = cursor.copy(x = step.first, z = step.second)
+            add(cursor, environment.copy(travelFriction = environment.travelFriction + 0.15))
+        }
+        var x = start.x
+        while (x != target.x) { x += if (target.x > x) 1 else -1; add(ChunkPosition(start.dimension, x, start.z), environment.copy(biomass = environment.biomass + 0.2, travelFriction = environment.travelFriction - 0.15)) }
+        var z = start.z
+        while (z != target.z) { z += if (target.z > z) 1 else -1; add(ChunkPosition(start.dimension, target.x, z), environment.copy(biomass = environment.biomass + 0.2, travelFriction = environment.travelFriction - 0.15)) }
+        return values.values.toList()
     }
 
     private fun findings(summaries: List<ExperimentSummary>, catalog: EngineCatalog): List<BalanceFinding> {
@@ -159,6 +189,22 @@ class BalanceExplorer(private val json: Json = Json { prettyPrint = true; encode
             "Keep the aggression increase on disengaged return, but scale it by idle duration relative to travel time instead of a flat increment.",
             "Scaling too softly makes kiting a permanent suppression strategy; scaling too strongly creates runaway raid budgets.", "medium",
         )
+        val supply = summaries.filter { it.name.startsWith("sensitivity-supply-") }
+        if (supply.isNotEmpty()) findings += BalanceFinding(
+            7, "Logistics pressure and recoverability",
+            "Across supply sensitivity, mean segment satisfaction spans ${percent(supply.minOf { it.meanSupplySatisfaction })}–${percent(supply.maxOf { it.meanSupplySatisfaction })}; shortage returns span ${supply.minOf { it.shortageReturns }}–${supply.maxOf { it.shortageReturns }}, attrition losses ${supply.minOf { it.attritionLosses }}–${supply.maxOf { it.attritionLosses }}, with ${supply.maxOf { it.recoverableCaches }} recoverable caches retained.",
+            supply.map(ExperimentSummary::name),
+            "Tune provisioning demand and forage debt together; preserve the grace interval and aggression-scaled retreat threshold.",
+            "Over-supplying erases interception and preparation; under-supplying turns distant campaigns into automatic retreats.", "high",
+        )
+        val routed = baseline.filter { it.campaignsDispatched > 0 }
+        if (routed.isNotEmpty()) findings += BalanceFinding(
+            8, "Environmental route expression",
+            "Formula-selected campaign routes average ${decimal(routed.map { it.meanRouteChunks }.averageOrZero())} chunks, spanning ${decimal(routed.minOf { it.meanRouteChunks })}–${decimal(routed.maxOf { it.meanRouteChunks })}; route length and supply consumption now respond to the same sampled terrain observations.",
+            routed.sortedByDescending { it.meanRouteChunks }.take(3).map(ExperimentSummary::name),
+            "Keep noise-biome corridor sampling unloaded-safe and tune forage value against friction rather than adding preferred biome categories.",
+            "Too much forage utility produces implausible detours; too little makes environment cosmetic.", "medium",
+        )
         return findings.sortedBy(BalanceFinding::priority)
     }
 
@@ -166,9 +212,9 @@ class BalanceExplorer(private val json: Json = Json { prettyPrint = true; encode
         output.mkdirs()
         output.resolve("exploration.json").writeText(json.encodeToString(exploration))
         output.resolve("summaries.csv").writeText(buildString {
-            appendLine("name,ticks,dispatched,returned,active,raid_pool,distinct_recruits,dominant_share,longest_streak,equipment_coverage,mean_cycle_ticks,preference_drift")
+            appendLine("name,ticks,dispatched,returned,active,raid_pool,stockpile_items,resources_acquired,resources_consumed,supply_satisfaction,shortage_returns,attrition_losses,recoverable_caches,mean_route_chunks,mean_equipment_durability,distinct_recruits,dominant_share,longest_streak,equipment_coverage,mean_cycle_ticks,preference_drift")
             exploration.summaries.forEach { summary ->
-                appendLine(listOf(summary.name, summary.ticks, summary.campaignsDispatched, summary.campaignsReturned, summary.activeCampaigns, summary.raidPool, summary.distinctRecruits, summary.dominantRecruitShare, summary.longestRecruitStreak, summary.equipmentCoverage, summary.meanCampaignCycleTicks, summary.preferenceDrift).joinToString(","))
+                appendLine(listOf(summary.name, summary.ticks, summary.campaignsDispatched, summary.campaignsReturned, summary.activeCampaigns, summary.raidPool, summary.stockpileItems, summary.resourcesAcquired, summary.resourcesConsumed, summary.meanSupplySatisfaction, summary.shortageReturns, summary.attritionLosses, summary.recoverableCaches, summary.meanRouteChunks, summary.meanEquipmentDurability, summary.distinctRecruits, summary.dominantRecruitShare, summary.longestRecruitStreak, summary.equipmentCoverage, summary.meanCampaignCycleTicks, summary.preferenceDrift).joinToString(","))
             }
         })
         output.resolve("balance-notes.md").writeText(buildString {
@@ -191,7 +237,7 @@ class BalanceExplorer(private val json: Json = Json { prettyPrint = true; encode
             appendLine()
             appendLine("| Factor | Cells | Dispatch range | Dominant-share range | Peak-threat range |")
             appendLine("|---|---:|---:|---:|---:|")
-            listOf("aggression", "reserve", "distance", "idle", "learning").forEach { factor ->
+            listOf("aggression", "reserve", "distance", "idle", "learning", "supply").forEach { factor ->
                 val cells = exploration.summaries.filter { it.name.startsWith("sensitivity-$factor-") }
                 if (cells.isNotEmpty()) appendLine("| $factor | ${cells.size} | ${cells.minOf { it.campaignsDispatched }}–${cells.maxOf { it.campaignsDispatched }} | ${percent(cells.minOf { it.dominantRecruitShare })}–${percent(cells.maxOf { it.dominantRecruitShare })} | ${decimal(cells.minOf { it.peakCampaignThreat })}–${decimal(cells.maxOf { it.peakCampaignThreat })} |")
             }

@@ -330,11 +330,17 @@ data class PlannedCampaignMember(
     val recruitId: ResourceLocation,
     val threat: Double,
     val equipment: CompoundTag? = null,
+    val cargo: MutableMap<String, Int> = mutableMapOf(),
+    val manifestId: String = "",
+    var healthFraction: Double = 1.0,
 ) {
     fun save(): CompoundTag = CompoundTag().also {
         it.putString("recruitId", recruitId.toString())
         it.putDouble("threat", threat)
         equipment?.let { stack -> it.put("equipment", stack.copy()) }
+        it.put("cargo", CompoundTag().also { values -> cargo.forEach(values::putInt) })
+        if (manifestId.isNotBlank()) it.putString("manifestId", manifestId)
+        it.putDouble("healthFraction", healthFraction.coerceIn(0.0, 1.0))
     }
 
     companion object {
@@ -342,8 +348,35 @@ data class PlannedCampaignMember(
             val recruitId = ResourceLocation.tryParse(tag.getString("recruitId")) ?: return null
             val threat = tag.getDouble("threat")
             if (!threat.isFinite() || threat <= 0.0) return null
-            return PlannedCampaignMember(recruitId, threat, tag.getCompound("equipment").takeIf { tag.contains("equipment", Tag.TAG_COMPOUND.toInt()) }?.copy())
+            return PlannedCampaignMember(
+                recruitId, threat,
+                tag.getCompound("equipment").takeIf { tag.contains("equipment", Tag.TAG_COMPOUND.toInt()) }?.copy(),
+                loadNonnegativeIntMap(tag, "cargo"),
+                if (tag.contains("manifestId")) tag.getString("manifestId") else "",
+                if (tag.contains("healthFraction")) tag.getDouble("healthFraction").coerceIn(0.0, 1.0) else 1.0,
+            )
         }
+    }
+}
+
+data class CampaignRouteStep(val chunkX: Int, val chunkZ: Int) {
+    fun save(): CompoundTag = CompoundTag().also { it.putInt("chunkX", chunkX); it.putInt("chunkZ", chunkZ) }
+
+    companion object {
+        fun load(tag: CompoundTag) = CampaignRouteStep(tag.getInt("chunkX"), tag.getInt("chunkZ"))
+    }
+}
+
+data class LostAssetCache(val chunkX: Int, val chunkZ: Int, val stacks: MutableList<CompoundTag> = mutableListOf()) {
+    fun save(): CompoundTag = CompoundTag().also {
+        it.putInt("chunkX", chunkX); it.putInt("chunkZ", chunkZ); it.put("stacks", saveRecordList(stacks))
+    }
+
+    companion object {
+        fun load(tag: CompoundTag) = LostAssetCache(
+            tag.getInt("chunkX"), tag.getInt("chunkZ"),
+            mutableListOf<CompoundTag>().also { values -> if (tag.contains("stacks", Tag.TAG_LIST.toInt())) tag.getList("stacks", Tag.TAG_COMPOUND.toInt()).forEach { values += (it as CompoundTag).copy() } },
+        )
     }
 }
 
@@ -378,6 +411,12 @@ data class PillagerCampaign(
     var returnReason: String? = null,
     var returnStartedTick: Long = 0L,
     var returnAggressionDelta: Int = 0,
+    val route: MutableList<CampaignRouteStep> = mutableListOf(),
+    var routeIndex: Int = 0,
+    var supplySatisfaction: Double = 1.0,
+    var deficitExposure: Double = 0.0,
+    var forageDebt: Double = 0.0,
+    val lostAssetCaches: MutableList<LostAssetCache> = mutableListOf(),
 ) {
     fun save(): CompoundTag = CompoundTag().also {
         it.putUUID("id", id)
@@ -416,6 +455,12 @@ data class PillagerCampaign(
         returnReason?.let { reason -> it.putString("returnReason", reason) }
         it.putLong("returnStartedTick", returnStartedTick)
         it.putInt("returnAggressionDelta", returnAggressionDelta)
+        it.put("route", saveRecordList(route.map(CampaignRouteStep::save)))
+        it.putInt("routeIndex", routeIndex)
+        it.putDouble("supplySatisfaction", supplySatisfaction.coerceIn(0.0, 1.0))
+        it.putDouble("deficitExposure", deficitExposure.coerceAtLeast(0.0))
+        it.putDouble("forageDebt", forageDebt.coerceAtLeast(0.0))
+        it.put("lostAssetCaches", saveRecordList(lostAssetCaches.map(LostAssetCache::save)))
     }
 
     companion object {
@@ -463,6 +508,12 @@ data class PillagerCampaign(
             returnReason = if (tag.contains("returnReason")) tag.getString("returnReason") else null,
             returnStartedTick = if (tag.contains("returnStartedTick")) tag.getLong("returnStartedTick") else 0L,
             returnAggressionDelta = if (tag.contains("returnAggressionDelta")) tag.getInt("returnAggressionDelta") else 0,
+            route = mutableListOf<CampaignRouteStep>().also { values -> if (tag.contains("route", Tag.TAG_LIST.toInt())) tag.getList("route", Tag.TAG_COMPOUND.toInt()).forEach { values += CampaignRouteStep.load(it as CompoundTag) } },
+            routeIndex = if (tag.contains("routeIndex")) tag.getInt("routeIndex").coerceAtLeast(0) else 0,
+            supplySatisfaction = if (tag.contains("supplySatisfaction")) tag.getDouble("supplySatisfaction").coerceIn(0.0, 1.0) else 1.0,
+            deficitExposure = if (tag.contains("deficitExposure")) tag.getDouble("deficitExposure").coerceAtLeast(0.0) else 0.0,
+            forageDebt = if (tag.contains("forageDebt")) tag.getDouble("forageDebt").coerceAtLeast(0.0) else 0.0,
+            lostAssetCaches = mutableListOf<LostAssetCache>().also { values -> if (tag.contains("lostAssetCaches", Tag.TAG_LIST.toInt())) tag.getList("lostAssetCaches", Tag.TAG_COMPOUND.toInt()).forEach { values += LostAssetCache.load(it as CompoundTag) } },
         )
     }
 }

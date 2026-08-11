@@ -26,6 +26,9 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
         val returnReasons = linkedMapOf<String, Int>()
         val extractedMaterials = linkedMapOf<String, Int>()
         val manufacturedEquipment = linkedMapOf<String, Int>()
+        val supplySatisfaction = mutableListOf<Double>()
+        var resourcesAcquired = 0
+        var resourcesConsumed = 0
         val initialPreferences = scenario.state.warbands.mapValues { (_, warband) -> warband.preferences.toMap() }
         var equippedMembers = 0
         var totalMembers = 0
@@ -51,6 +54,9 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
                 }
                 if (event.type == "extracted") extractedMaterials[event.detail] = extractedMaterials.getOrDefault(event.detail, 0) + 1
                 if (event.type == "manufactured") manufacturedEquipment[event.detail] = manufacturedEquipment.getOrDefault(event.detail, 0) + 1
+                if (event.type == "resource_acquired") resourcesAcquired++
+                if (event.type == "resource_consumed") resourcesConsumed += event.detail.substringAfter('=').toIntOrNull() ?: 0
+                if (event.type == "logistics_segment") event.detail.substringAfter("satisfaction=").toDoubleOrNull()?.let(supplySatisfaction::add)
             }
         }
         while (elapsed < scenario.durationTicks) {
@@ -77,7 +83,7 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
             val materializations = readyBefore.map { MaterializationResult(it, true) }
             val result = WarbandEngine.transition(
                 scenario.state,
-                EngineFrame(step, scenario.players, combat, materializations),
+                EngineFrame(step, scenario.players, combat, materializations, terrain = scenario.terrain),
                 scenario.catalog,
                 scenario.rules,
             )
@@ -147,6 +153,16 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
                 scenario.state.warbands.values.sumOf { it.empiricalThreat.size },
                 extractedMaterials,
                 manufacturedEquipment,
+                warbands.sumOf { it.stockpile.values.sum() },
+                resourcesAcquired,
+                resourcesConsumed,
+                supplySatisfaction.averageDoublesOrOne(),
+                returnReasons.getOrDefault("supply_shortage", 0),
+                eventCounts.getOrDefault("member_lost_to_attrition", 0),
+                scenario.state.campaigns.values.sumOf { it.lostCaches.size },
+                scenario.state.campaigns.values.map { it.route.size.toDouble() }.averageDoublesOrZero(),
+                (warbands.flatMap { it.armory } + scenario.state.campaigns.values.flatMap { it.members }.mapNotNull { it.equipment })
+                    .map { it.durabilityFraction }.averageDoublesOrOne(),
             ),
             trace,
         )
@@ -192,6 +208,7 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
 
     private fun Collection<Int>.averageIntsOrZero() = if (isEmpty()) 0.0 else average()
     private fun Collection<Double>.averageDoublesOrZero() = if (isEmpty()) 0.0 else average()
+    private fun Collection<Double>.averageDoublesOrOne() = if (isEmpty()) 1.0 else average()
 
     private fun longestStreak(values: List<String>): Int {
         var longest = 0

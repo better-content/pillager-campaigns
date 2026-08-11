@@ -48,6 +48,7 @@ object TinkersArmoryOptimizer {
         val material = WarbandEngine.chooseMaterial(state, core, EngineCatalog("live-tcon", emptyList(), materialDefinitions(warband))) ?: return false
         val id = material.id
         warband.materialLedger[id] = warband.materialLedger.getOrDefault(id, 0.0) + amount.coerceAtLeast(0.0)
+        warband.materialSelectionMemory[id] = warband.materialSelectionMemory.getOrDefault(id, 0.0) + 1.0
         return true
     }
 
@@ -59,7 +60,9 @@ object TinkersArmoryOptimizer {
         val selected = WarbandEngine.chooseEquipment(
             state, core, EngineCatalog("live-tcon", emptyList(), equipment = candidates.map(LiveEquipmentCandidate::definition)),
         ) ?: return null
-        return realize(warband, candidates.single { it.definition.id == selected.id }, consume = true)
+        return realize(warband, candidates.single { it.definition.id == selected.id }, consume = true)?.also {
+            warband.equipmentSelectionMemory[selected.id] = warband.equipmentSelectionMemory.getOrDefault(selected.id, 0.0) + 1.0
+        }
     }
 
     internal fun materialDefinitions(warband: PillagerWarband): List<MaterialDefinition> =
@@ -162,21 +165,11 @@ object TinkersArmoryOptimizer {
         }
         val itemId = ForgeRegistries.ITEMS.getKey(stack.item)?.toString().orEmpty()
         val formulation = stack.tag?.getString(FORMULATION_TAG)?.split(',')?.filter(String::isNotBlank).orEmpty()
-        return EquipmentManifest(id, itemId, formulation, cost(stack), capabilities, actions)
+        val durability = if (stack.isDamageableItem) 1.0 - stack.damageValue.toDouble() / stack.maxDamage.coerceAtLeast(1) else 1.0
+        return EquipmentManifest(id, itemId, formulation, cost(stack), capabilities, actions, durability.coerceIn(0.0, 1.0))
     }
 
-    private fun engineWarband(warband: PillagerWarband) = WarbandState(
-        warband.id.toString(), warband.factionId.toString(),
-        ChunkPosition(warband.dimension.toString(), warband.rallyChunkX, warband.rallyChunkZ),
-        warband.capacity.toDouble(), warband.reserve.toDouble(), warband.raidPool,
-        garrisonThreat = warband.garrisonThreat.values.sum(), aggression = warband.aggression,
-        environment = com.gerald.pillagercampaigns.engine.EnvironmentTraits(
-            warband.environment.habitability, warband.environment.biomass, warband.environment.mineralPotential,
-            warband.environment.exoticPotential, warband.environment.travelFriction,
-        ),
-        preferences = warband.preferences.toMutableMap(), materialLedger = warband.materialLedger.toMutableMap(),
-        empiricalThreat = warband.empiricalThreat.toMutableMap(),
-    )
+    private fun engineWarband(warband: PillagerWarband) = PillagerEngineBridge.coreWarband(warband)
 
     private fun extractableMaterials(warband: PillagerWarband): List<IMaterial> {
         if (!MaterialRegistry.isFullyLoaded()) return emptyList()

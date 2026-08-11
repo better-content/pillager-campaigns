@@ -281,6 +281,7 @@ object PillagerCampaignsEvents {
         }
         if (!tag.hasUUID(PillagerRuntime.CAMPAIGN_TAG)) return
         val campaign = data.campaigns[tag.getUUID(PillagerRuntime.CAMPAIGN_TAG)] ?: return
+        PillagerRuntime.dropCampaignCargo(mob, campaign)
         val entityType = tag.getString(PillagerRuntime.ENTITY_TYPE_TAG)
         val priorThreat = campaign.memberThreat[mob.uuid] ?: tag.getDouble(PillagerRuntime.THREAT_TAG)
         PillagerCampaignEngine.recordThreatObservation(data, campaign, entityType, priorThreat.coerceAtLeast(1.0) * 1.35)

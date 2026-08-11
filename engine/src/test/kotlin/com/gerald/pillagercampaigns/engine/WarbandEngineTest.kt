@@ -185,6 +185,9 @@ class WarbandEngineTest {
     @Test fun `catalog and frames fail closed`() {
         assertFailsWith<IllegalArgumentException> { WarbandEngine.transition(state(), EngineFrame(-1L), catalog, rules) }
         assertFailsWith<IllegalArgumentException> { WarbandEngine.transition(state(), EngineFrame(0L), catalog.copy(revision = ""), rules) }
+        assertFailsWith<IllegalArgumentException> {
+            WarbandEngine.transition(state(), EngineFrame(0L), catalog.copy(resources = listOf(ResourceDefinition("bad", ResourceVector(), environmentalAvailability = -1.0))), rules)
+        }
         assertNotNull(WarbandEngine.chooseRecruit(state(), state().warbands.getValue("warband"), null, catalog, 6.0))
     }
 

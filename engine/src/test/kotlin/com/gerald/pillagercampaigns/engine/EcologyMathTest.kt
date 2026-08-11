@@ -32,6 +32,37 @@ class EcologyMathTest {
         val mountain = EnvironmentTraits(habitability = 0.1, biomass = 0.0, mineralPotential = 1.0, exoticPotential = 0.5)
         assertTrue(EcologyMath.environmentalYield(berries, forest) > EcologyMath.environmentalYield(ore, forest))
         assertTrue(EcologyMath.environmentalYield(ore, mountain) > EcologyMath.environmentalYield(berries, mountain))
+        assertEquals("berries", EcologyMath.chooseEnvironmentalResource(listOf(ore, berries), forest, emptyMap())?.itemId)
+        assertEquals("ore", EcologyMath.chooseEnvironmentalResource(listOf(ore, berries), forest, mapOf("berries" to 100))?.itemId)
+    }
+
+    @Test fun `shared segment formulas consume exact manifests and delay attrition`() {
+        val rules = WarbandRules(
+            sustenancePerThreatChunk = 0.1, munitionsPerRangedThreatChunk = 0.2,
+            maintenancePerEquipmentChunk = 0.4, deficitGraceChunks = 2.0,
+            equipmentWearPerFrictionChunk = 0.01, attritionPerDeficitChunk = 0.1,
+        )
+        val environment = EnvironmentTraits(travelFriction = 0.5)
+        val demand = EcologyMath.segmentDemand(10.0, 5.0, 2, 1.0, environment, rules)
+        assertEquals(ResourceVector(1.0, 1.0, 0.8, 0.05), demand)
+        val first = linkedMapOf("meal" to 1)
+        val second = linkedMapOf("bundle" to 1)
+        val resources = mapOf(
+            "meal" to ResourceDefinition("meal", ResourceVector(sustenance = 1.0)),
+            "bundle" to ResourceDefinition("bundle", ResourceVector(munitions = 1.0, maintenance = 1.0)),
+        )
+        val result = EcologyMath.consumeCargo(listOf(first, second), resources, demand)
+        assertEquals(mapOf("meal" to 1, "bundle" to 1), result.items)
+        assertTrue(first.isEmpty() && second.isEmpty())
+        val satisfaction = EcologyMath.supplySatisfaction(demand, result.remaining)
+        assertTrue(satisfaction in 0.9..1.0)
+        assertEquals(0.0075, EcologyMath.equipmentWear(environment, 0.5, rules), 1.0e-9)
+        assertEquals(0.0, EcologyMath.attritionLoss(environment, 0.0, 2.0, rules))
+        assertEquals(0.1, EcologyMath.attritionLoss(environment, 0.0, 3.0, rules), 1.0e-9)
+        assertEquals(1.0, EcologyMath.supplySatisfaction(ResourceVector(), ResourceVector()))
+        assertTrue(!EcologyMath.shouldRetreatFromShortage(3.0, rules.minimumAggression, rules))
+        assertTrue(EcologyMath.shouldRetreatFromShortage(4.1, rules.minimumAggression, rules))
+        assertTrue(!EcologyMath.shouldRetreatFromShortage(5.9, rules.maximumAggression, rules))
     }
 
     @Test fun `selection memory decays continuously and remains bounded`() {

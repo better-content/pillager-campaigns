@@ -56,20 +56,35 @@ class PillagerCampaignSerializationTest {
             UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
             ResourceLocation("minecraft", "overworld"), 1, 2, 3, 4, 7, 99, 0,
             CampaignState.ACTIVE, null, null, 0, mutableListOf(UUID.randomUUID()), 123, 0, 7.0,
-            plannedMembers = mutableListOf(PlannedCampaignMember(ResourceLocation("minecraft", "vindicator"), 7.0)),
+            plannedMembers = mutableListOf(PlannedCampaignMember(
+                ResourceLocation("minecraft", "vindicator"), 7.0, cargo = mutableMapOf("minecraft:bread" to 3),
+                manifestId = "engine:member:1", healthFraction = 0.75,
+            )),
             memberSnapshots = mutableListOf(CompoundTag().also { it.putString("id", "minecraft:pillager") }),
             returnOutcome = CampaignOutcome.CAPTAIN_VICTORY, returnReason = "test", returnStartedTick = 456, returnAggressionDelta = 1,
+            route = mutableListOf(CampaignRouteStep(2, 3), CampaignRouteStep(3, 4)), routeIndex = 1,
+            supplySatisfaction = 0.6, deficitExposure = 2.5, forageDebt = 0.4,
+            lostAssetCaches = mutableListOf(LostAssetCache(8, 9, mutableListOf(CompoundTag().also { it.putString("id", "minecraft:bread") }))),
         )
         val loaded = PillagerCampaign.load(campaign.save())
         assertEquals(123, loaded.lastCombatTick)
         assertEquals(7.0, loaded.committedThreat)
         assertEquals("minecraft:vindicator", loaded.plannedMembers.single().recruitId.toString())
+        assertEquals(3, loaded.plannedMembers.single().cargo["minecraft:bread"])
+        assertEquals("engine:member:1", loaded.plannedMembers.single().manifestId)
+        assertEquals(0.75, loaded.plannedMembers.single().healthFraction)
         assertEquals(campaign.squadMemberIds, loaded.squadMemberIds)
         assertEquals("minecraft:pillager", loaded.memberSnapshots.single().getString("id"))
         assertEquals(CampaignOutcome.CAPTAIN_VICTORY, loaded.returnOutcome)
         assertEquals("test", loaded.returnReason)
         assertEquals(456, loaded.returnStartedTick)
         assertEquals(1, loaded.returnAggressionDelta)
+        assertEquals(listOf(CampaignRouteStep(2, 3), CampaignRouteStep(3, 4)), loaded.route)
+        assertEquals(1, loaded.routeIndex)
+        assertEquals(0.6, loaded.supplySatisfaction)
+        assertEquals(2.5, loaded.deficitExposure)
+        assertEquals(0.4, loaded.forageDebt)
+        assertEquals("minecraft:bread", loaded.lostAssetCaches.single().stacks.single().getString("id"))
     }
 
     private fun minimumWarbandTag() = CompoundTag().also {

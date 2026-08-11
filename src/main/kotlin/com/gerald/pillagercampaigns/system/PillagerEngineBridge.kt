@@ -10,6 +10,7 @@ import com.gerald.pillagercampaigns.engine.EngineCatalog
 import com.gerald.pillagercampaigns.engine.EngineFrame
 import com.gerald.pillagercampaigns.engine.EngineState
 import com.gerald.pillagercampaigns.engine.OfficerState
+import com.gerald.pillagercampaigns.engine.PlayerFact
 import com.gerald.pillagercampaigns.engine.RecruitDefinition
 import com.gerald.pillagercampaigns.engine.SelectionMemory
 import com.gerald.pillagercampaigns.engine.WarbandEngine
@@ -17,6 +18,7 @@ import com.gerald.pillagercampaigns.engine.WarbandRules
 import com.gerald.pillagercampaigns.engine.WarbandState
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.server.MinecraftServer
+import net.minecraft.server.level.ServerLevel
 import net.minecraft.world.entity.Mob
 import net.minecraft.world.item.ItemStack
 import java.util.UUID
@@ -28,9 +30,17 @@ import kotlin.math.roundToInt
  */
 object PillagerEngineBridge {
     internal data class LiveRecruit(val mob: Mob, val definition: RecruitDefinition)
-    internal data class PlannedLiveMember(val recruitId: String, val threat: Double, val equipmentIndex: Int?)
+    internal data class PlannedLiveMember(
+        val manifestId: String,
+        val recruitId: String,
+        val threat: Double,
+        val equipmentIndex: Int?,
+        val cargo: Map<String, Int>,
+        val healthFraction: Double,
+    )
+    internal data class PlannedLiveCampaign(val members: List<PlannedLiveMember>, val route: List<ChunkPosition>)
 
-    private fun rules() = WarbandRules(
+    internal fun rules() = WarbandRules(
         minimumAggression = PillagerCampaignsConfig.minimumAggression.get(),
         maximumAggression = PillagerCampaignsConfig.maximumAggression.get(),
         idleReturnTicks = PillagerCampaignsConfig.idleReturnTicks.get().toLong(),
@@ -119,8 +129,64 @@ object PillagerEngineBridge {
         val officer = OfficerState("live-officer", core.factionId, core.id, officerPreferences.toMutableMap())
         val state = EngineState(sequence = sequence.and(Long.MAX_VALUE), warbands = linkedMapOf(core.id to core), officers = linkedMapOf(officer.id to officer))
         return WarbandEngine.planSquad(state, core, officer, EngineCatalog("forge-live", recruits), budget, rules()).members.map { member ->
-            PlannedLiveMember(member.recruitId, member.threat, member.equipment?.id?.substringAfter("forge-armory:")?.toIntOrNull())
+            PlannedLiveMember(
+                member.id, member.recruitId, member.threat,
+                member.equipment?.id?.substringAfter("forge-armory:")?.toIntOrNull(), member.cargo.toMap(), member.healthFraction,
+            )
         }.also { syncSelectionMemory(warband, core) }
+    }
+
+    internal fun planCampaign(
+        level: ServerLevel,
+        warband: PillagerWarband,
+        officerPreferences: Map<String, Double>,
+        recruits: List<RecruitDefinition>,
+        armory: List<CompoundTag>,
+        targetPlayerId: UUID,
+        targetChunkX: Int,
+        targetChunkZ: Int,
+        now: Long,
+        sequence: Long,
+    ): PlannedLiveCampaign? {
+        val core = coreWarband(warband).copy(
+            armory = armory.mapIndexedTo(mutableListOf()) { index, tag ->
+                TinkersArmoryOptimizer.manifest("forge-armory:$index", ItemStack.of(tag))
+            },
+        )
+        val officer = OfficerState("live-officer", core.factionId, core.id, officerPreferences.toMutableMap())
+        val state = EngineState(
+            tick = now,
+            sequence = sequence.and(Long.MAX_VALUE),
+            warbands = linkedMapOf(core.id to core),
+            officers = linkedMapOf(officer.id to officer),
+        )
+        val target = ChunkPosition(level.dimension().location().toString(), targetChunkX, targetChunkZ)
+        val catalog = EngineCatalog("forge-live", recruits, resources = WarbandResourceCatalog.definitions())
+        WarbandEngine.transition(
+            state,
+            EngineFrame(
+                0L,
+                players = listOf(PlayerFact(targetPlayerId.toString(), target, setOf(core.id))),
+                terrain = EnvironmentSampler.corridor(level, warband.rallyChunkX, warband.rallyChunkZ, targetChunkX, targetChunkZ),
+            ),
+            catalog,
+            rules(),
+        )
+        val campaign = state.campaigns.values.singleOrNull() ?: return null
+        warband.raidPool = core.raidPool.coerceAtLeast(0.0)
+        warband.stockpile.clear()
+        warband.stockpile.putAll(core.stockpile)
+        syncSelectionMemory(warband, core)
+        return PlannedLiveCampaign(
+            campaign.members.map { member ->
+                PlannedLiveMember(
+                    member.id, member.recruitId, member.threat,
+                    member.equipment?.id?.substringAfter("forge-armory:")?.toIntOrNull(),
+                    member.cargo.toMap(), member.healthFraction,
+                )
+            },
+            campaign.route.toList(),
+        )
     }
 
     fun raidBudget(
