@@ -29,6 +29,7 @@ import net.minecraft.world.item.MapItem
 import net.minecraft.world.level.GameType
 import net.minecraft.world.level.GameRules
 import net.minecraft.world.level.chunk.LevelChunk
+import net.minecraft.world.phys.AABB
 import net.minecraftforge.event.RegisterCommandsEvent
 import net.minecraftforge.event.CommandEvent
 import net.minecraftforge.event.TickEvent
@@ -77,6 +78,13 @@ object PillagerCampaignsEvents {
         val data = PillagerWorldData.get(level.server)
         data.markPlayerInitialized(player.uuid)
         armRespawnProtectionIfEligible(player, level, data)
+    }
+
+    @SubscribeEvent
+    fun onPlayerLoggedOut(event: PlayerEvent.PlayerLoggedOutEvent) {
+        val player = event.entity
+        val level = player.level() as? ServerLevel ?: return
+        PillagerCampaignEngine.pauseCampaignsForPlayer(level.server, PillagerWorldData.get(level.server), player.uuid)
     }
 
     @SubscribeEvent
@@ -145,6 +153,27 @@ object PillagerCampaignsEvents {
     }
 
     @SubscribeEvent
+    fun onChunkUnload(event: ChunkEvent.Unload) {
+        val level = event.level as? ServerLevel ?: return
+        val chunk = event.chunk as? LevelChunk ?: return
+        val box = AABB(
+            chunk.pos.minBlockX.toDouble(), level.minBuildHeight.toDouble(), chunk.pos.minBlockZ.toDouble(),
+            (chunk.pos.maxBlockX + 1).toDouble(), level.maxBuildHeight.toDouble(), (chunk.pos.maxBlockZ + 1).toDouble(),
+        )
+        val data = PillagerWorldData.get(level.server)
+        val campaigns = level.getEntitiesOfClass(Mob::class.java, box) { it.persistentData.hasUUID(PillagerRuntime.CAMPAIGN_TAG) }
+            .map { it.persistentData.getUUID(PillagerRuntime.CAMPAIGN_TAG) }.distinct().mapNotNull(data.campaigns::get)
+        campaigns.forEach { campaign ->
+            if (PillagerRuntime.snapshotCampaign(level, campaign) > 0 && campaign.state != CampaignState.RETURNING) {
+                campaign.state = CampaignState.READY_TO_MATERIALIZE
+                campaign.materializeAttemptId = null
+                campaign.materializingUntilTick = 0L
+            }
+        }
+        if (campaigns.isNotEmpty()) data.markChanged()
+    }
+
+    @SubscribeEvent
     fun onLivingTick(event: LivingEvent.LivingTickEvent) {
         val mob = event.entity as? Mob ?: return
         val level = mob.level() as? ServerLevel ?: return
@@ -207,7 +236,6 @@ object PillagerCampaignsEvents {
                 val campaign = data.campaigns[killerTag.getUUID(PillagerRuntime.CAMPAIGN_TAG)]
                 val warband = campaign?.let { data.warbands[it.originWarbandId] }
                 if (campaign != null && warband != null) {
-                    PillagerRuntime.dismissCampaign(level, campaign.id, campaign.squadMemberIds)
                     PillagerRuntime.placeFactionDeathBanner(level, event.entity.blockPosition(), warband.bannerSeed)
                     PillagerCampaignEngine.abortCampaignAfterPlayerKill(data, campaign.id, level.gameTime)
                     data.markChanged()
@@ -253,6 +281,9 @@ object PillagerCampaignsEvents {
         }
         if (!tag.hasUUID(PillagerRuntime.CAMPAIGN_TAG)) return
         val campaign = data.campaigns[tag.getUUID(PillagerRuntime.CAMPAIGN_TAG)] ?: return
+        val entityType = tag.getString(PillagerRuntime.ENTITY_TYPE_TAG)
+        val priorThreat = campaign.memberThreat[mob.uuid] ?: tag.getDouble(PillagerRuntime.THREAT_TAG)
+        PillagerCampaignEngine.recordThreatObservation(data, campaign, entityType, priorThreat.coerceAtLeast(1.0) * 1.35)
         campaign.memberEquipment.remove(mob.uuid)
         campaign.memberThreat.remove(mob.uuid)
         if (tag.getBoolean(PillagerRuntime.LEADER_TAG)) {
@@ -304,7 +335,24 @@ object PillagerCampaignsEvents {
                 campaignDealtDamage -> "damage"
                 else -> "durability"
             }
-            PillagerCampaignEngine.recordCombatObservation(PillagerWorldData.get(level.server), campaign, preference, if (campaignDealtDamage) 1.0 else -1.0)
+            PillagerCampaignEngine.recordCombatObservation(PillagerWorldData.get(level.server), campaign, preference, 1.0)
+            val campaignMob = when {
+                attacker?.persistentData?.hasUUID(PillagerRuntime.CAMPAIGN_TAG) == true -> attacker
+                victim is Mob && victim.persistentData.hasUUID(PillagerRuntime.CAMPAIGN_TAG) -> victim
+                else -> null
+            }
+            if (campaignMob != null) {
+                val currentThreat = campaign.memberThreat[campaignMob.uuid] ?: campaignMob.persistentData.getDouble(PillagerRuntime.THREAT_TAG)
+                val observation = if (campaignDealtDamage) {
+                    (currentThreat - event.amount / 20.0).coerceAtLeast(1.0)
+                } else {
+                    currentThreat + event.amount / 5.0
+                }
+                PillagerCampaignEngine.recordThreatObservation(
+                    PillagerWorldData.get(level.server), campaign,
+                    campaignMob.persistentData.getString(PillagerRuntime.ENTITY_TYPE_TAG), observation,
+                )
+            }
         }
     }
 
@@ -430,7 +478,7 @@ object PillagerCampaignsEvents {
             }
             source.sendSuccess({
                 Component.literal(
-                    "  ${warband.id.toString().take(8)} dim=${warband.dimension} rally_chunk=${warband.rallyChunkX},${warband.rallyChunkZ} rally_xyz=${rally.x},${rally.y},${rally.z} reserve=${warband.reserve}/${warband.capacity} raid_pool=${"%.1f".format(warband.raidPool)} aggression=${warband.aggression} cooldown_ticks=$cooldown active=${activeCampaigns[warband.id] ?: 0}/${warband.activeCampaignLimit} warlord=$warlordState last_failure=${warband.lastPresenceFailure.name.lowercase()}"
+                    "  ${warband.id.toString().take(8)} dim=${warband.dimension} rally_chunk=${warband.rallyChunkX},${warband.rallyChunkZ} rally_xyz=${rally.x},${rally.y},${rally.z} reserve=${warband.reserve}/${warband.capacity} raid_pool=${"%.1f".format(warband.raidPool)} materials=${"%.1f".format(warband.materialLedger.values.sum())} learned=${warband.empiricalThreat.size} aggression=${warband.aggression} cooldown_ticks=$cooldown active=${activeCampaigns[warband.id] ?: 0}/${warband.activeCampaignLimit} warlord=$warlordState last_failure=${warband.lastPresenceFailure.name.lowercase()}"
                 ).append(" ").append(tpLink(warband.dimension.toString(), rally.x, rally.y, rally.z))
             }, false)
         }
@@ -562,7 +610,7 @@ object PillagerCampaignsEvents {
 
     internal fun formatWarbandLine(warband: com.gerald.pillagercampaigns.data.PillagerWarband): String {
         val rally = warband.rallyBlockPos()
-        return "  ${warband.id.toString().take(8)} dim=${warband.dimension} rally_chunk=${warband.rallyChunkX},${warband.rallyChunkZ} rally_xyz=${rally.x},${rally.y},${rally.z} reserve=${warband.reserve}/${warband.capacity} raid_pool=${"%.1f".format(warband.raidPool)} aggression=${warband.aggression} warlord=${warband.warlordOfficerId.toString().take(8)} rally_presence=${warband.rallyPresence?.state?.name?.lowercase() ?: "unknown"} failure=${warband.lastPresenceFailure.name.lowercase()}"
+        return "  ${warband.id.toString().take(8)} dim=${warband.dimension} rally_chunk=${warband.rallyChunkX},${warband.rallyChunkZ} rally_xyz=${rally.x},${rally.y},${rally.z} reserve=${warband.reserve}/${warband.capacity} raid_pool=${"%.1f".format(warband.raidPool)} materials=${"%.1f".format(warband.materialLedger.values.sum())} learned=${warband.empiricalThreat.size} aggression=${warband.aggression} warlord=${warband.warlordOfficerId.toString().take(8)} rally_presence=${warband.rallyPresence?.state?.name?.lowercase() ?: "unknown"} failure=${warband.lastPresenceFailure.name.lowercase()}"
     }
 
     private fun reset(source: CommandSourceStack): Int {

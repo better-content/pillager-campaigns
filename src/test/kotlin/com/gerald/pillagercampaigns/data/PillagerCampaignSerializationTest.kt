@@ -14,7 +14,8 @@ class PillagerCampaignSerializationTest {
             UUID.randomUUID(), UUID.randomUUID(), ResourceLocation("minecraft", "overworld"), 7, 3, 4,
             reserve = 42, capacity = 180, raidPool = 3.5, aggression = 11,
             environment = EnvironmentTraits(.7, .6, .4, .2, .8), preferences = mutableMapOf("range" to 1.25),
-            playerRelations = mutableMapOf(UUID(1, 2) to "HOSTILE"), defeated = false,
+            playerRelations = mutableMapOf(UUID(1, 2) to "HOSTILE"), materialLedger = mutableMapOf("tconstruct:flint" to 8.0),
+            empiricalThreat = mutableMapOf("minecraft:pillager" to 9.5), extractionTickDebt = 44.0, defeated = false,
             warlordOfficerId = UUID.randomUUID(), warlordEntityId = null, nextRaidTick = 10,
             cooldownUntilTick = 20, lastIntelTick = 30, lastPresenceFailure = PresenceMaterializationResult.SUCCESS,
         )
@@ -26,6 +27,9 @@ class PillagerCampaignSerializationTest {
         assertEquals(11, loaded.aggression)
         assertEquals(.7, loaded.environment.habitability)
         assertEquals(1.25, loaded.preferences["range"])
+        assertEquals(8.0, loaded.materialLedger["tconstruct:flint"])
+        assertEquals(9.5, loaded.empiricalThreat["minecraft:pillager"])
+        assertEquals(44.0, loaded.extractionTickDebt)
         assertFalse(saved.contains("structureId"))
         assertFalse(saved.contains("archetype"))
     }
@@ -43,11 +47,18 @@ class PillagerCampaignSerializationTest {
             UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
             ResourceLocation("minecraft", "overworld"), 1, 2, 3, 4, 7, 99, 0,
             CampaignState.ACTIVE, null, null, 0, mutableListOf(UUID.randomUUID()), 123, 0, 7,
+            memberSnapshots = mutableListOf(CompoundTag().also { it.putString("id", "minecraft:pillager") }),
+            returnOutcome = CampaignOutcome.CAPTAIN_VICTORY, returnReason = "test", returnStartedTick = 456, returnAggressionDelta = 1,
         )
         val loaded = PillagerCampaign.load(campaign.save())
         assertEquals(123, loaded.lastCombatTick)
         assertEquals(7, loaded.committedThreat)
         assertEquals(campaign.squadMemberIds, loaded.squadMemberIds)
+        assertEquals("minecraft:pillager", loaded.memberSnapshots.single().getString("id"))
+        assertEquals(CampaignOutcome.CAPTAIN_VICTORY, loaded.returnOutcome)
+        assertEquals("test", loaded.returnReason)
+        assertEquals(456, loaded.returnStartedTick)
+        assertEquals(1, loaded.returnAggressionDelta)
     }
 
     private fun minimumWarbandTag() = CompoundTag().also {

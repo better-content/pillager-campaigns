@@ -167,6 +167,7 @@ tasks.jacocoTestReport {
                         "**/EnvironmentSampler*",
                         "**/TinkersArmoryOptimizer*",
                         "**/WarbandFormulaData*",
+                        "**/sim/WarbandScenarioMain*",
                         "**/gametest/**",
                         "**/sam/api/**",
                     )
@@ -209,4 +210,12 @@ tasks.register("verifyFull") {
     description = "Runs the full verification lane, including headless Forge GameTests."
     dependsOn(tasks.named("verifyFast"))
     dependsOn(tasks.named("headlessGameTest"))
+}
+
+tasks.register<JavaExec>("warbandSim") {
+    group = "application"
+    description = "Runs the Minecraft-free deterministic warband spreadsheet game."
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass.set("com.gerald.pillagercampaigns.sim.WarbandScenarioMain")
+    standardInput = System.`in`
 }

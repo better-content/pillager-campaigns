@@ -111,9 +111,12 @@ data class PillagerWarband(
     val playerRelations: MutableMap<UUID, String> = mutableMapOf(),
     val armory: MutableList<CompoundTag> = mutableListOf(),
     val garrisonThreat: MutableMap<UUID, Double> = mutableMapOf(),
+    val materialLedger: MutableMap<String, Double> = mutableMapOf(),
+    val empiricalThreat: MutableMap<String, Double> = mutableMapOf(),
     var lastEconomyTick: Long = 0L,
     var recruitTickDebt: Double = 0.0,
     var mobilizationTickDebt: Double = 0.0,
+    var extractionTickDebt: Double = 0.0,
     var defeated: Boolean,
     var warlordOfficerId: UUID,
     var warlordEntityId: UUID?,
@@ -139,6 +142,7 @@ data class PillagerWarband(
         it.putLong("lastEconomyTick", lastEconomyTick)
         it.putDouble("recruitTickDebt", recruitTickDebt)
         it.putDouble("mobilizationTickDebt", mobilizationTickDebt)
+        it.putDouble("extractionTickDebt", extractionTickDebt)
         it.put("environment", CompoundTag().also { env ->
             env.putDouble("habitability", environment.habitability)
             env.putDouble("biomass", environment.biomass)
@@ -150,6 +154,8 @@ data class PillagerWarband(
         it.put("playerRelations", CompoundTag().also { relations -> playerRelations.forEach { (id, value) -> relations.putString(id.toString(), value) } })
         it.put("armory", saveRecordList(armory))
         it.put("garrisonThreat", CompoundTag().also { values -> garrisonThreat.forEach { (id, threat) -> values.putDouble(id.toString(), threat) } })
+        it.put("materialLedger", CompoundTag().also { values -> materialLedger.forEach(values::putDouble) })
+        it.put("empiricalThreat", CompoundTag().also { values -> empiricalThreat.forEach(values::putDouble) })
         it.putBoolean("defeated", defeated)
         it.putUUID("warlordOfficerId", warlordOfficerId)
         warlordEntityId?.let { entity -> it.putUUID("warlordEntityId", entity) }
@@ -187,9 +193,12 @@ data class PillagerWarband(
             playerRelations = mutableMapOf<UUID, String>().also { values -> if (tag.contains("playerRelations", Tag.TAG_COMPOUND.toInt())) tag.getCompound("playerRelations").allKeys.forEach { key -> runCatching { UUID.fromString(key) }.getOrNull()?.let { values[it] = tag.getCompound("playerRelations").getString(key) } } },
             armory = mutableListOf<CompoundTag>().also { values -> if (tag.contains("armory", Tag.TAG_LIST.toInt())) tag.getList("armory", Tag.TAG_COMPOUND.toInt()).forEach { values += (it as CompoundTag).copy() } },
             garrisonThreat = mutableMapOf<UUID, Double>().also { values -> if (tag.contains("garrisonThreat", Tag.TAG_COMPOUND.toInt())) tag.getCompound("garrisonThreat").allKeys.forEach { key -> runCatching { UUID.fromString(key) }.getOrNull()?.let { values[it] = tag.getCompound("garrisonThreat").getDouble(key) } } },
+            materialLedger = mutableMapOf<String, Double>().also { values -> if (tag.contains("materialLedger", Tag.TAG_COMPOUND.toInt())) tag.getCompound("materialLedger").allKeys.forEach { key -> values[key] = tag.getCompound("materialLedger").getDouble(key).coerceAtLeast(0.0) } },
+            empiricalThreat = mutableMapOf<String, Double>().also { values -> if (tag.contains("empiricalThreat", Tag.TAG_COMPOUND.toInt())) tag.getCompound("empiricalThreat").allKeys.forEach { key -> values[key] = tag.getCompound("empiricalThreat").getDouble(key).coerceAtLeast(1.0) } },
             lastEconomyTick = if (tag.contains("lastEconomyTick")) tag.getLong("lastEconomyTick") else 0L,
             recruitTickDebt = if (tag.contains("recruitTickDebt")) tag.getDouble("recruitTickDebt") else 0.0,
             mobilizationTickDebt = if (tag.contains("mobilizationTickDebt")) tag.getDouble("mobilizationTickDebt") else 0.0,
+            extractionTickDebt = if (tag.contains("extractionTickDebt")) tag.getDouble("extractionTickDebt") else 0.0,
             defeated = if (tag.contains("defeated")) tag.getBoolean("defeated") else false,
             warlordOfficerId = tag.getUUID("warlordOfficerId"),
             warlordEntityId = if (tag.hasUUID("warlordEntityId")) tag.getUUID("warlordEntityId") else null,
@@ -327,6 +336,11 @@ data class PillagerCampaign(
     val pendingEquipment: MutableList<CompoundTag> = mutableListOf(),
     val memberEquipment: MutableMap<UUID, CompoundTag> = mutableMapOf(),
     val memberThreat: MutableMap<UUID, Double> = mutableMapOf(),
+    val memberSnapshots: MutableList<CompoundTag> = mutableListOf(),
+    var returnOutcome: CampaignOutcome? = null,
+    var returnReason: String? = null,
+    var returnStartedTick: Long = 0L,
+    var returnAggressionDelta: Int = 0,
 ) {
     fun save(): CompoundTag = CompoundTag().also {
         it.putUUID("id", id)
@@ -359,6 +373,11 @@ data class PillagerCampaign(
         it.put("pendingEquipment", saveRecordList(pendingEquipment))
         it.put("memberEquipment", saveRecordList(memberEquipment.map { (id, stack) -> CompoundTag().also { entry -> entry.putUUID("id", id); entry.put("stack", stack.copy()) } }))
         it.put("memberThreat", CompoundTag().also { values -> memberThreat.forEach { (id, threat) -> values.putDouble(id.toString(), threat) } })
+        it.put("memberSnapshots", saveRecordList(memberSnapshots))
+        returnOutcome?.let { outcome -> it.putString("returnOutcome", outcome.name) }
+        returnReason?.let { reason -> it.putString("returnReason", reason) }
+        it.putLong("returnStartedTick", returnStartedTick)
+        it.putInt("returnAggressionDelta", returnAggressionDelta)
     }
 
     companion object {
@@ -396,6 +415,11 @@ data class PillagerCampaign(
             pendingEquipment = mutableListOf<CompoundTag>().also { values -> if (tag.contains("pendingEquipment", Tag.TAG_LIST.toInt())) tag.getList("pendingEquipment", Tag.TAG_COMPOUND.toInt()).forEach { values += (it as CompoundTag).copy() } },
             memberEquipment = mutableMapOf<UUID, CompoundTag>().also { values -> if (tag.contains("memberEquipment", Tag.TAG_LIST.toInt())) tag.getList("memberEquipment", Tag.TAG_COMPOUND.toInt()).forEach { raw -> (raw as CompoundTag).let { entry -> if (entry.hasUUID("id")) values[entry.getUUID("id")] = entry.getCompound("stack").copy() } } },
             memberThreat = mutableMapOf<UUID, Double>().also { values -> if (tag.contains("memberThreat", Tag.TAG_COMPOUND.toInt())) tag.getCompound("memberThreat").allKeys.forEach { key -> runCatching { UUID.fromString(key) }.getOrNull()?.let { values[it] = tag.getCompound("memberThreat").getDouble(key) } } },
+            memberSnapshots = mutableListOf<CompoundTag>().also { values -> if (tag.contains("memberSnapshots", Tag.TAG_LIST.toInt())) tag.getList("memberSnapshots", Tag.TAG_COMPOUND.toInt()).forEach { values += (it as CompoundTag).copy() } },
+            returnOutcome = if (tag.contains("returnOutcome")) runCatching { CampaignOutcome.valueOf(tag.getString("returnOutcome")) }.getOrNull() else null,
+            returnReason = if (tag.contains("returnReason")) tag.getString("returnReason") else null,
+            returnStartedTick = if (tag.contains("returnStartedTick")) tag.getLong("returnStartedTick") else 0L,
+            returnAggressionDelta = if (tag.contains("returnAggressionDelta")) tag.getInt("returnAggressionDelta") else 0,
         )
     }
 }

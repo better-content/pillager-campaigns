@@ -13,20 +13,104 @@ import com.gerald.pillagercampaigns.data.PillagerWorldData
 import com.gerald.pillagercampaigns.data.PresenceMaterializationResult
 import com.gerald.pillagercampaigns.data.RallyPresenceState
 import com.gerald.pillagercampaigns.system.PillagerCampaignEngine
+import com.gerald.pillagercampaigns.system.PillagerRuntime
+import com.gerald.pillagercampaigns.system.PillagerWarbandPresenceSystem
 import com.gerald.pillagercampaigns.system.PillagerWarbandDiscoveryRules
 import com.gerald.pillagercampaigns.system.PillagerWarbandDiscoveryService
+import com.gerald.pillagercampaigns.system.TinkersArmoryOptimizer
+import com.mojang.authlib.GameProfile
 import net.minecraft.core.BlockPos
 import net.minecraft.gametest.framework.GameTest
 import net.minecraft.gametest.framework.GameTestHelper
 import net.minecraft.resources.ResourceLocation
 import net.minecraft.world.level.ChunkPos
+import net.minecraft.world.level.block.Blocks
 import net.minecraftforge.gametest.GameTestHolder
 import net.minecraftforge.gametest.PrefixGameTestTemplate
+import net.minecraftforge.common.util.FakePlayerFactory
+import kotlin.math.ceil
 import java.util.UUID
 
 @GameTestHolder(PillagerCampaignsMod.MOD_ID)
 @PrefixGameTestTemplate(false)
 object PillagerCampaignsGameTests {
+    @JvmStatic
+    @GameTest(templateNamespace = "minecraft", template = "empty", timeoutTicks = 200)
+    fun minimumThreatCampaignMaterializesRealRecruit(helper: GameTestHelper) {
+        val data = resetWorldData(helper)
+        val level = helper.level
+        val anchor = ChunkPos(helper.absolutePos(BlockPos(2, 2, 2)))
+        val candidate = PillagerWarbandDiscoveryRules.Candidate(
+            id = UUID.nameUUIDFromBytes("gametest:minimum-threat-materialization".toByteArray()),
+            dimension = level.dimension().location(), cellX = 0, cellZ = 0, chunkX = anchor.x, chunkZ = anchor.z,
+        )
+        helper.assertTrue(PillagerWarbandDiscoveryService.registerDiscoveredWarband(level, data, candidate, level.gameTime), "warband should register")
+        val warband = data.warbands.getValue(candidate.id)
+        warband.lastPresenceAttemptTick = -1_000L
+        val officer = data.officers.getValue(warband.warlordOfficerId)
+        val player = FakePlayerFactory.get(level, GameProfile(UUID.nameUUIDFromBytes("gametest:target".toByteArray()), "CampaignTarget"))
+        val playerPos = helper.absolutePos(BlockPos(5, 2, 5))
+        level.getChunk(playerPos.x shr 4, playerPos.z shr 4)
+        val floorY = playerPos.y - 1
+        val minX = (playerPos.x shr 4) shl 4
+        val minZ = (playerPos.z shr 4) shl 4
+        for (x in minX until minX + 16) for (z in minZ until minZ + 16) {
+            level.setBlockAndUpdate(BlockPos(x, floorY, z), Blocks.STONE.defaultBlockState())
+        }
+        player.moveTo(playerPos.x + .5, playerPos.y.toDouble(), playerPos.z + .5)
+        val minimum = PillagerRuntime.minimumRecruitThreat(level, warband)
+        helper.assertTrue(minimum != null && minimum > 0.0, "live recruit catalogue should expose a minimum threat")
+        val campaign = PillagerCampaign(
+            id = UUID.nameUUIDFromBytes("gametest:minimum-campaign".toByteArray()), factionId = warband.factionId,
+            originWarbandId = warband.id, officerId = officer.id, targetPlayerId = player.uuid,
+            targetDimension = level.dimension().location(), currentChunkX = player.chunkPosition().x,
+            currentChunkZ = player.chunkPosition().z, targetChunkX = player.chunkPosition().x, targetChunkZ = player.chunkPosition().z,
+            difficultySnapshot = 1, loadoutSeed = 42L, tickDebt = 0, state = CampaignState.READY_TO_MATERIALIZE,
+            resumeState = null, materializeAttemptId = null, materializingUntilTick = 0L, squadMemberIds = mutableListOf(),
+            committedThreat = ceil(minimum!!).toInt(),
+        )
+        data.campaigns[campaign.id] = campaign
+        val faction = data.factions.getValue(warband.factionId)
+        val spawned = PillagerRuntime.materializeWarbandSquad(
+            level, warband, campaign, faction.bannerSeed, officer, player,
+            playerPos.x + .5, playerPos.y.toDouble(), playerPos.z + .5,
+        )
+        campaign.squadMemberIds += spawned
+        helper.assertTrue(spawned.isNotEmpty(), "minimum affordable campaign should materialize a live candidate")
+        helper.assertTrue(campaign.squadMemberIds.isNotEmpty(), "minimum campaign should contain a real recruit")
+        helper.assertTrue(campaign.memberThreat.values.sum() > 0.0, "materialized recruit should carry exact threat")
+        val originalIds = campaign.squadMemberIds.toSet()
+        helper.assertTrue(PillagerRuntime.snapshotCampaign(level, campaign) == originalIds.size, "loaded members should serialize at the materialization frontier")
+        helper.assertTrue(campaign.memberSnapshots.size == originalIds.size, "every member should have an exact serialized snapshot")
+        val restored = PillagerRuntime.restoreSnapshots(level, campaign, playerPos)
+        helper.assertTrue(restored.toSet() == originalIds, "rematerialization should preserve member identities")
+        helper.succeed()
+    }
+
+    @JvmStatic
+    @GameTest(templateNamespace = "minecraft", template = "empty", timeoutTicks = 200)
+    fun tinkersArmoryConsumesExactPartMaterialUnits(helper: GameTestHelper) {
+        val data = resetWorldData(helper)
+        val level = helper.level
+        val anchor = ChunkPos(helper.absolutePos(BlockPos(2, 2, 2)))
+        val candidate = PillagerWarbandDiscoveryRules.Candidate(
+            id = UUID.nameUUIDFromBytes("gametest:tcon-ledger".toByteArray()), dimension = level.dimension().location(),
+            cellX = 0, cellZ = 0, chunkX = anchor.x, chunkZ = anchor.z,
+        )
+        helper.assertTrue(PillagerWarbandDiscoveryService.registerDiscoveredWarband(level, data, candidate, level.gameTime), "warband should register")
+        val warband = data.warbands.getValue(candidate.id)
+        warband.armory.clear()
+        warband.materialLedger.clear()
+        TinkersArmoryOptimizer.seedLedger(warband, 96.0)
+        val before = warband.materialLedger.toMap()
+        val stack = TinkersArmoryOptimizer.create(warband, level.server)
+        helper.assertTrue(stack != null && !stack.isEmpty, "an affordable live TCon formulation should be constructed")
+        val cost = stack?.let(TinkersArmoryOptimizer::cost).orEmpty()
+        helper.assertTrue(cost.isNotEmpty() && cost.values.all { it > 0.0 }, "constructed equipment should retain an exact positive bill of materials")
+        cost.forEach { (id, amount) -> helper.assertTrue(kotlin.math.abs(before.getOrDefault(id, 0.0) - warband.materialLedger.getOrDefault(id, 0.0) - amount) < 0.0001, "ledger should consume exactly $amount of $id") }
+        helper.succeed()
+    }
+
     @JvmStatic
     @GameTest(templateNamespace = "minecraft", template = "empty", timeoutTicks = 40)
     fun warbandRegistrationCreatesFactionOfficerAndWarband(helper: GameTestHelper) {

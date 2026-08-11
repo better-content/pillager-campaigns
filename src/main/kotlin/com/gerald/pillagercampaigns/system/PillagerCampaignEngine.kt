@@ -17,7 +17,6 @@ import com.gerald.pillagercampaigns.util.PillagerIdentity
 import net.minecraft.server.MinecraftServer
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.server.level.ServerPlayer
-import net.minecraft.network.chat.Component
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.sounds.SoundEvents
 import net.minecraft.sounds.SoundSource
@@ -41,7 +40,7 @@ object PillagerCampaignEngine {
     private var dispatchCursor: Int = 0
 
     fun tick(server: MinecraftServer, data: PillagerWorldData, now: Long) {
-        advanceEconomies(data, now)
+        advanceEconomies(server, data, now)
         updateTerritorialRelations(server, data)
         pruneResolved(data, now)
         dispatch(server, data, now)
@@ -86,7 +85,9 @@ object PillagerCampaignEngine {
             val assignment = chooseAssignment(level, players, warband, data, now, maxRange, targetedPlayers) ?: continue
             val captain = assignment.first
             val target = assignment.second
-            val committedThreat = minOf(warband.raidPool.toInt(), warband.aggression.coerceAtLeast(1))
+            val minimumThreat = PillagerRuntime.minimumRecruitThreat(level, warband) ?: continue
+            if (warband.raidPool < minimumThreat) continue
+            val committedThreat = minOf(warband.raidPool.toInt(), maxOf(warband.aggression, kotlin.math.ceil(minimumThreat).toInt()))
             if (committedThreat <= 0) continue
             warband.raidPool -= committedThreat
             val campaign = PillagerCampaign(
@@ -129,13 +130,21 @@ object PillagerCampaignEngine {
 
         data.campaigns.values.forEach { campaign ->
             if (campaign.state == CampaignState.RESOLVED) return@forEach
-            val player = server.playerList.players.firstOrNull { it.uuid == campaign.targetPlayerId } ?: run {
-                toResolve += campaign.id to CampaignOutcome.ABORTED
+            val warband = data.warbands[campaign.originWarbandId] ?: return@forEach
+            val player = server.playerList.players.firstOrNull { it.uuid == campaign.targetPlayerId }
+            val level = player?.serverLevel() ?: server.allLevels.firstOrNull { it.dimension().location() == warband.dimension } ?: return@forEach
+            if (campaign.state == CampaignState.RETURNING) {
+                advanceReturn(level, data, warband, campaign, now, dt, speed)
                 return@forEach
             }
-            val level = player.serverLevel()
+            if (player == null) {
+                startReturn(campaign, now, CampaignOutcome.ABORTED, "target_unavailable")
+                data.markChanged()
+                return@forEach
+            }
             if (!isCampaignTarget(player)) {
-                pauseCampaign(level, campaign, data)
+                startReturn(campaign, now, CampaignOutcome.ABORTED, "target_ineligible")
+                data.markChanged()
                 return@forEach
             }
             if (campaign.state == CampaignState.PAUSED) {
@@ -143,8 +152,8 @@ object PillagerCampaignEngine {
                 resumeCampaign(campaign, data)
             }
             if (data.isPlayerProtected(player.uuid, now)) {
-                PillagerRuntime.dismissCampaign(level, campaign.id, campaign.squadMemberIds)
-                toResolve += campaign.id to CampaignOutcome.ABORTED
+                startReturn(campaign, now, CampaignOutcome.ABORTED, "target_protected")
+                data.markChanged()
                 return@forEach
             }
             when (campaign.state) {
@@ -156,11 +165,11 @@ object PillagerCampaignEngine {
                     if (alive < MIN_ACTIVE_LIVE_MEMBERS) {
                         toResolve += campaign.id to CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT
                     } else if (campaign.committedThreat > 0 && liveThreat / campaign.committedThreat <= retreatAt) {
-                        PillagerRuntime.dismissCampaign(level, campaign.id, campaign.squadMemberIds)
-                        returnCampaign(data, campaign, now, liveThreat)
+                        startReturn(campaign, now, CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT, "morale")
+                        data.markChanged()
                     } else if (now - campaign.lastCombatTick >= PillagerCampaignsConfig.idleReturnTicks.get()) {
-                        PillagerRuntime.dismissCampaign(level, campaign.id, campaign.squadMemberIds)
-                        returnCampaign(data, campaign, now, liveThreat)
+                        startReturn(campaign, now, CampaignOutcome.ABORTED, "idle", aggressionDelta = 1)
+                        data.markChanged()
                     }
                     return@forEach
                 }
@@ -216,6 +225,78 @@ object PillagerCampaignEngine {
             toResolve.forEach { (id, outcome) -> resolveCampaign(data, id, outcome = outcome, observedTick = now) }
             data.markChanged()
         }
+    }
+
+    private fun advanceReturn(
+        level: ServerLevel,
+        data: PillagerWorldData,
+        warband: PillagerWarband,
+        campaign: PillagerCampaign,
+        now: Long,
+        dt: Int,
+        speed: Int,
+    ) {
+        if (campaign.memberSnapshots.isEmpty() && PillagerRuntime.hasLiveCampaignMember(level, campaign.id)) {
+            when (PillagerRuntime.withdrawTowardHome(level, campaign, warband)) {
+                PillagerRuntime.WithdrawalProgress.ARRIVED -> finishReturn(data, campaign, now)
+                else -> data.markChanged()
+            }
+            return
+        }
+        campaign.tickDebt += dt
+        while (campaign.tickDebt >= speed && campaign.state == CampaignState.RETURNING) {
+            campaign.tickDebt -= speed
+            val next = CampaignMath.stepToward(campaign.currentChunkX, campaign.currentChunkZ, warband.rallyChunkX, warband.rallyChunkZ)
+            campaign.currentChunkX = next.first
+            campaign.currentChunkZ = next.second
+            if (next.first == warband.rallyChunkX && next.second == warband.rallyChunkZ) {
+                finishReturn(data, campaign, now)
+                return
+            }
+            if (campaign.memberSnapshots.isNotEmpty() && level.hasChunk(next.first, next.second)) {
+                PillagerSpawnPlacementRules.findRallyPos(level, next.first, next.second)?.let { pos ->
+                    if (PillagerRuntime.restoreSnapshots(level, campaign, pos).isNotEmpty()) data.markChanged()
+                }
+                return
+            }
+        }
+    }
+
+    private fun startReturn(
+        campaign: PillagerCampaign,
+        now: Long,
+        outcome: CampaignOutcome,
+        reason: String,
+        aggressionDelta: Int = 0,
+    ) {
+        if (campaign.state == CampaignState.RETURNING || campaign.state == CampaignState.RESOLVED) return
+        campaign.state = CampaignState.RETURNING
+        campaign.resumeState = null
+        campaign.materializeAttemptId = null
+        campaign.materializingUntilTick = 0L
+        campaign.returnOutcome = outcome
+        campaign.returnReason = reason
+        campaign.returnStartedTick = now
+        campaign.returnAggressionDelta = aggressionDelta
+    }
+
+    private fun finishReturn(data: PillagerWorldData, campaign: PillagerCampaign, now: Long) {
+        val warband = data.warbands[campaign.originWarbandId]
+        if (warband != null) {
+            val survivingThreat = campaign.memberThreat.values.sum()
+            warband.raidPool = (warband.raidPool + survivingThreat).coerceAtMost(warband.capacity.toDouble())
+            warband.armory += campaign.pendingEquipment.map { it.copy() }
+            warband.armory += campaign.memberEquipment.values.map { it.copy() }
+            warband.aggression = (warband.aggression + campaign.returnAggressionDelta)
+                .coerceIn(PillagerCampaignsConfig.minimumAggression.get(), PillagerCampaignsConfig.maximumAggression.get())
+            warband.lastIntelTick = now
+        }
+        campaign.pendingEquipment.clear()
+        campaign.memberEquipment.clear()
+        campaign.memberThreat.clear()
+        campaign.memberSnapshots.clear()
+        campaign.committedThreat = 0
+        resolveCampaign(data, campaign.id, defeatedByPlayer = false, observedTick = now, outcome = campaign.returnOutcome ?: CampaignOutcome.ABORTED)
     }
 
     private fun tryMaterialize(level: ServerLevel, campaign: PillagerCampaign, player: ServerPlayer, distanceChunks: Int, data: PillagerWorldData, now: Long) {
@@ -294,6 +375,17 @@ object PillagerCampaignEngine {
         data.markChanged()
     }
 
+    fun recordThreatObservation(data: PillagerWorldData, campaign: PillagerCampaign, entityType: String, observation: Double) {
+        if (entityType.isBlank()) return
+        data.warbands[campaign.originWarbandId]?.let { warband ->
+            val current = warband.empiricalThreat[entityType]
+                ?: campaign.memberThreat.values.average().takeIf { it.isFinite() && it > 0.0 }
+                ?: 1.0
+            warband.empiricalThreat[entityType] = FormulaicWarbandRules.updateThreat(current, observation, PillagerCampaignsConfig.threatLearningRate.get())
+            data.markChanged()
+        }
+    }
+
     fun abortCampaignAfterPlayerKill(data: PillagerWorldData, campaignId: UUID, observedTick: Long = -1L) {
         val campaign = data.campaigns[campaignId] ?: return
         data.warbands[campaign.originWarbandId]?.let { warband ->
@@ -303,7 +395,8 @@ object PillagerCampaignEngine {
                 warband.nextRaidTick = maxOf(warband.nextRaidTick, warband.cooldownUntilTick)
             }
         }
-        resolveCampaign(data, campaign.id, defeatedByPlayer = false, observedTick = observedTick, outcome = CampaignOutcome.CAPTAIN_VICTORY)
+        startReturn(campaign, observedTick.coerceAtLeast(0L), CampaignOutcome.CAPTAIN_VICTORY, "captain_victory")
+        data.markChanged()
     }
 
     fun collapseFaction(data: PillagerWorldData, factionId: UUID) {
@@ -441,12 +534,10 @@ object PillagerCampaignEngine {
         var changed = false
         data.campaigns.values
             .asSequence()
-            .filter { it.targetPlayerId == playerId && it.state != CampaignState.RESOLVED && it.state != CampaignState.PAUSED }
+            .filter { it.targetPlayerId == playerId && it.state != CampaignState.RESOLVED && it.state != CampaignState.RETURNING }
             .forEach { campaign ->
-                server.allLevels.firstOrNull { it.dimension().location() == campaign.targetDimension }?.let { level ->
-                    PillagerRuntime.dismissCampaign(level, campaign.id, campaign.squadMemberIds)
-                }
-                pauseCampaignRecord(campaign)
+                val observedTick = server.overworld().gameTime
+                startReturn(campaign, observedTick, CampaignOutcome.ABORTED, "target_unavailable")
                 changed = true
             }
         if (changed) data.markChanged()
@@ -569,7 +660,7 @@ object PillagerCampaignEngine {
     }
 
 
-    private fun advanceEconomies(data: PillagerWorldData, now: Long) {
+    private fun advanceEconomies(server: MinecraftServer, data: PillagerWorldData, now: Long) {
         data.warbands.values.asSequence().filter { !it.defeated }.forEach { warband ->
             val elapsed = (now - warband.lastEconomyTick).coerceAtLeast(0L)
             if (elapsed == 0L) return@forEach
@@ -579,7 +670,13 @@ object PillagerCampaignEngine {
             while (warband.recruitTickDebt >= recruitTicks && warband.reserve + warband.raidPool < warband.capacity) {
                 warband.recruitTickDebt -= recruitTicks
                 warband.reserve += 1
-                if (warband.armory.size < warband.capacity) TinkersArmoryOptimizer.create(warband)?.let { warband.armory += it.save(CompoundTag()) }
+                if (warband.armory.size < warband.capacity) TinkersArmoryOptimizer.create(warband, server)?.let { warband.armory += it.save(CompoundTag()) }
+            }
+            warband.extractionTickDebt += elapsed
+            val extractionTicks = recruitTicks / 2.0
+            while (warband.extractionTickDebt >= extractionTicks) {
+                warband.extractionTickDebt -= extractionTicks
+                TinkersArmoryOptimizer.extract(warband)
             }
             warband.mobilizationTickDebt += elapsed
             val mobilizeTicks = FormulaicWarbandRules.mobilizationTicksPerStrength(warband.environment) * 20.0
@@ -589,21 +686,6 @@ object PillagerCampaignEngine {
                 warband.raidPool += 1.0
             }
         }
-    }
-
-    private fun returnCampaign(data: PillagerWorldData, campaign: PillagerCampaign, now: Long, survivingThreat: Double) {
-        data.warbands[campaign.originWarbandId]?.let { warband ->
-            warband.raidPool = (warband.raidPool + survivingThreat).coerceAtMost(warband.capacity.toDouble())
-            warband.armory += campaign.pendingEquipment.map { it.copy() }
-            warband.armory += campaign.memberEquipment.values.map { it.copy() }
-            campaign.pendingEquipment.clear()
-            campaign.memberEquipment.clear()
-            campaign.memberThreat.clear()
-            warband.aggression = (warband.aggression + 1).coerceAtMost(PillagerCampaignsConfig.maximumAggression.get())
-            warband.lastIntelTick = now
-        }
-        campaign.committedThreat = 0
-        resolveCampaign(data, campaign.id, defeatedByPlayer = false, observedTick = now, outcome = CampaignOutcome.ABORTED)
     }
 
     private fun pruneResolved(data: PillagerWorldData, now: Long) {
@@ -622,15 +704,13 @@ object PillagerCampaignEngine {
                     previous == TerritorialRelation.HOSTILE -> previous
                     else -> WarbandTerritoryRules.relation(distance, PillagerCampaignsConfig.territoryRadiusChunks.get(), PillagerCampaignsConfig.warningBandChunks.get())
                 }
-                if (next != previous) {
-                    warband.playerRelations[player.uuid] = next.name
-                    if (next == TerritorialRelation.WARNED) {
-                        player.displayClientMessage(Component.literal("A pillager horn warns you away from claimed ground"), true)
-                        player.playNotifySound(SoundEvents.RAID_HORN.get(), SoundSource.HOSTILE, 1.0f, 0.9f)
-                    } else if (next == TerritorialRelation.HOSTILE) {
-                        player.displayClientMessage(Component.literal("The warband now considers you hostile"), true)
-                        player.playNotifySound(SoundEvents.RAID_HORN.get(), SoundSource.HOSTILE, 1.25f, 0.75f)
-                    }
+                    if (next != previous) {
+                        warband.playerRelations[player.uuid] = next.name
+                        if (next == TerritorialRelation.WARNED) {
+                            player.playNotifySound(SoundEvents.RAID_HORN.get(), SoundSource.HOSTILE, 1.0f, 0.9f)
+                        } else if (next == TerritorialRelation.HOSTILE) {
+                            player.playNotifySound(SoundEvents.RAID_HORN.get(), SoundSource.HOSTILE, 1.25f, 0.75f)
+                        }
                     data.markChanged()
                 }
             }

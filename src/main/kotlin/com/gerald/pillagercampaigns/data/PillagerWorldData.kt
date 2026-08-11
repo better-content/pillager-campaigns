@@ -58,7 +58,7 @@ class PillagerWorldData : SavedData() {
 
     companion object {
         private const val KEY = "pillagercampaigns_world"
-        private const val SCHEMA_VERSION = 2
+        private const val SCHEMA_VERSION = 3
 
         fun get(server: MinecraftServer): PillagerWorldData =
             server.overworld().dataStorage.computeIfAbsent(::load, ::PillagerWorldData, KEY)

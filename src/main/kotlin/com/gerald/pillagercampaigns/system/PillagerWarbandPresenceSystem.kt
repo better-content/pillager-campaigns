@@ -35,18 +35,28 @@ object PillagerWarbandPresenceSystem {
         }
         val officer = data.officers[campaign.officerId] ?: return record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now)
         val faction = data.factions[warband.factionId] ?: return record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now)
-        val spawnedIds = PillagerRuntime.materializeWarbandSquad(
-            level = level,
-            warband = warband,
-            campaign = campaign,
-            bannerSeed = faction.bannerSeed,
-            officerRecord = officer,
-            player = player,
-            x = pos.x + 0.5,
-            y = pos.y.toDouble(),
-            z = pos.z + 0.5,
-        )
+        val spawnedIds = if (campaign.memberSnapshots.isNotEmpty()) {
+            PillagerRuntime.restoreSnapshots(level, campaign, pos).also { ids ->
+                ids.mapNotNull { level.getEntity(it) as? net.minecraft.world.entity.Mob }.forEach { it.target = player }
+            }
+        } else {
+            PillagerRuntime.materializeWarbandSquad(
+                level = level,
+                warband = warband,
+                campaign = campaign,
+                bannerSeed = faction.bannerSeed,
+                officerRecord = officer,
+                player = player,
+                x = pos.x + 0.5,
+                y = pos.y.toDouble(),
+                z = pos.z + 0.5,
+            )
+        }
         if (spawnedIds.isEmpty()) return record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now)
+        val actualThreat = spawnedIds.sumOf { id -> campaign.memberThreat[id] ?: 0.0 }
+        val unusedThreat = (campaign.committedThreat - actualThreat).coerceAtLeast(0.0)
+        warband.raidPool = (warband.raidPool + unusedThreat).coerceAtMost(warband.capacity.toDouble())
+        campaign.committedThreat = kotlin.math.ceil(actualThreat).toInt()
         campaign.squadMemberIds.clear()
         campaign.squadMemberIds.addAll(spawnedIds)
         return record(warband, PresenceMaterializationResult.SUCCESS, now)

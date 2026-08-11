@@ -55,7 +55,8 @@ object PillagerWarbandDiscoveryService {
                 warlordId = warlord.id,
             ),
         )
-        repeat(minOf(3, warband.reserve)) { TinkersArmoryOptimizer.create(warband)?.let { warband.armory += it.save(net.minecraft.nbt.CompoundTag()) } }
+        TinkersArmoryOptimizer.seedLedger(warband)
+        repeat(minOf(3, warband.reserve)) { TinkersArmoryOptimizer.create(warband, level.server)?.let { warband.armory += it.save(net.minecraft.nbt.CompoundTag()) } }
         data.warbands[candidate.id] = warband
         data.markChanged()
         return true

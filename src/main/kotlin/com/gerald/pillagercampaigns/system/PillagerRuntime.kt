@@ -9,6 +9,7 @@ import net.minecraft.ChatFormatting
 import net.minecraft.core.BlockPos
 import net.minecraft.core.particles.DustParticleOptions
 import net.minecraft.core.registries.Registries
+import net.minecraft.nbt.CompoundTag
 import net.minecraft.network.chat.Component
 import net.minecraft.resources.ResourceLocation
 import net.minecraft.server.level.ServerLevel
@@ -37,6 +38,7 @@ object PillagerRuntime {
     const val SCALE_TAG = "PillagerOfficerScale"
     const val THREAT_TAG = "PillagerThreat"
     const val WARBAND_TAG = "PillagerWarbandId"
+    const val ENTITY_TYPE_TAG = "PillagerEntityType"
     private const val TARGET_TAG = "PillagerTargetPlayer"
     private const val ORIGIN_X_TAG = "PillagerOriginChunkX"
     private const val ORIGIN_Z_TAG = "PillagerOriginChunkZ"
@@ -52,10 +54,12 @@ object PillagerRuntime {
 
     data class CoinRewardPlan(val itemId: String, val count: Int)
     enum class CoinRewardRole { FOLLOWER, CAPTAIN, WARLORD }
+    enum class WithdrawalProgress { PHYSICAL, DEMATERIALIZED, ARRIVED }
 
     fun resetLiveIndexes() {
         liveOfficerLeaderEntityIds.clear()
         liveCampaignMemberEntityIds.clear()
+        SquadRoutePlanner.reset()
     }
 
     fun registerLiveMob(mob: Mob) {
@@ -83,6 +87,81 @@ object PillagerRuntime {
     fun dismissCampaign(level: ServerLevel, campaignId: UUID, memberIds: Collection<UUID>) {
         memberIds.mapNotNull { level.getEntity(it) as? Mob }.filter { it.persistentData.getUUID(CAMPAIGN_TAG) == campaignId }.forEach(Mob::discard)
         liveCampaignMemberEntityIds.remove(campaignId)
+        SquadRoutePlanner.forget(campaignId)
+    }
+
+    fun snapshotCampaign(level: ServerLevel, campaign: PillagerCampaign): Int {
+        val members = campaign.squadMemberIds.mapNotNull { level.getEntity(it) as? Mob }.filter { it.isAlive }
+        if (members.isEmpty()) return 0
+        snapshotAndDismiss(level, campaign, members)
+        return members.size
+    }
+
+    fun withdrawTowardHome(level: ServerLevel, campaign: PillagerCampaign, warband: PillagerWarband): WithdrawalProgress {
+        if (campaign.memberSnapshots.isNotEmpty()) return WithdrawalProgress.DEMATERIALIZED
+        val members = campaign.squadMemberIds.mapNotNull { level.getEntity(it) as? Mob }.filter { it.isAlive }
+        if (members.isEmpty()) return if (campaign.memberThreat.isEmpty()) WithdrawalProgress.ARRIVED else WithdrawalProgress.DEMATERIALIZED
+        val leader = members.firstOrNull { it.persistentData.getBoolean(LEADER_TAG) } ?: members.maxByOrNull { it.persistentData.getDouble(THREAT_TAG) }!!
+        val current = leader.chunkPosition()
+        campaign.currentChunkX = current.x
+        campaign.currentChunkZ = current.z
+        if (current.x == warband.rallyChunkX && current.z == warband.rallyChunkZ) {
+            snapshotAndDismiss(level, campaign, members)
+            return WithdrawalProgress.ARRIVED
+        }
+        val next = CampaignMath.stepToward(current.x, current.z, warband.rallyChunkX, warband.rallyChunkZ)
+        val targetX = when {
+            next.first > current.x -> (current.x shl 4) + 15.25
+            next.first < current.x -> (current.x shl 4) + 0.75
+            else -> (current.x shl 4) + 8.0
+        }
+        val targetZ = when {
+            next.second > current.z -> (current.z shl 4) + 15.25
+            next.second < current.z -> (current.z shl 4) + 0.75
+            else -> (current.z shl 4) + 8.0
+        }
+        members.forEach { mob -> mob.target = null; mob.navigation.moveTo(targetX, mob.y, targetZ, 1.15) }
+        if (!level.hasChunk(next.first, next.second) && members.all { it.distanceToSqr(targetX, it.y, targetZ) <= 3.0 * 3.0 }) {
+            snapshotAndDismiss(level, campaign, members)
+            campaign.currentChunkX = next.first
+            campaign.currentChunkZ = next.second
+            return WithdrawalProgress.DEMATERIALIZED
+        }
+        return WithdrawalProgress.PHYSICAL
+    }
+
+    fun restoreSnapshots(level: ServerLevel, campaign: PillagerCampaign, pos: BlockPos): List<UUID> {
+        if (campaign.memberSnapshots.isEmpty()) return emptyList()
+        val restored = mutableListOf<Mob>()
+        fun rollback(): List<UUID> {
+            restored.forEach { mob -> forgetLiveMob(mob); mob.discard() }
+            return emptyList()
+        }
+        for ((index, snapshot) in campaign.memberSnapshots.withIndex()) {
+            val parsed = ResourceLocation.tryParse(snapshot.getString("id")) ?: return rollback()
+            val type = ForgeRegistries.ENTITY_TYPES.getValue(parsed) ?: return rollback()
+            val mob = type.create(level) as? Mob ?: return rollback()
+            if (runCatching { mob.load(snapshot.copy()) }.isFailure) { mob.discard(); return rollback() }
+            mob.moveTo(pos.x + .5 + index % 3, pos.y.toDouble(), pos.z + .5 + index / 3, mob.yRot, mob.xRot)
+            if (!level.noCollision(mob, mob.boundingBox) || !level.addFreshEntity(mob)) { mob.discard(); return rollback() }
+            registerLiveMob(mob)
+            restored += mob
+        }
+        campaign.memberSnapshots.clear()
+        campaign.squadMemberIds.clear()
+        campaign.squadMemberIds += restored.map { it.uuid }
+        return campaign.squadMemberIds
+    }
+
+    private fun snapshotAndDismiss(level: ServerLevel, campaign: PillagerCampaign, members: List<Mob>) {
+        campaign.memberSnapshots.clear()
+        members.forEach { mob ->
+            val snapshot = CompoundTag()
+            if (mob.save(snapshot)) campaign.memberSnapshots += snapshot
+            forgetLiveMob(mob)
+            mob.discard()
+        }
+        liveCampaignMemberEntityIds.remove(campaign.id)
     }
 
     fun promoteSuccessor(level: ServerLevel, campaignId: UUID, officerId: UUID): Boolean {
@@ -99,6 +178,9 @@ object PillagerRuntime {
     fun liveThreat(level: ServerLevel, campaign: PillagerCampaign): Double = campaign.memberThreat.entries.sumOf { (id, threat) ->
         if ((level.getEntity(id) as? Mob)?.isAlive == true) threat else 0.0
     }
+
+    fun minimumRecruitThreat(level: ServerLevel, warband: PillagerWarband): Double? = recruitCandidates(level, warband)
+        .minOfOrNull { it.second }
 
     fun materializeWarbandSquad(
         level: ServerLevel,
@@ -190,9 +272,10 @@ object PillagerRuntime {
         val entries = ForgeRegistries.ENTITY_TYPES.tags()?.getTag(recruitTag)?.toList().orEmpty()
         val candidates = entries.mapNotNull { type ->
             val mob = type.create(level) as? Mob ?: return@mapNotNull null
-            val threat = empiricalThreat(mob) * WarbandFormulaData.threatCorrections.getOrDefault(ForgeRegistries.ENTITY_TYPES.getKey(type)?.toString(), 1.0)
-            if (threat > budget && budget != Double.MAX_VALUE) { mob.discard(); return@mapNotNull null }
             val id = ForgeRegistries.ENTITY_TYPES.getKey(type)?.toString() ?: return@mapNotNull null
+            val measured = empiricalThreat(mob) * WarbandFormulaData.threatCorrections.getOrDefault(id, 1.0)
+            val threat = warband.empiricalThreat.getOrDefault(id, measured).coerceAtLeast(1.0)
+            if (threat > budget && budget != Double.MAX_VALUE) { mob.discard(); return@mapNotNull null }
             val attributes = mapOf(
                 "durability" to (mob.getAttributeValue(Attributes.MAX_HEALTH) + mob.getAttributeValue(Attributes.ARMOR) * 2.0) / 40.0,
                 "damage" to mob.getAttributeValue(Attributes.ATTACK_DAMAGE) / 8.0,
@@ -205,6 +288,15 @@ object PillagerRuntime {
         candidates.asSequence().filter { it !== chosen }.forEach { it.first.discard() }
         return chosen.first to chosen.second
     }
+
+    private fun recruitCandidates(level: ServerLevel, warband: PillagerWarband): List<Pair<String, Double>> =
+        ForgeRegistries.ENTITY_TYPES.tags()?.getTag(recruitTag)?.toList().orEmpty().mapNotNull { type ->
+            val mob = type.create(level) as? Mob ?: return@mapNotNull null
+            val id = ForgeRegistries.ENTITY_TYPES.getKey(type)?.toString() ?: run { mob.discard(); return@mapNotNull null }
+            val measured = empiricalThreat(mob) * WarbandFormulaData.threatCorrections.getOrDefault(id, 1.0)
+            mob.discard()
+            id to warband.empiricalThreat.getOrDefault(id, measured).coerceAtLeast(1.0)
+        }
 
     private fun empiricalThreat(mob: Mob): Double = (
         mob.getAttributeValue(Attributes.MAX_HEALTH) / 10.0 +
@@ -224,6 +316,7 @@ object PillagerRuntime {
         mob.persistentData.putInt(ORIGIN_X_TAG, warband.rallyChunkX)
         mob.persistentData.putInt(ORIGIN_Z_TAG, warband.rallyChunkZ)
         mob.persistentData.putDouble(THREAT_TAG, empiricalThreat(mob))
+        ForgeRegistries.ENTITY_TYPES.getKey(mob.type)?.let { mob.persistentData.putString(ENTITY_TYPE_TAG, it.toString()) }
         if (leader) applyOfficerVisuals(mob, officer)
         guaranteeEquipmentDrops(mob)
     }
@@ -247,8 +340,7 @@ object PillagerRuntime {
         }
         val target = level.getPlayerByUUID(tag.getUUID(TARGET_TAG)) ?: return
         val policy = policyFor(mob)
-        mob.target = target
-        if (mob.distanceToSqr(target) > policy.weaponRange * policy.weaponRange) mob.navigation.moveTo(target, 1.15)
+        SquadRoutePlanner.pursue(level, mob, tag.getUUID(CAMPAIGN_TAG), target, policy.weaponRange)
     }
 
     fun holdBossAtAnchor(mob: Mob) {
