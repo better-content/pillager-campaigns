@@ -11,6 +11,12 @@ import net.minecraft.server.level.ServerPlayer
 object PillagerWarbandPresenceSystem {
     private const val RETRY_COOLDOWN_TICKS: Long = 100L
 
+    data class InvasionMaterialization(
+        val status: PresenceMaterializationResult,
+        val physicalMemberIds: Set<String> = emptySet(),
+        val attemptedMemberIds: Set<String> = emptySet(),
+    )
+
     fun materializeInvasionSquad(
         level: ServerLevel,
         data: PillagerWorldData,
@@ -19,22 +25,27 @@ object PillagerWarbandPresenceSystem {
         player: ServerPlayer,
         distanceChunks: Int,
         now: Long,
-    ): PresenceMaterializationResult {
+    ): InvasionMaterialization {
         if (now - warband.lastPresenceAttemptTick < RETRY_COOLDOWN_TICKS) {
-            return record(warband, PresenceMaterializationResult.COOLDOWN, now)
+            return InvasionMaterialization(record(warband, PresenceMaterializationResult.COOLDOWN, now))
         }
         data.officers[campaign.officerId]?.let { captain -> captain.lastSeenTick = now }
         if (PillagerRuntime.hasLiveOfficerLeader(level, campaign.officerId) || PillagerRuntime.hasLiveCampaignMember(level, campaign.id)) {
-            return record(warband, PresenceMaterializationResult.LIVE_ALREADY_PRESENT, now)
+            return InvasionMaterialization(
+                record(warband, PresenceMaterializationResult.LIVE_ALREADY_PRESENT, now),
+                PillagerRuntime.liveManifestIds(level, campaign),
+            )
         }
         val site = PillagerSpawnPlacementRules.findMaterializationSite(level, player, campaign.currentChunkX, campaign.currentChunkZ, distanceChunks)
-            ?: return record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now)
+            ?: return InvasionMaterialization(record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now))
         val pos = site.pos
         if (!level.hasChunk(pos.x shr 4, pos.z shr 4)) {
-            return record(warband, PresenceMaterializationResult.NOT_LOADED, now)
+            return InvasionMaterialization(record(warband, PresenceMaterializationResult.NOT_LOADED, now))
         }
-        val officer = data.officers[campaign.officerId] ?: return record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now)
-        val faction = data.factions[warband.factionId] ?: return record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now)
+        val officer = data.officers[campaign.officerId]
+            ?: return InvasionMaterialization(record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now))
+        val faction = data.factions[warband.factionId]
+            ?: return InvasionMaterialization(record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now))
         val spawnedIds = if (campaign.memberSnapshots.isNotEmpty()) {
             PillagerRuntime.restoreSnapshots(level, campaign, pos).also { ids ->
                 ids.mapNotNull { level.getEntity(it) as? net.minecraft.world.entity.Mob }.forEach { it.target = player }
@@ -52,14 +63,17 @@ object PillagerWarbandPresenceSystem {
                 z = pos.z + 0.5,
             )
         }
-        if (spawnedIds.isEmpty()) return record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now)
-        val actualThreat = spawnedIds.sumOf { id -> campaign.memberThreat[id] ?: 0.0 }
-        val unusedThreat = (campaign.committedThreat - actualThreat).coerceAtLeast(0.0)
-        warband.raidPool = (warband.raidPool + unusedThreat).coerceAtMost(warband.capacity.toDouble())
-        campaign.committedThreat = actualThreat
+        val attempted = campaign.plannedMembers.mapNotNullTo(linkedSetOf()) { it.manifestId.takeIf(String::isNotBlank) }
+        if (spawnedIds.isEmpty()) {
+            return InvasionMaterialization(record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now), attemptedMemberIds = attempted)
+        }
         campaign.squadMemberIds.clear()
         campaign.squadMemberIds.addAll(spawnedIds)
-        return record(warband, PresenceMaterializationResult.SUCCESS, now)
+        return InvasionMaterialization(
+            record(warband, PresenceMaterializationResult.SUCCESS, now),
+            PillagerRuntime.liveManifestIds(level, campaign),
+            attempted,
+        )
     }
 
     fun materializeWarlord(

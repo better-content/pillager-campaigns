@@ -1,4 +1,4 @@
-package com.gerald.pillagercampaigns.engine
+package com.gerald.warband.core
 
 import kotlin.math.exp
 
@@ -47,7 +47,7 @@ object EcologyMath {
         route: List<TerrainObservation>,
         preferences: CapabilityVector,
         aggression: Int,
-        rules: WarbandRules = WarbandRules(),
+        rules: CoreRules = CoreRules(),
     ): Double {
         if (route.isEmpty()) return Double.POSITIVE_INFINITY
         val aggressionNormalized = (aggression - rules.minimumAggression).toDouble() /
@@ -65,7 +65,7 @@ object EcologyMath {
         candidates: Collection<List<TerrainObservation>>,
         preferences: CapabilityVector,
         aggression: Int,
-        rules: WarbandRules = WarbandRules(),
+        rules: CoreRules = CoreRules(),
     ): List<ChunkPosition> = candidates.asSequence()
         .filter { it.isNotEmpty() }
         .minWithOrNull(compareBy<List<TerrainObservation>> { routeCost(it, preferences, aggression, rules) }
@@ -102,7 +102,7 @@ object EcologyMath {
         equippedMembers: Int,
         totalInjury: Double,
         environment: EnvironmentTraits,
-        rules: WarbandRules = WarbandRules(),
+        rules: CoreRules = CoreRules(),
     ) = ResourceVector(
         sustenance = livingThreat.coerceAtLeast(0.0) * rules.sustenancePerThreatChunk,
         munitions = rangedThreat.coerceAtLeast(0.0) * rules.munitionsPerRangedThreatChunk,
@@ -136,14 +136,14 @@ object EcologyMath {
     fun supplySatisfaction(demand: ResourceVector, remaining: ResourceVector): Double =
         if (demand.sum() <= 1.0e-9) 1.0 else (1.0 - remaining.sum() / demand.sum()).coerceIn(0.0, 1.0)
 
-    fun equipmentWear(environment: EnvironmentTraits, satisfaction: Double, rules: WarbandRules = WarbandRules()): Double =
+    fun equipmentWear(environment: EnvironmentTraits, satisfaction: Double, rules: CoreRules = CoreRules()): Double =
         rules.equipmentWearPerFrictionChunk * environment.bounded().travelFriction * (2.0 - satisfaction.coerceIn(0.0, 1.0))
 
-    fun attritionLoss(environment: EnvironmentTraits, satisfaction: Double, deficitExposure: Double, rules: WarbandRules = WarbandRules()): Double =
+    fun attritionLoss(environment: EnvironmentTraits, satisfaction: Double, deficitExposure: Double, rules: CoreRules = CoreRules()): Double =
         if (deficitExposure <= rules.deficitGraceChunks) 0.0 else
             rules.attritionPerDeficitChunk * (1.0 - satisfaction.coerceIn(0.0, 1.0)) * (0.5 + environment.bounded().travelFriction)
 
-    fun shouldRetreatFromShortage(deficitExposure: Double, aggression: Int, rules: WarbandRules = WarbandRules()): Boolean {
+    fun shouldRetreatFromShortage(deficitExposure: Double, aggression: Int, rules: CoreRules = CoreRules()): Boolean {
         val aggressionNormalized = (aggression - rules.minimumAggression).toDouble() /
             (rules.maximumAggression - rules.minimumAggression).coerceAtLeast(1)
         return deficitExposure > rules.deficitGraceChunks + rules.shortageRetreatBaseChunks +

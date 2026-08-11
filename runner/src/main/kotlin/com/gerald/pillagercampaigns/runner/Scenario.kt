@@ -1,6 +1,6 @@
 package com.gerald.pillagercampaigns.runner
 
-import com.gerald.pillagercampaigns.engine.*
+import com.gerald.warband.core.*
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -26,9 +26,9 @@ data class ExperimentScenario(
     val name: String,
     val durationTicks: Long,
     val stepTicks: Long = 20L,
-    val state: EngineState,
-    val catalog: EngineCatalog,
-    val rules: WarbandRules = WarbandRules(),
+    val state: CoreSnapshot,
+    val catalog: CoreCatalog,
+    val rules: CoreRules = CoreRules(),
     val players: List<PlayerFact> = emptyList(),
     val terrain: List<TerrainObservation> = emptyList(),
     val assumptions: BoundedAssumptions = BoundedAssumptions(),

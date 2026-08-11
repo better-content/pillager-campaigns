@@ -1,4 +1,4 @@
-package com.gerald.pillagercampaigns.engine
+package com.gerald.warband.core
 
 import kotlinx.serialization.Serializable
 
@@ -126,6 +126,7 @@ data class OfficerState(
     var defeats: Int = 0,
     var availableAtTick: Long = 0L,
     var lastTargetPlayerId: String? = null,
+    var deployedCampaignId: String? = null,
 )
 
 @Serializable data class DispatchAssignment(val officerId: String, val playerId: String, val score: Int)
@@ -153,19 +154,54 @@ data class CampaignState(
     var deficitExposure: Double = 0.0,
     var forageDebt: Double = 0.0,
     val lostCaches: MutableList<LostCache> = mutableListOf(),
+    val physicalMemberIds: MutableSet<String> = linkedSetOf(),
 )
 
 @Serializable
 data class FactionState(val id: String, var name: String, var bannerSeed: Int)
 
 @Serializable
-data class EngineState(
+enum class TerritoryStatus { UNCONTACTED, WARNED, HOSTILE }
+
+@Serializable
+data class TerritoryRelationState(
+    val warbandId: String,
+    val playerId: String,
+    var status: TerritoryStatus,
+    var protectedUntilTick: Long = 0L,
+) {
+    val hostile: Boolean get() = status == TerritoryStatus.HOSTILE
+}
+
+@Serializable enum class GarrisonPhase { RESERVED, ACTIVE, RESOLVED }
+
+@Serializable
+data class GarrisonState(
+    val id: String,
+    val warbandId: String,
+    val position: ChunkPosition,
+    val members: MutableList<MemberManifest>,
+    var phase: GarrisonPhase = GarrisonPhase.RESERVED,
+    val physicalMemberIds: MutableSet<String> = linkedSetOf(),
+)
+
+@Serializable
+data class CoreSnapshot(
     var tick: Long = 0L,
     var sequence: Long = 0L,
+    var lastDiscoveryTick: Long = 0L,
+    var lastCampaignTick: Long = 0L,
     val factions: MutableMap<String, FactionState> = linkedMapOf(),
     val warbands: MutableMap<String, WarbandState> = linkedMapOf(),
     val officers: MutableMap<String, OfficerState> = linkedMapOf(),
     val campaigns: MutableMap<String, CampaignState> = linkedMapOf(),
     val protectedPlayersUntilTick: MutableMap<String, Long> = linkedMapOf(),
     val terrain: MutableMap<String, TerrainObservation> = linkedMapOf(),
+    val initializedPlayerIds: MutableSet<String> = linkedSetOf(),
+    val discoveredSiteIds: MutableSet<String> = linkedSetOf(),
+    val territoryRelations: MutableMap<String, TerritoryRelationState> = linkedMapOf(),
+    val garrisons: MutableMap<String, GarrisonState> = linkedMapOf(),
+    val pendingEffects: MutableMap<String, CoreEffect> = linkedMapOf(),
+    val acknowledgedEffectIds: MutableSet<String> = linkedSetOf(),
+    val rewardedDefeatIds: MutableSet<String> = linkedSetOf(),
 )

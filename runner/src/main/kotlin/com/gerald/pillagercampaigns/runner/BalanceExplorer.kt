@@ -1,6 +1,6 @@
 package com.gerald.pillagercampaigns.runner
 
-import com.gerald.pillagercampaigns.engine.*
+import com.gerald.warband.core.*
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -14,7 +14,7 @@ class BalanceExplorer(private val json: Json = Json { prettyPrint = true; encode
     )
 
     fun explore(catalogFile: File, output: File, settings: Settings = Settings()): BalanceExploration {
-        val catalog = json.decodeFromString<EngineCatalog>(catalogFile.readText())
+        val catalog = json.decodeFromString<CoreCatalog>(catalogFile.readText())
         require(catalog.recruits.isNotEmpty()) { "live catalog has no recruits" }
         require(catalog.revision.startsWith("forge-live-sha256:")) { "catalog lacks Forge provenance hash" }
         val environments = catalog.environmentSamples.ifEmpty { listOf(EnvironmentTraits()) }
@@ -53,10 +53,10 @@ class BalanceExplorer(private val json: Json = Json { prettyPrint = true; encode
             }
             val disengagement = nominal.copy(campaignDamagePerEngagement = 0.0, playerDamagePerEngagement = 0.0, engagementsBeforeDisengage = 1)
             listOf(6_000L, 12_000L, 24_000L).forEach { idle ->
-                summaries += runner.run(scenario("sensitivity-idle-$idle", 10 * TICKS_PER_DAY, catalog, baseEnvironment, disengagement, 11L, rules = WarbandRules(idleReturnTicks = idle)), false).summary
+                summaries += runner.run(scenario("sensitivity-idle-$idle", 10 * TICKS_PER_DAY, catalog, baseEnvironment, disengagement, 11L, rules = CoreRules(idleReturnTicks = idle)), false).summary
             }
             listOf(0.0, .05, .15).forEach { rate ->
-                val rules = WarbandRules(warbandLearningRate = rate, captainLearningRate = rate * 2.0, threatLearningRate = rate * 2.0)
+                val rules = CoreRules(warbandLearningRate = rate, captainLearningRate = rate * 2.0, threatLearningRate = rate * 2.0)
                 summaries += runner.run(scenario("sensitivity-learning-$rate", 10 * TICKS_PER_DAY, catalog, baseEnvironment, nominal, 11L, rules = rules), false).summary
             }
             listOf(0, 24, 96).forEach { items ->
@@ -72,14 +72,14 @@ class BalanceExplorer(private val json: Json = Json { prettyPrint = true; encode
     private fun scenario(
         name: String,
         duration: Long,
-        catalog: EngineCatalog,
+        catalog: CoreCatalog,
         environment: EnvironmentTraits,
         assumptions: BoundedAssumptions,
         seed: Long,
         aggression: Int = 6,
         reserve: Double = 18.0,
         distance: Int = 12,
-        rules: WarbandRules = WarbandRules(),
+        rules: CoreRules = CoreRules(),
         supplyItems: Int = 24,
     ): ExperimentScenario {
         val preferences = FormulaMath.initialPreferences(seed, environment)
@@ -99,7 +99,7 @@ class BalanceExplorer(private val json: Json = Json { prettyPrint = true; encode
         val terrain = routeTerrain(warband.rally, target, environment)
         return ExperimentScenario(
             name, duration, 20L,
-            EngineState(
+            CoreSnapshot(
                 sequence = seed,
                 factions = linkedMapOf("faction" to FactionState("faction", "Exploration", seed.toInt())),
                 warbands = linkedMapOf(warband.id to warband),
@@ -128,7 +128,7 @@ class BalanceExplorer(private val json: Json = Json { prettyPrint = true; encode
         return values.values.toList()
     }
 
-    private fun findings(summaries: List<ExperimentSummary>, catalog: EngineCatalog): List<BalanceFinding> {
+    private fun findings(summaries: List<ExperimentSummary>, catalog: CoreCatalog): List<BalanceFinding> {
         val baseline = summaries.filter { it.name.startsWith("h") }
         val early = baseline.filter { it.name.startsWith("h3d-") }
         val mature = baseline.filter { it.name.startsWith("h30d-") }
@@ -158,7 +158,7 @@ class BalanceExplorer(private val json: Json = Json { prettyPrint = true; encode
             3, "Material and equipment diversity",
             "At least one mature cell extracts only ${leastMaterialVariety.extractedMaterialCounts.size} material type(s) and manufactures ${leastMaterialVariety.manufacturedEquipmentCounts.size} equipment formulation(s).",
             mature.sortedBy { it.extractedMaterialCounts.size }.take(3).map(ExperimentSummary::name),
-            "Retain recent extraction frequency as a bounded utility term; compare the four observed materials against actual TCon compatibility before increasing diversity pressure.",
+            "Retain recent extraction frequency as a bounded utility term; compare the observed material floor against actual TCon compatibility before increasing diversity pressure.",
             "Scarcity pressure must not select unaffordable or environmentally impossible materials.", "high",
         )
 
@@ -236,7 +236,7 @@ class BalanceExplorer(private val json: Json = Json { prettyPrint = true; encode
             appendLine()
             appendLine("Catalog: `${exploration.catalogRevision}`")
             appendLine()
-            appendLine("The report covers ${exploration.summaries.size} deterministic cells using the exact authoritative engine and a Forge-captured live catalog.")
+            appendLine("The report covers ${exploration.summaries.size} deterministic cells using the exact authoritative Warband Core and a Forge-captured live catalog.")
             appendLine()
             appendLine("## Longitudinal overview")
             appendLine()
@@ -272,7 +272,7 @@ class BalanceExplorer(private val json: Json = Json { prettyPrint = true; encode
             }
             appendLine("## Interpretation boundary")
             appendLine()
-            appendLine("Minecraft pathfinding and combat are bounded observations. Economy, selection, learning, travel, return, and reconciliation are the same compiled engine used by Forge.")
+            appendLine("Minecraft pathfinding and combat are bounded observations. Economy, selection, learning, travel, return, and reconciliation are the same compiled Core used by Forge.")
         })
     }
 

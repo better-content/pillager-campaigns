@@ -1,4 +1,4 @@
-package com.gerald.pillagercampaigns.engine
+package com.gerald.warband.core
 
 import kotlin.math.abs
 

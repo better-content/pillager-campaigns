@@ -1,17 +1,24 @@
 package com.gerald.pillagercampaigns.runner
 
-import com.gerald.pillagercampaigns.engine.*
+import com.gerald.warband.core.*
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
 import kotlin.math.abs
 
 class ExperimentRunner(private val json: Json = Json { prettyPrint = false; encodeDefaults = true }) {
-    data class RunResult(val summary: ExperimentSummary, val trace: List<TransitionResult>)
+    data class RunResult(
+        val summary: ExperimentSummary,
+        val trace: List<CoreTransition>,
+        val deterministicTrace: WarbandTrace? = null,
+    )
 
     fun run(scenario: ExperimentScenario, retainTrace: Boolean = true): RunResult {
         scenario.validate()
-        val trace = mutableListOf<TransitionResult>()
+        val traceCodec = WarbandTraceCodec(json)
+        val initialState = if (retainTrace) traceCodec.cloneState(scenario.state) else null
+        val trace = mutableListOf<CoreTransition>()
+        val deterministicSteps = mutableListOf<WarbandTraceStep>()
         val eventCounts = linkedMapOf<String, Int>()
         val recruitCounts = linkedMapOf<String, Int>()
         var dispatched = 0
@@ -38,8 +45,18 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
         var elapsed = 0L
         var engagementDebt = 0L
         val engagementCounts = mutableMapOf<String, Int>()
-        fun record(result: TransitionResult) {
-            if (retainTrace) trace += result
+        fun record(frame: CoreFrame, result: CoreTransition) {
+            if (retainTrace) {
+                val capturedState = traceCodec.cloneState(result.state)
+                trace += result.copy(state = capturedState)
+                deterministicSteps += WarbandTraceStep(
+                    deterministicSteps.size,
+                    traceCodec.cloneFrame(frame),
+                    result.events.toList(),
+                    result.effects.toList(),
+                    traceCodec.stateHash(capturedState),
+                )
+            }
             result.events.forEach { event ->
                 eventCounts[event.type] = eventCounts.getOrDefault(event.type, 0) + 1
                 if (event.type == "dispatched") {
@@ -82,14 +99,24 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
                 }
             }
             val readyBefore = scenario.state.campaigns.values.filter { it.phase == CampaignPhase.READY_TO_MATERIALIZE }.map { it.id }
-            val materializations = readyBefore.map { MaterializationResult(it, true) }
-            val result = WarbandEngine.transition(
+            val materializations = readyBefore.map { campaignId ->
+                MaterializationResult(
+                    campaignId,
+                    true,
+                    effectId = scenario.state.pendingEffects.values.firstOrNull {
+                        it.kind == EffectKind.MATERIALIZE && it.campaignId == campaignId
+                    }?.effectId,
+                )
+            }
+            val frame = CoreFrame(step, scenario.players, combat, materializations, terrain = scenario.terrain)
+            val recordedFrame = if (retainTrace) traceCodec.cloneFrame(frame) else frame
+            val result = WarbandCore.transition(
                 scenario.state,
-                EngineFrame(step, scenario.players, combat, materializations, terrain = scenario.terrain),
+                frame,
                 scenario.catalog,
                 scenario.rules,
             )
-            record(result)
+            record(recordedFrame, result)
             val snapshots = result.effects.filter { it.kind == EffectKind.CAPTURE_SNAPSHOTS }
                 .mapNotNull { effect ->
                     val campaign = effect.campaignId?.let(scenario.state.campaigns::get) ?: return@mapNotNull null
@@ -102,19 +129,18 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
                                 member.equipment, member.cargo.toMap(),
                             )
                         },
+                        effect.effectId,
                     )
                 }
             if (snapshots.isNotEmpty()) {
                 // The runner's bounded physical adapter treats the emitted member list as
                 // the captured snapshot and acknowledges removal immediately through the
                 // same adapter fact consumed by Forge.
+                val snapshotFrame = CoreFrame(0L, scenario.players, snapshots = snapshots)
+                val recordedSnapshotFrame = if (retainTrace) traceCodec.cloneFrame(snapshotFrame) else snapshotFrame
                 record(
-                    WarbandEngine.transition(
-                        scenario.state,
-                        EngineFrame(0L, scenario.players, snapshots = snapshots),
-                        scenario.catalog,
-                        scenario.rules,
-                    ),
+                    recordedSnapshotFrame,
+                    WarbandCore.transition(scenario.state, snapshotFrame, scenario.catalog, scenario.rules),
                 )
             }
             scenario.state.campaigns.values.forEach { campaign ->
@@ -189,6 +215,16 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
                 armamentUtilities.averageDoublesOrZero(),
             ),
             trace,
+            initialState?.let {
+                WarbandTrace(
+                    catalogRevision = scenario.catalog.revision,
+                    initialState = it,
+                    initialStateHash = traceCodec.stateHash(it),
+                    catalog = scenario.catalog,
+                    rules = scenario.rules,
+                    steps = deterministicSteps,
+                )
+            },
         )
     }
 

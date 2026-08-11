@@ -58,29 +58,29 @@ class PillagerCampaignSerializationTest {
             CampaignState.ACTIVE, null, null, 0, mutableListOf(UUID.randomUUID()), 123, 0, 7.0,
             plannedMembers = mutableListOf(PlannedCampaignMember(
                 ResourceLocation("minecraft", "vindicator"), 7.0, cargo = mutableMapOf("minecraft:bread" to 3),
-                manifestId = "engine:member:1", healthFraction = 0.75,
+                manifestId = "core:member:1", healthFraction = 0.75,
             )),
             memberSnapshots = mutableListOf(CompoundTag().also { it.putString("id", "minecraft:pillager") }),
             returnOutcome = CampaignOutcome.CAPTAIN_VICTORY, returnReason = "test", returnStartedTick = 456, returnAggressionDelta = 1,
-            pendingEngineOutcome = CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT, pendingEngineOutcomeReason = "queued",
+            pendingCoreOutcome = CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT, pendingCoreOutcomeReason = "queued",
             route = mutableListOf(CampaignRouteStep(2, 3), CampaignRouteStep(3, 4)), routeIndex = 1,
             supplySatisfaction = 0.6, deficitExposure = 2.5, forageDebt = 0.4,
             lostAssetCaches = mutableListOf(LostAssetCache(8, 9, mutableListOf(CompoundTag().also { it.putString("id", "minecraft:bread") }))),
             pendingCampaignDamage = 4.0, pendingPlayerDamage = 6.0, pendingEffectiveRange = 11.0,
-            pendingCasualtyManifestIds = mutableSetOf("engine:member:1"),
+            pendingCasualtyManifestIds = mutableSetOf("core:member:1"),
         )
         val loaded = PillagerCampaign.load(campaign.save())
         assertEquals(123, loaded.lastCombatTick)
         assertEquals(7.0, loaded.committedThreat)
         assertEquals("minecraft:vindicator", loaded.plannedMembers.single().recruitId.toString())
         assertEquals(3, loaded.plannedMembers.single().cargo["minecraft:bread"])
-        assertEquals("engine:member:1", loaded.plannedMembers.single().manifestId)
+        assertEquals("core:member:1", loaded.plannedMembers.single().manifestId)
         assertEquals(0.75, loaded.plannedMembers.single().healthFraction)
         assertEquals(campaign.squadMemberIds, loaded.squadMemberIds)
         assertEquals("minecraft:pillager", loaded.memberSnapshots.single().getString("id"))
         assertEquals(CampaignOutcome.CAPTAIN_VICTORY, loaded.returnOutcome)
-        assertEquals(CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT, loaded.pendingEngineOutcome)
-        assertEquals("queued", loaded.pendingEngineOutcomeReason)
+        assertEquals(CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT, loaded.pendingCoreOutcome)
+        assertEquals("queued", loaded.pendingCoreOutcomeReason)
         assertEquals("test", loaded.returnReason)
         assertEquals(456, loaded.returnStartedTick)
         assertEquals(1, loaded.returnAggressionDelta)
@@ -93,7 +93,7 @@ class PillagerCampaignSerializationTest {
         assertEquals(4.0, loaded.pendingCampaignDamage)
         assertEquals(6.0, loaded.pendingPlayerDamage)
         assertEquals(11.0, loaded.pendingEffectiveRange)
-        assertEquals(setOf("engine:member:1"), loaded.pendingCasualtyManifestIds)
+        assertEquals(setOf("core:member:1"), loaded.pendingCasualtyManifestIds)
     }
 
     private fun minimumWarbandTag() = CompoundTag().also {

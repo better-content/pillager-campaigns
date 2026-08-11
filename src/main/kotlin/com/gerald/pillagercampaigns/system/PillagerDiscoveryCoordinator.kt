@@ -39,7 +39,7 @@ object PillagerDiscoveryCoordinator {
 
     fun tick(server: MinecraftServer, data: PillagerWorldData, now: Long) {
         if (now - data.lastDiscoveryTick >= PillagerCampaignsConfig.schedulerIntervalTicks.get() * 10L) {
-            data.lastDiscoveryTick = now
+            WarbandCoreAdapter.recordSchedulerProgress(data, discoveryTick = now)
             enqueuePlan(server, now)
         }
 

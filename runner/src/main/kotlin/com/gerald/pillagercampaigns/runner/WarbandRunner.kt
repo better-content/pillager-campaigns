@@ -1,6 +1,6 @@
 package com.gerald.pillagercampaigns.runner
 
-import com.gerald.pillagercampaigns.engine.*
+import com.gerald.warband.core.*
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -16,11 +16,28 @@ object WarbandRunner {
             "compare" -> compare(args.drop(1))
             "sweep" -> sweep(args.drop(1))
             "explore" -> explore(args.drop(1))
+            "record" -> record(args.drop(1))
+            "replay" -> replay(args.drop(1))
             "example" -> println(json.encodeToString(exampleScenario()))
             "matrix-example" -> println(json.encodeToString(exampleMatrix()))
             null, "play" -> play(exampleScenario())
-            else -> error("usage: warbandSim [play|example|matrix-example|experiment SCENARIO_JSON OUTPUT_DIRECTORY|compare SCENARIO_JSON BASELINE_JSON OUTPUT_DIRECTORY|sweep MATRIX_JSON OUTPUT_DIRECTORY|explore LIVE_CATALOG_JSON OUTPUT_DIRECTORY]")
+            else -> error("usage: warbandSim [play|example|matrix-example|experiment SCENARIO_JSON OUTPUT_DIRECTORY|compare SCENARIO_JSON BASELINE_JSON OUTPUT_DIRECTORY|sweep MATRIX_JSON OUTPUT_DIRECTORY|explore LIVE_CATALOG_JSON OUTPUT_DIRECTORY|record SCENARIO_JSON TRACE_JSON|replay TRACE_JSON]")
         }
+    }
+
+    private fun record(args: List<String>) {
+        require(args.size >= 2) { "record requires scenario and trace JSON paths" }
+        val scenario = json.decodeFromString<ExperimentScenario>(File(args[0]).readText())
+        val trace = requireNotNull(ExperimentRunner(json).run(scenario, retainTrace = true).deterministicTrace)
+        WarbandTraceCodec(json).write(trace, File(args[1]))
+        println("recorded ${trace.steps.size} Core transitions to ${File(args[1]).absolutePath}")
+    }
+
+    private fun replay(args: List<String>) {
+        require(args.isNotEmpty()) { "replay requires a trace JSON path" }
+        val codec = WarbandTraceCodec(json)
+        val result = codec.replay(codec.read(File(args[0])))
+        println("replayed ${result.stepCount} Core transitions; final state ${result.finalStateHash}")
     }
 
     private fun explore(args: List<String>) {
@@ -76,8 +93,8 @@ object WarbandRunner {
     }
 
     private fun play(scenario: ExperimentScenario) {
-        println("Authoritative Pillager Campaigns engine. Commands: status, scores WARBAND BUDGET, advance TICKS, dispatch WARBAND PLAYER, return CAMPAIGN REASON, events, quit")
-        var recent = emptyList<EngineEvent>()
+        println("Authoritative Pillager Campaigns Warband Core. Commands: status, scores WARBAND BUDGET, advance TICKS, dispatch WARBAND PLAYER, return CAMPAIGN REASON, events, quit")
+        var recent = emptyList<CoreEvent>()
         while (true) {
             print("> ")
             val words = readLine()?.trim()?.split(Regex("\\s+"))?.filter(String::isNotBlank) ?: return
@@ -89,22 +106,22 @@ object WarbandRunner {
                         val warband = scenario.state.warbands.getValue(words[1])
                         val officer = scenario.state.officers.values.firstOrNull { it.homeWarbandId == warband.id }
                         scenario.catalog.recruits.filter { it.baseThreat <= words[2].toDouble() }.forEach { recruit ->
-                            val selected = WarbandEngine.chooseRecruit(scenario.state, warband, officer, scenario.catalog.copy(recruits = listOf(recruit)), words[2].toDouble(), rules = scenario.rules)
-                            val score = WarbandEngine.recruitScore(warband, officer, recruit, scenario.rules)
+                            val selected = WarbandCore.chooseRecruit(scenario.state, warband, officer, scenario.catalog.copy(recruits = listOf(recruit)), words[2].toDouble(), rules = scenario.rules)
+                            val score = WarbandCore.recruitScore(warband, officer, recruit, scenario.rules)
                             println("${recruit.id}: ${if (selected == null) "unavailable" else "eligible"} score=$score capabilities=${recruit.capabilities} threat=${recruit.baseThreat}")
                         }
                         null
                     }
                     "events" -> { recent.forEach(::println); null }
-                    "advance" -> EngineFrame(words[1].toLong(), scenario.players)
-                    "dispatch" -> EngineFrame(0L, scenario.players, commands = listOf(EngineCommand.Dispatch(words[1], words[2])))
-                    "return" -> EngineFrame(0L, scenario.players, commands = listOf(EngineCommand.BeginReturn(words[1], words[2])))
+                    "advance" -> CoreFrame(words[1].toLong(), scenario.players)
+                    "dispatch" -> CoreFrame(0L, scenario.players, commands = listOf(CoreCommand.Dispatch(words[1], words[2])))
+                    "return" -> CoreFrame(0L, scenario.players, commands = listOf(CoreCommand.BeginReturn(words[1], words[2])))
                     "quit", "exit" -> return
                     else -> error("unknown command ${words[0]}")
                 }
             }.getOrElse { println("ERROR: ${it.message}"); null }
             if (frame != null) {
-                val result = WarbandEngine.transition(scenario.state, frame, scenario.catalog, scenario.rules)
+                val result = WarbandCore.transition(scenario.state, frame, scenario.catalog, scenario.rules)
                 recent = result.events
                 result.events.forEach(::println)
                 result.effects.forEach { println("EFFECT $it") }
@@ -118,14 +135,14 @@ object WarbandRunner {
             preferences = linkedMapOf("durability" to 1.0, "damage" to 1.0, "mobility" to 0.8, "range" to 0.8, "control" to 0.6),
             materialLedger = linkedMapOf("wood" to 12.0, "flint" to 6.0, "iron" to 6.0),
         )
-        val state = EngineState(
+        val state = CoreSnapshot(
             factions = linkedMapOf("faction" to FactionState("faction", "Example", 1)),
             warbands = linkedMapOf(warband.id to warband),
             officers = linkedMapOf("captain" to OfficerState("captain", "faction", warband.id)),
         )
         return ExperimentScenario(
             "example", 72_000L, state = state,
-            catalog = EngineCatalog(
+            catalog = CoreCatalog(
                 "example-v1",
                 recruits = listOf(
                     RecruitDefinition("quick", 5.0, CapabilityVector(1.0, 0.7, 1.5, 0.4, 0.2), supportedEquipmentActions = setOf("melee")),

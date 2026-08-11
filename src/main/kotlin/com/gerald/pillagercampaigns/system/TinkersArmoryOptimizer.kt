@@ -1,15 +1,15 @@
 package com.gerald.pillagercampaigns.system
 
 import com.gerald.pillagercampaigns.data.PillagerWarband
-import com.gerald.pillagercampaigns.engine.CapabilityVector
-import com.gerald.pillagercampaigns.engine.ChunkPosition
-import com.gerald.pillagercampaigns.engine.EngineCatalog
-import com.gerald.pillagercampaigns.engine.EngineState
-import com.gerald.pillagercampaigns.engine.EquipmentDefinition
-import com.gerald.pillagercampaigns.engine.EquipmentManifest
-import com.gerald.pillagercampaigns.engine.MaterialDefinition
-import com.gerald.pillagercampaigns.engine.WarbandEngine
-import com.gerald.pillagercampaigns.engine.WarbandState
+import com.gerald.warband.core.CapabilityVector
+import com.gerald.warband.core.ChunkPosition
+import com.gerald.warband.core.CoreCatalog
+import com.gerald.warband.core.CoreSnapshot
+import com.gerald.warband.core.EquipmentDefinition
+import com.gerald.warband.core.EquipmentManifest
+import com.gerald.warband.core.MaterialDefinition
+import com.gerald.warband.core.WarbandCore
+import com.gerald.warband.core.WarbandState
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.server.MinecraftServer
 import net.minecraft.world.entity.EquipmentSlot
@@ -41,36 +41,6 @@ object TinkersArmoryOptimizer {
     private const val FORMULATION_TAG = "PillagerTconFormulation"
 
     internal data class LiveEquipmentCandidate(val definition: EquipmentDefinition, val stack: ItemStack)
-
-    fun seedLedger(warband: PillagerWarband, amount: Double = 24.0) {
-        if (warband.materialLedger.isNotEmpty()) return
-        val materials = extractableMaterials(warband).take(3)
-        if (materials.isEmpty()) return
-        materials.forEach { material -> warband.materialLedger[material.identifier.toString()] = amount / materials.size }
-    }
-
-    fun extract(warband: PillagerWarband, amount: Double = 1.0): Boolean {
-        val core = engineWarband(warband)
-        val state = EngineState(sequence = warband.materialLedger.size.toLong(), warbands = linkedMapOf(core.id to core))
-        val material = WarbandEngine.chooseMaterial(state, core, EngineCatalog("live-tcon", emptyList(), materialDefinitions())) ?: return false
-        val id = material.id
-        warband.materialLedger[id] = warband.materialLedger.getOrDefault(id, 0.0) + amount.coerceAtLeast(0.0)
-        warband.materialSelectionMemory[id] = warband.materialSelectionMemory.getOrDefault(id, 0.0) + 1.0
-        return true
-    }
-
-    fun create(warband: PillagerWarband, server: MinecraftServer): ItemStack? {
-        val candidates = liveEquipmentCandidates(warband, server)
-        if (candidates.isEmpty()) return null
-        val core = engineWarband(warband)
-        val state = EngineState(sequence = warband.armory.size.toLong(), warbands = linkedMapOf(core.id to core))
-        val selected = WarbandEngine.chooseEquipment(
-            state, core, EngineCatalog("live-tcon", emptyList(), equipment = candidates.map(LiveEquipmentCandidate::definition)),
-        ) ?: return null
-        return realize(warband, candidates.single { it.definition.id == selected.id }, consume = true)?.also {
-            warband.equipmentSelectionMemory[selected.id] = warband.equipmentSelectionMemory.getOrDefault(selected.id, 0.0) + 1.0
-        }
-    }
 
     internal fun materialDefinitions(): List<MaterialDefinition> {
         if (!MaterialRegistry.isFullyLoaded()) return emptyList()
@@ -109,8 +79,8 @@ object TinkersArmoryOptimizer {
         val extractable = extractableMaterials(warband)
         if (extractable.isEmpty()) return emptyList()
         val materialDefinitions = materialDefinitions().associateBy(MaterialDefinition::id)
-        val core = engineWarband(warband)
-        val engineState = EngineState(sequence = warband.armory.size.toLong(), warbands = linkedMapOf(core.id to core))
+        val core = coreWarband(warband)
+        val coreState = CoreSnapshot(sequence = warband.armory.size.toLong(), warbands = linkedMapOf(core.id to core))
 
         val partCosts = server.recipeManager.getAllRecipesFor(TinkerRecipeTypes.PART_BUILDER.get())
             .groupBy { recipe -> ForgeRegistries.ITEMS.getKey(recipe.getResultItem(server.registryAccess()).item)?.toString().orEmpty() }
@@ -136,8 +106,8 @@ object TinkersArmoryOptimizer {
                     part?.canUseMaterial(material.identifier)
                         ?: MaterialRegistry.getInstance().getAllStats(material.identifier).any { it.identifier == statType }
                 }.mapTo(linkedSetOf()) { it.identifier.toString() }
-                WarbandEngine.choosePartMaterial(
-                    engineState, core, materialDefinitions.values, compatible, available, units, index,
+                WarbandCore.choosePartMaterial(
+                    coreState, core, materialDefinitions.values, compatible, available, units, index,
                 )?.let { selected -> extractable.firstOrNull { it.identifier.toString() == selected.id } }
                     ?.also { material ->
                         val id = material.identifier.toString()
@@ -161,15 +131,9 @@ object TinkersArmoryOptimizer {
             .flatMap(::formulate).distinctBy { it.definition.id }.sortedBy { it.definition.id }
     }
 
-    internal fun realize(warband: PillagerWarband, candidate: LiveEquipmentCandidate, consume: Boolean): ItemStack? {
-        if (consume && candidate.definition.cost.any { (id, amount) -> warband.materialLedger.getOrDefault(id, 0.0) < amount }) return null
-        if (consume) candidate.definition.cost.forEach { (id, amount) ->
-            warband.materialLedger[id] = (warband.materialLedger.getOrDefault(id, 0.0) - amount).coerceAtLeast(0.0)
-        }
-        return candidate.stack.copy().also { stack ->
+    internal fun realize(candidate: LiveEquipmentCandidate): ItemStack = candidate.stack.copy().also { stack ->
             stack.orCreateTag.put(COST_TAG, CompoundTag().also { tag -> candidate.definition.cost.forEach(tag::putDouble) })
             stack.orCreateTag.putString(FORMULATION_TAG, candidate.definition.formulation.joinToString(","))
-        }
     }
 
     internal fun cost(stack: ItemStack): Map<String, Double> = stack.tag?.getCompound(COST_TAG)?.let { tag -> tag.allKeys.associateWith(tag::getDouble) }.orEmpty()
@@ -216,7 +180,7 @@ object TinkersArmoryOptimizer {
         )
     }
 
-    private fun engineWarband(warband: PillagerWarband) = PillagerEngineBridge.coreWarband(warband)
+    private fun coreWarband(warband: PillagerWarband) = WarbandCoreAdapter.coreWarband(warband)
 
     private fun extractableMaterials(warband: PillagerWarband): List<IMaterial> {
         if (!MaterialRegistry.isFullyLoaded()) return emptyList()
@@ -228,7 +192,7 @@ object TinkersArmoryOptimizer {
     }
 
     /**
-     * Projects the live TCon material-stat registry into the engine's shared
+     * Projects the live TCon material-stat registry into the Core's shared
      * capability space. Averaging prevents materials with more compatible part
      * types from winning merely because they expose more records.
      */

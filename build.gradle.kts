@@ -28,8 +28,8 @@ base {
     archivesName.set(modId)
 }
 
-evaluationDependsOn(":engine")
-val engineMainSourceSet = project(":engine").extensions.getByType<SourceSetContainer>().getByName("main")
+evaluationDependsOn(":warband-core")
+val coreMainSourceSet = project(":warband-core").extensions.getByType<SourceSetContainer>().getByName("main")
 
 java {
     toolchain.languageVersion.set(JavaLanguageVersion.of(17))
@@ -53,7 +53,7 @@ minecraft {
             mods {
                 create(modId) {
                     source(sourceSets.main.get())
-                    source(engineMainSourceSet)
+                    source(coreMainSourceSet)
                 }
             }
         }
@@ -71,7 +71,7 @@ repositories {
 }
 
 dependencies {
-    implementation(project(":engine"))
+    implementation(project(":warband-core"))
     minecraft("net.minecraftforge:forge:$minecraftVersion-$forgeVersion")
     implementation("thedarkcolour:kotlinforforge:$kotlinForForgeVersion")
     compileOnly(fg.deobf("curse.maven:mantle-74924:7563777"))
@@ -103,8 +103,8 @@ tasks.processResources {
 
 tasks.jar {
     from("src/compat/resources")
-    dependsOn(":engine:classes")
-    from(engineMainSourceSet.output)
+    dependsOn(":warband-core:classes")
+    from(coreMainSourceSet.output)
     finalizedBy("reobfJar")
 }
 
@@ -117,9 +117,13 @@ val syncGameTestStructures by tasks.registering(Copy::class) {
     into(layout.projectDirectory.dir("run/gameteststructures"))
 }
 
+val cleanGameTestWorld by tasks.registering(Delete::class) {
+    delete(layout.projectDirectory.dir("run/world"))
+}
+
 tasks.withType<JavaExec>().configureEach {
     if (name == "runGameTestServer") {
-        dependsOn(syncGameTestStructures)
+        dependsOn(cleanGameTestWorld, syncGameTestStructures)
         systemProperty("pillagercampaigns.catalogOutput", layout.buildDirectory.file("warband-catalog/live-catalog.json").get().asFile.absolutePath)
     }
 }
@@ -166,8 +170,8 @@ tasks.jacocoTestReport {
                         "**/PillagerCampaignsMod*",
                         "**/PillagerCampaignsEvents*",
                         "**/PillagerCampaignsConfig*",
-                        "**/PillagerCampaignEngine*",
-                        "**/PillagerEngineBridge*",
+                        "**/PillagerCampaignCoordinator*",
+                        "**/WarbandCoreAdapter*",
                         "**/PillagerRuntime*",
                         "**/PillagerWarbandPresenceSystem*",
                         "**/PillagerWarbandDiscoveryService*",
@@ -177,6 +181,11 @@ tasks.jacocoTestReport {
                         "**/PillagerSpawnPlacementRules*",
                         "**/EnvironmentSampler*",
                         "**/TinkersArmoryOptimizer*",
+                        // Minecraft registry/projection adapters are exercised by Forge GameTests;
+                        // the JVM coverage gate measures runtime-independent logic and persistence.
+                        "**/WarbandResourceCatalog*",
+                        "**/PillagerFaction*",
+                        "**/PillagerOfficer*",
                         "**/WarbandFormulaData*",
                         "**/sim/WarbandScenarioMain*",
                         "**/gametest/**",
@@ -214,7 +223,7 @@ tasks.register("verifyFast") {
     group = "verification"
     description = "Runs the fast deterministic verification lane."
     dependsOn(tasks.named("check"))
-    dependsOn(":engine:check")
+    dependsOn(":warband-core:check")
     dependsOn(":runner:test")
 }
 

@@ -4,13 +4,12 @@
 
 Current coverage focus:
 
-- `engine/*`: deterministic transitions, time-partition invariance, exact ledgers, global target exclusivity, recruitment, manufacturing, combat learning, travel, physical/frontier return, and reconciliation.
-- `runner/*`: reproducible experiments, JSONL traces, CSV summaries, assumption sweeps, and baseline comparisons.
-
-- `data/*`: NBT save/load, corrupt-entry isolation, reference repair, enum/resource/UUID fallback, captain history/rally presence, and campaign/warband/captain round trips.
-- `system/PillagerCampaignEngine`: captain recovery, promotion, grudge weighting, warband collapse, and campaign cleanup.
+- `warband-core/*`: deterministic transitions, time-partition invariance, exact ledgers/manifests, discovery, territory, campaign and garrison lifecycle, tactical intent, rewards, succession, collapse, persistent effect acknowledgement, and conservation.
+- `runner/*`: reproducible experiments, exact trace record/replay with per-transition hashes, CSV summaries, assumption sweeps, and baseline comparisons.
+- `data/*`: strict schema-5 Core snapshot persistence, exact Minecraft sidecars, malformed-input rejection, duplicate canonical-ID rejection, and catalog revision pinning.
+- `system/WarbandCoreAdapter`: the single Forge transition boundary and rebuildable Minecraft-native projections.
 - `system/PillagerWarbandDiscovery*`: deterministic warband placement and active discovery-radius logic.
-- `util/PillagerIdentity`: deterministic faction/captain identity generation.
+- `util/PillagerIdentity`: deterministic native identity projection.
 
 Plain JUnit deliberately does not bootstrap full Forge networking or a Minecraft world. Runtime/event/entity behavior remains covered by build compilation plus Forge GameTests and manual/in-world validation commands:
 
@@ -24,7 +23,7 @@ Plain JUnit deliberately does not bootstrap full Forge networking or a Minecraft
 Deterministic harness lane:
 
 ```sh
-# Interactive use of the exact engine packaged by the mod
+# Interactive use of the exact Warband Core packaged by the mod
 ./gradlew warbandSim
 
 # Produce a starter scenario, then run or compare it
@@ -36,12 +35,16 @@ Deterministic harness lane:
 ./gradlew -q :runner:run --args='matrix-example' > /tmp/warband-matrix.json
 ./gradlew -q :runner:run --args='sweep /tmp/warband-matrix.json build/warband-sweep/example'
 
+# Record every exact frame/event/effect/state hash, then verify deterministic replay
+./gradlew -q :runner:run --args='record /tmp/warband-scenario.json /tmp/warband-trace.json'
+./gradlew -q :runner:run --args='replay /tmp/warband-trace.json'
+
 # Capture the actual Forge registry/TCon catalog, then explore 1/3/10/30-day balance
 ./gradlew verifyFull
 ./gradlew -q :runner:run --args='explore ../build/warband-catalog/live-catalog.json ../build/warband-balance'
 ```
 
-Scenario inputs provide bounded physical observations; they do not reimplement Minecraft combat or pathfinding. Every economy, composition, equipment, learning, campaign, and return transition is still executed by `engine`. Forge adapter architecture tests fail if the baseline scoring/economy/geometry paths stop delegating to that module.
+Scenario inputs provide bounded physical observations; they do not reimplement Minecraft combat or pathfinding. Every strategic consequence is executed by `warband-core`. A recorded trace embeds the catalog revision and content, rules, pristine initial state/hash, every exact input frame, emitted events/effects, and every post-state hash. Replay fails at the first divergent component. Forge architecture tests fail if any runtime source calls Core outside the canonical adapter or imports Minecraft into Core.
 
 Existing external harness lane:
 
@@ -66,4 +69,4 @@ JaCoCo reports:
 - HTML: `build/reports/jacoco/test/html/index.html`
 - XML: `build/reports/jacoco/test/jacocoTestReport.xml`
 
-The Gradle `verifyFast` lane enforces at least 90% line coverage for both the pure engine and the testable Forge-facing bundle. Physical adapters remain covered through Forge GameTests and live-instance validation.
+The Gradle `verifyFast` lane enforces at least 90% line coverage for both Warband Core and the testable Forge-facing bundle. Physical adapters remain covered through Forge GameTests and live-instance validation.

@@ -408,8 +408,8 @@ data class PillagerCampaign(
     val memberThreat: MutableMap<UUID, Double> = mutableMapOf(),
     val memberSnapshots: MutableList<CompoundTag> = mutableListOf(),
     var returnOutcome: CampaignOutcome? = null,
-    var pendingEngineOutcome: CampaignOutcome? = null,
-    var pendingEngineOutcomeReason: String? = null,
+    var pendingCoreOutcome: CampaignOutcome? = null,
+    var pendingCoreOutcomeReason: String? = null,
     var returnReason: String? = null,
     var returnStartedTick: Long = 0L,
     var returnAggressionDelta: Int = 0,
@@ -458,8 +458,8 @@ data class PillagerCampaign(
         it.put("memberThreat", CompoundTag().also { values -> memberThreat.forEach { (id, threat) -> values.putDouble(id.toString(), threat) } })
         it.put("memberSnapshots", saveRecordList(memberSnapshots))
         returnOutcome?.let { outcome -> it.putString("returnOutcome", outcome.name) }
-        pendingEngineOutcome?.let { outcome -> it.putString("pendingEngineOutcome", outcome.name) }
-        pendingEngineOutcomeReason?.let { reason -> it.putString("pendingEngineOutcomeReason", reason) }
+        pendingCoreOutcome?.let { outcome -> it.putString("pendingCoreOutcome", outcome.name) }
+        pendingCoreOutcomeReason?.let { reason -> it.putString("pendingCoreOutcomeReason", reason) }
         returnReason?.let { reason -> it.putString("returnReason", reason) }
         it.putLong("returnStartedTick", returnStartedTick)
         it.putInt("returnAggressionDelta", returnAggressionDelta)
@@ -517,8 +517,8 @@ data class PillagerCampaign(
             memberThreat = mutableMapOf<UUID, Double>().also { values -> if (tag.contains("memberThreat", Tag.TAG_COMPOUND.toInt())) tag.getCompound("memberThreat").allKeys.forEach { key -> runCatching { UUID.fromString(key) }.getOrNull()?.let { values[it] = tag.getCompound("memberThreat").getDouble(key) } } },
             memberSnapshots = mutableListOf<CompoundTag>().also { values -> if (tag.contains("memberSnapshots", Tag.TAG_LIST.toInt())) tag.getList("memberSnapshots", Tag.TAG_COMPOUND.toInt()).forEach { values += (it as CompoundTag).copy() } },
             returnOutcome = if (tag.contains("returnOutcome")) runCatching { CampaignOutcome.valueOf(tag.getString("returnOutcome")) }.getOrNull() else null,
-            pendingEngineOutcome = if (tag.contains("pendingEngineOutcome")) runCatching { CampaignOutcome.valueOf(tag.getString("pendingEngineOutcome")) }.getOrNull() else null,
-            pendingEngineOutcomeReason = if (tag.contains("pendingEngineOutcomeReason")) tag.getString("pendingEngineOutcomeReason") else null,
+            pendingCoreOutcome = if (tag.contains("pendingCoreOutcome")) runCatching { CampaignOutcome.valueOf(tag.getString("pendingCoreOutcome")) }.getOrNull() else null,
+            pendingCoreOutcomeReason = if (tag.contains("pendingCoreOutcomeReason")) tag.getString("pendingCoreOutcomeReason") else null,
             returnReason = if (tag.contains("returnReason")) tag.getString("returnReason") else null,
             returnStartedTick = if (tag.contains("returnStartedTick")) tag.getLong("returnStartedTick") else 0L,
             returnAggressionDelta = if (tag.contains("returnAggressionDelta")) tag.getInt("returnAggressionDelta") else 0,

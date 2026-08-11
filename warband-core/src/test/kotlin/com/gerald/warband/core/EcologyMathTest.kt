@@ -1,4 +1,4 @@
-package com.gerald.pillagercampaigns.engine
+package com.gerald.warband.core
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -37,7 +37,7 @@ class EcologyMathTest {
     }
 
     @Test fun `shared segment formulas consume exact manifests and delay attrition`() {
-        val rules = WarbandRules(
+        val rules = CoreRules(
             sustenancePerThreatChunk = 0.1, munitionsPerRangedThreatChunk = 0.2,
             maintenancePerEquipmentChunk = 0.4, deficitGraceChunks = 2.0,
             equipmentWearPerFrictionChunk = 0.01, attritionPerDeficitChunk = 0.1,

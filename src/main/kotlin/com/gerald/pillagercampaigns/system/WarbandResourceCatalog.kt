@@ -1,8 +1,8 @@
 package com.gerald.pillagercampaigns.system
 
-import com.gerald.pillagercampaigns.engine.EnvironmentTraits
-import com.gerald.pillagercampaigns.engine.ResourceDefinition
-import com.gerald.pillagercampaigns.engine.ResourceVector
+import com.gerald.warband.core.EnvironmentTraits
+import com.gerald.warband.core.ResourceDefinition
+import com.gerald.warband.core.ResourceVector
 import net.minecraft.tags.ItemTags
 import net.minecraft.world.item.ArrowItem
 import net.minecraft.world.item.ItemStack

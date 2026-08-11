@@ -26,7 +26,7 @@ object EnvironmentSampler {
     }
 
     /** Samples every formulaic route candidate directly from biome noise; no chunk is requested. */
-    fun corridor(level: ServerLevel, startX: Int, startZ: Int, targetX: Int, targetZ: Int): List<com.gerald.pillagercampaigns.engine.TerrainObservation> {
+    fun corridor(level: ServerLevel, startX: Int, startZ: Int, targetX: Int, targetZ: Int): List<com.gerald.warband.core.TerrainObservation> {
         val points = linkedSetOf<Pair<Int, Int>>()
         var x = startX
         var z = startZ
@@ -44,9 +44,9 @@ object EnvironmentSampler {
         while (x != targetX) { x += if (targetX > x) 1 else -1; points += x to targetZ }
         return points.map { (chunkX, chunkZ) ->
             val traits = samplePoint(level, chunkX, chunkZ)
-            com.gerald.pillagercampaigns.engine.TerrainObservation(
-                com.gerald.pillagercampaigns.engine.ChunkPosition(level.dimension().location().toString(), chunkX, chunkZ),
-                com.gerald.pillagercampaigns.engine.EnvironmentTraits(
+            com.gerald.warband.core.TerrainObservation(
+                com.gerald.warband.core.ChunkPosition(level.dimension().location().toString(), chunkX, chunkZ),
+                com.gerald.warband.core.EnvironmentTraits(
                     traits.habitability, traits.biomass, traits.mineralPotential, traits.exoticPotential, traits.travelFriction,
                 ),
             )

@@ -1,9 +1,9 @@
 package com.gerald.pillagercampaigns.system
 
-import com.gerald.pillagercampaigns.engine.FormulaMath
-import com.gerald.pillagercampaigns.engine.WarbandRules
+import com.gerald.warband.core.FormulaMath
+import com.gerald.warband.core.CoreRules
 
-typealias EnvironmentTraits = com.gerald.pillagercampaigns.engine.EnvironmentTraits
+typealias EnvironmentTraits = com.gerald.warband.core.EnvironmentTraits
 
 data class FormulaCandidate(
     val id: String,
@@ -18,7 +18,7 @@ object FormulaicWarbandRules {
     const val MAX_AGGRESSION = 18
     const val IDLE_RETURN_TICKS = 12_000L
 
-    private val rules = WarbandRules()
+    private val rules = CoreRules()
 
     fun capacity(traits: EnvironmentTraits): Int = rules.capacity(traits)
 
@@ -44,7 +44,7 @@ object FormulaicWarbandRules {
 
     fun score(candidate: FormulaCandidate, preferences: Map<String, Double>, available: Map<String, Double>): Double {
         return FormulaMath.score(
-            com.gerald.pillagercampaigns.engine.FormulaCandidate(candidate.id, candidate.threat, candidate.attributes, candidate.resourceCost),
+            com.gerald.warband.core.FormulaCandidate(candidate.id, candidate.threat, candidate.attributes, candidate.resourceCost),
             preferences,
             available,
         )
@@ -52,7 +52,7 @@ object FormulaicWarbandRules {
 
     fun choose(candidates: Collection<FormulaCandidate>, preferences: Map<String, Double>, available: Map<String, Double>): FormulaCandidate? =
         FormulaMath.choose(
-            candidates.map { com.gerald.pillagercampaigns.engine.FormulaCandidate(it.id, it.threat, it.attributes, it.resourceCost) },
+            candidates.map { com.gerald.warband.core.FormulaCandidate(it.id, it.threat, it.attributes, it.resourceCost) },
             preferences,
             available,
         )?.let { selected -> candidates.first { it.id == selected.id } }

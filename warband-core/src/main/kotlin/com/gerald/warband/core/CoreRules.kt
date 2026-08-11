@@ -1,4 +1,4 @@
-package com.gerald.pillagercampaigns.engine
+package com.gerald.warband.core
 
 import kotlinx.serialization.Serializable
 import kotlin.math.ceil
@@ -6,9 +6,10 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 @Serializable
-data class WarbandRules(
+data class CoreRules(
     val minimumAggression: Int = 6,
     val maximumAggression: Int = 18,
+    val initialAggression: Int = 6,
     val idleReturnTicks: Long = 12_000L,
     val travelTicksPerChunk: Long = 120L,
     val materializeDistanceChunks: Int = 6,
@@ -30,6 +31,9 @@ data class WarbandRules(
     val forageUnitsPerDeficitChunk: Double = 0.75,
     val shortageRetreatBaseChunks: Double = 6.0,
     val shortageAggressionRunwayChunks: Double = 18.0,
+    val discoveryInitialThreatFraction: Double = 0.15,
+    val successorVictoryWeight: Double = 2.0,
+    val successorDefeatWeight: Double = -1.0,
 ) {
     fun capacity(environment: EnvironmentTraits): Int =
         ((96.0 + 120.0 * environment.bounded().habitability) / 6.0).roundToInt() * 6
@@ -41,6 +45,17 @@ data class WarbandRules(
         (30.0 + 60.0 * environment.bounded().travelFriction) * 20.0
 
     fun extractionTicks(environment: EnvironmentTraits): Double = recruitTicksPerThreat(environment) / 2.0
+
+    fun discoveryInitialThreat(environment: EnvironmentTraits): Double =
+        capacity(environment) * discoveryInitialThreatFraction.coerceIn(0.0, 1.0)
+
+    fun garrisonThreatTarget(warband: WarbandState, minimumRecruitThreat: Double): Double {
+        val environment = warband.environment.bounded()
+        val power = warband.reserveThreat + warband.raidPool + warband.garrisonThreat
+        val fraction = 0.08 + 0.10 * environment.habitability + 0.06 * environment.travelFriction +
+            0.08 * normalizedAggression(warband)
+        return (power * fraction).coerceAtLeast(minimumRecruitThreat).coerceAtMost(warband.reserveThreat)
+    }
 
     /**
      * Derives the threat needed to express the warband's current aggression.
@@ -73,7 +88,7 @@ data class WarbandRules(
      * Continuous operational demand layered over learned preferences. Aggression
      * demands lethality, accumulated power demands equipment that survives a
      * campaign, and terrain changes what is useful without assigning a roster or
-     * loadout archetype.
+     * discrete loadout classification.
      */
     fun armamentPreferences(warband: WarbandState, officer: OfficerState?): CapabilityVector {
         val environment = warband.environment.bounded()
@@ -81,11 +96,11 @@ data class WarbandRules(
         val power = ((warband.reserveThreat + warband.raidPool + warband.garrisonThreat) /
             warband.capacity.coerceAtLeast(1.0)).coerceIn(0.0, 1.0)
         return effectivePreferences(warband, officer) + CapabilityVector(
-            durability = 0.35 * (1.0 - environment.habitability) + 0.25 * environment.travelFriction + 0.20 * power,
-            damage = 0.40 * aggression + 0.15 * environment.mineralPotential,
-            mobility = 0.35 * environment.travelFriction + 0.15 * (1.0 - environment.habitability),
-            range = 0.25 * (1.0 - environment.biomass) + 0.25 * aggression,
-            control = 0.25 * environment.biomass + 0.20 * environment.exoticPotential + 0.20 * power,
+            durability = 1.10 * (1.0 - environment.habitability) + 0.70 * environment.travelFriction + 0.20 * power,
+            damage = 0.90 * aggression + 0.90 * environment.mineralPotential + 0.30 * environment.exoticPotential,
+            mobility = 0.90 * environment.travelFriction + 0.60 * (1.0 - environment.habitability),
+            range = 1.00 * (1.0 - environment.biomass) + 0.50 * aggression,
+            control = 0.90 * environment.biomass + 0.70 * environment.exoticPotential + 0.20 * power,
         )
     }
 

@@ -1,6 +1,5 @@
 package com.gerald.pillagercampaigns.system
 
-import com.gerald.pillagercampaigns.PillagerCampaignsConfig
 import com.gerald.pillagercampaigns.data.OfficerRank
 import com.gerald.pillagercampaigns.data.OfficerRole
 import com.gerald.pillagercampaigns.data.OfficerState
@@ -9,18 +8,23 @@ import com.gerald.pillagercampaigns.data.PillagerWorldData
 import com.gerald.pillagercampaigns.data.PresenceMaterializationResult
 import com.gerald.pillagercampaigns.data.RallyPresenceRecord
 import com.gerald.pillagercampaigns.data.RallyPresenceState
+import com.gerald.pillagercampaigns.data.CosmeticSidecar
 import com.gerald.pillagercampaigns.util.PillagerIdentity
+import com.gerald.warband.core.ChunkPosition
+import com.gerald.warband.core.CoreCatalog
+import com.gerald.warband.core.CoreFrame
+import com.gerald.warband.core.WarbandDiscoveryObservation
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.world.level.ChunkPos
 
 object PillagerWarbandDiscoveryService {
     fun registerDiscoveredWarband(level: ServerLevel, data: PillagerWorldData, candidate: PillagerWarbandDiscoveryRules.Candidate, now: Long): Boolean {
         if (candidate.dimension != level.dimension().location()) return false
-        if (data.warbands.containsKey(candidate.id)) return false
-        val existsAtRally = data.warbands.values.any {
-            it.dimension == candidate.dimension &&
-                it.rallyChunkX == candidate.chunkX &&
-                it.rallyChunkZ == candidate.chunkZ &&
+        if (candidate.id.toString() in data.coreState.warbands || candidate.id.toString() in data.coreState.discoveredSiteIds) return false
+        val existsAtRally = data.coreState.warbands.values.any {
+            it.rally.dimension == candidate.dimension.toString() &&
+                it.rally.x == candidate.chunkX &&
+                it.rally.z == candidate.chunkZ &&
                 !it.defeated
         }
         if (existsAtRally) return false
@@ -29,6 +33,32 @@ object PillagerWarbandDiscoveryService {
         data.factions.putIfAbsent(faction.id, faction)
         val environment = EnvironmentSampler.sample(level, candidate.chunkX, candidate.chunkZ)
         val warlord = ensureWarlord(level, data, candidate.id, faction.id)
+        data.minecraftSidecar.cosmetics[faction.id.toString()] = CosmeticSidecar(faction.name, bannerSeed = faction.bannerSeed)
+        data.minecraftSidecar.cosmetics[warlord.id.toString()] = CosmeticSidecar(warlord.name, warlord.title)
+        val preferenceSeed = level.seed xor candidate.id.mostSignificantBits
+        WarbandCoreAdapter.transition(
+            data,
+            CoreFrame(
+                elapsedTicks = if (data.coreState.warbands.isEmpty()) (now - data.coreState.tick).coerceAtLeast(0L) else 0L,
+                discoveries = listOf(
+                    WarbandDiscoveryObservation(
+                        siteId = candidate.id.toString(),
+                        rally = ChunkPosition(candidate.dimension.toString(), candidate.chunkX, candidate.chunkZ),
+                        environment = environment,
+                        factionName = faction.name,
+                        bannerSeed = faction.bannerSeed,
+                        preferenceSeed = preferenceSeed,
+                        factionId = faction.id.toString(),
+                        warbandId = candidate.id.toString(),
+                        officerId = warlord.id.toString(),
+                    ),
+                ),
+                advanceEconomy = false,
+                allowAutomaticDispatch = false,
+            ),
+            CoreCatalog(WarbandCoreAdapter.LIVE_CATALOG_REVISION, emptyList()),
+        )
+        val core = data.coreState.warbands.getValue(candidate.id.toString())
         val warband = PillagerWarband(
             id = candidate.id,
             factionId = faction.id,
@@ -36,11 +66,12 @@ object PillagerWarbandDiscoveryService {
             bannerSeed = (level.seed xor candidate.id.mostSignificantBits xor candidate.id.leastSignificantBits).toInt(),
             rallyChunkX = candidate.chunkX,
             rallyChunkZ = candidate.chunkZ,
-            reserve = PillagerCampaignsConfig.initialReserve.get(),
-            capacity = FormulaicWarbandRules.capacity(environment),
-            aggression = PillagerCampaignsConfig.initialAggression.get(),
+            reserve = core.reserveThreat.toInt(),
+            capacity = core.capacity.toInt(),
+            raidPool = core.raidPool,
+            aggression = core.aggression,
             environment = environment,
-            preferences = FormulaicWarbandRules.initialPreferences(level.seed xor candidate.id.mostSignificantBits, environment),
+            preferences = core.preferences.toMutableMap(),
             lastEconomyTick = now,
             defeated = false,
             warlordOfficerId = warlord.id,
@@ -55,8 +86,6 @@ object PillagerWarbandDiscoveryService {
                 warlordId = warlord.id,
             ),
         )
-        TinkersArmoryOptimizer.seedLedger(warband)
-        repeat(minOf(3, warband.reserve)) { TinkersArmoryOptimizer.create(warband, level.server)?.let { warband.armory += it.save(net.minecraft.nbt.CompoundTag()) } }
         data.warbands[candidate.id] = warband
         data.markChanged()
         return true

@@ -1,156 +1,118 @@
 package com.gerald.pillagercampaigns.data
 
-import net.minecraft.resources.ResourceLocation
+import com.gerald.warband.core.ChunkPosition
+import com.gerald.warband.core.CoreSnapshot
+import com.gerald.warband.core.FactionState
+import com.gerald.warband.core.WarbandState
+import net.minecraft.nbt.CompoundTag
+import net.minecraft.nbt.ListTag
+import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNotSame
 import kotlin.test.assertTrue
-import java.util.UUID
 
 class PillagerWorldDataRepairTest {
     @Test
-    fun `load repairs dangling officer and campaign references`() {
-        val factionId = UUID.randomUUID()
-        val goodWarbandId = UUID.randomUUID()
-        val badWarbandId = UUID.randomUUID()
-        val goodOfficerId = UUID.randomUUID()
-        val badOfficerId = UUID.randomUUID()
-
-        val faction = PillagerFaction(
-            id = factionId,
-            name = "Test Faction",
-            bannerSeed = 4,
-            bossOfficerId = null,
-        )
-
-        val warband = PillagerWarband(
-            id = goodWarbandId,
-            factionId = factionId,
-            dimension = ResourceLocation("minecraft", "overworld"),
-            bannerSeed = 2,
-            rallyChunkX = 0,
-            rallyChunkZ = 0,
-            reserve = 18,
-            defeated = false,
-            warlordOfficerId = goodOfficerId,
-            warlordEntityId = null,
-            nextRaidTick = 0L,
-            cooldownUntilTick = 0L,
-            lastIntelTick = 0L,
-            lastPresenceFailure = PresenceMaterializationResult.SUCCESS,
-        )
-
-        val goodOfficer = PillagerOfficer(
-            id = goodOfficerId,
-            factionId = factionId,
-            homeWarbandId = goodWarbandId,
-            name = "Good",
-            title = "Captain",
-            rank = OfficerRank.CAPTAIN,
-            state = OfficerState.IDLE,
-            preferenceGraph = mutableMapOf(),
-        )
-
-        val badOfficer = PillagerOfficer(
-            id = badOfficerId,
-            factionId = factionId,
-            homeWarbandId = badWarbandId,
-            name = "Bad",
-            title = "Dangling",
-            rank = OfficerRank.CAPTAIN,
-            state = OfficerState.IDLE,
-            preferenceGraph = mutableMapOf(),
-        )
-
-        val goodCampaign = PillagerCampaign(
-            id = UUID.randomUUID(),
-            factionId = factionId,
-            originWarbandId = goodWarbandId,
-            officerId = goodOfficerId,
-            targetPlayerId = UUID.randomUUID(),
-            targetDimension = ResourceLocation("minecraft", "overworld"),
-            currentChunkX = 0,
-            currentChunkZ = 0,
-            targetChunkX = 1,
-            targetChunkZ = 1,
-            difficultySnapshot = 0,
-            loadoutSeed = 1L,
-            tickDebt = 0,
-            state = CampaignState.TRAVELING,
-            resumeState = null,
-            materializeAttemptId = null,
-            materializingUntilTick = 0L,
-            squadMemberIds = mutableListOf(),
-        )
-
-        val badCampaign = PillagerCampaign(
-            id = UUID.randomUUID(),
-            factionId = factionId,
-            originWarbandId = goodWarbandId,
-            officerId = badOfficerId,
-            targetPlayerId = UUID.randomUUID(),
-            targetDimension = ResourceLocation("minecraft", "overworld"),
-            currentChunkX = 0,
-            currentChunkZ = 0,
-            targetChunkX = 1,
-            targetChunkZ = 1,
-            difficultySnapshot = 0,
-            loadoutSeed = 2L,
-            tickDebt = 0,
-            state = CampaignState.TRAVELING,
-            resumeState = null,
-            materializeAttemptId = null,
-            materializingUntilTick = 0L,
-            squadMemberIds = mutableListOf(),
-        )
-
-        val raw = PillagerWorldData().apply {
-            factions[faction.id] = faction
-            warbands[warband.id] = warband
-            officers[goodOfficer.id] = goodOfficer
-            officers[badOfficer.id] = badOfficer
-            campaigns[goodCampaign.id] = goodCampaign
-            campaigns[badCampaign.id] = badCampaign
-        }.save(net.minecraft.nbt.CompoundTag())
-
-        val repaired = PillagerWorldData.load(raw)
-
-        assertEquals(1, repaired.officers.size)
-        assertEquals(true, repaired.officers.containsKey(goodOfficerId))
-        assertEquals(1, repaired.campaigns.size)
-        assertEquals(true, repaired.campaigns.containsKey(goodCampaign.id))
-    }
-
-    @Test
-    fun `load preserves initialized and protected players`() {
-        val playerId = UUID.randomUUID()
-        val raw = PillagerWorldData().apply {
-            initializedPlayers += playerId
-            protectedPlayersUntilTick[playerId] = 6_000L
-        }.save(net.minecraft.nbt.CompoundTag())
-
-        val loaded = PillagerWorldData.load(raw)
-
-        assertTrue(playerId in loaded.initializedPlayers)
-        assertEquals(6_000L, loaded.protectedPlayersUntilTick[playerId])
-    }
-
-    @Test
-    fun `engine sequence persists and legacy manifests advance it without collisions`() {
-        val current = PillagerWorldData().apply { engineSequence = 91L }
-        assertEquals(91L, PillagerWorldData.load(current.save(net.minecraft.nbt.CompoundTag())).engineSequence)
-
-        val legacy = current.save(net.minecraft.nbt.CompoundTag()).also {
-            it.remove("engineSequence")
-            val legacyCampaign = PillagerCampaign(
-                UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
-                ResourceLocation("minecraft", "overworld"), 0, 0, 1, 0, 1, 0L, 0,
-                CampaignState.TRAVELING, null, null, 0L, mutableListOf(),
-                plannedMembers = mutableListOf(PlannedCampaignMember(
-                    ResourceLocation("minecraft", "pillager"), 5.0, manifestId = "engine:member:41",
-                )),
-            )
-            it.put("campaigns", net.minecraft.nbt.ListTag().also { campaigns -> campaigns.add(legacyCampaign.save()) })
+    fun `canonical core snapshot and sidecar round trip through world NBT`() {
+        val memberId = "core:member:12"
+        val entityId = UUID.randomUUID()
+        val mob = CompoundTag().also {
+            it.putString("id", "minecraft:pillager")
+            it.putFloat("Health", 17.5f)
         }
-        assertEquals(42L, PillagerWorldData.load(legacy).engineSequence)
+        val item = CompoundTag().also {
+            it.putString("id", "tconstruct:crossbow")
+            it.putInt("Damage", 31)
+        }
+        val state = CoreSnapshot(
+            tick = 8_000L,
+            sequence = 13L,
+            factions = linkedMapOf("core:faction:1" to FactionState("core:faction:1", "Ash Banner", 7)),
+            warbands = linkedMapOf(
+                "core:warband:2" to WarbandState(
+                    "core:warband:2", "core:faction:1", ChunkPosition("minecraft:overworld", 4, -2),
+                    capacity = 156.0, reserveThreat = 35.5,
+                ),
+            ),
+            protectedPlayersUntilTick = linkedMapOf(UUID.randomUUID().toString() to 9_000L),
+        )
+        val data = PillagerWorldData().apply {
+            coreState = state
+            coreCatalogRevision = "sha256:test-catalog"
+            minecraftSidecar = MinecraftSidecar(
+                entityIds = linkedMapOf(memberId to entityId),
+                mobSnapshots = linkedMapOf(memberId to mob),
+                itemSnapshots = linkedMapOf(memberId to mutableListOf(item)),
+                cosmetics = linkedMapOf("core:officer:3" to CosmeticSidecar("Mara", "the Flint-Eyed", 19)),
+                materializationAttempts = linkedMapOf(
+                    "core:effect:14" to MaterializationAttemptSidecar(UUID.randomUUID(), 8_001L),
+                ),
+            )
+        }
+
+        val tag = data.save(CompoundTag())
+        val loaded = PillagerWorldData.load(tag)
+
+        assertEquals(WarbandCorePersistence.SCHEMA_VERSION, tag.getInt("schema"))
+        assertEquals("warband-core", tag.getString("format"))
+        assertTrue(tag.getByteArray("coreSnapshotJson").toString(Charsets.UTF_8).startsWith("{"))
+        assertEquals(8_000L, loaded.coreState.tick)
+        assertEquals(35.5, loaded.coreState.warbands.getValue("core:warband:2").reserveThreat)
+        assertEquals("sha256:test-catalog", loaded.coreCatalogRevision)
+        assertEquals(entityId, loaded.minecraftSidecar.entityIds[memberId])
+        assertEquals(mob, loaded.minecraftSidecar.mobSnapshots[memberId])
+        assertEquals(item, loaded.minecraftSidecar.itemSnapshots.getValue(memberId).single())
+        assertEquals("the Flint-Eyed", loaded.minecraftSidecar.cosmetics["core:officer:3"]?.title)
+        assertNotSame(mob, loaded.minecraftSidecar.mobSnapshots[memberId])
+        assertFalse(tag.contains("factions"))
+        assertFalse(tag.contains("campaigns"))
+    }
+
+    @Test
+    fun `legacy and malformed strategic saves are rejected rather than migrated`() {
+        val legacy = CompoundTag().also {
+            it.putInt("schema", 4)
+            it.put("warbands", ListTag())
+        }
+        val legacyFailure = assertFailsWith<UnsupportedWarbandCoreSchemaException> {
+            PillagerWorldData.load(legacy)
+        }
+        assertTrue(legacyFailure.message.orEmpty().contains("not migrated"))
+
+        val malformed = WarbandCorePersistence.save(
+            PersistedWarbandCore(CoreSnapshot(), "catalog", MinecraftSidecar()),
+        ).also { it.putByteArray("coreSnapshotJson", byteArrayOf(0xc3.toByte(), 0x28)) }
+        assertFailsWith<UnsupportedWarbandCoreSchemaException> { PillagerWorldData.load(malformed) }
+    }
+
+    @Test
+    fun `sidecar rejects duplicate canonical identities`() {
+        val duplicate = CompoundTag().also { sidecar ->
+            sidecar.putInt("schema", 1)
+            sidecar.put("entityIds", ListTag().also { entries ->
+                repeat(2) {
+                    entries.add(CompoundTag().also { entry ->
+                        entry.putString("id", "core:member:1")
+                        entry.putUUID("value", UUID.randomUUID())
+                    })
+                }
+            })
+        }
+        val failure = assertFailsWith<IllegalArgumentException> { MinecraftSidecar.load(duplicate) }
+        assertTrue(failure.message.orEmpty().contains("duplicate canonical ID"))
+    }
+
+    @Test
+    fun `player protection is stored only in core state`() {
+        val playerId = UUID.randomUUID()
+        val data = PillagerWorldData()
+
+        data.coreState.protectedPlayersUntilTick[playerId.toString()] = 6_000L
+        assertTrue(data.isPlayerProtected(playerId, 5_999L))
+        assertFalse(data.isPlayerProtected(playerId, 6_001L))
+        assertTrue(playerId.toString() in data.coreState.protectedPlayersUntilTick)
     }
 }

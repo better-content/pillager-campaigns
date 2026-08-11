@@ -1,4 +1,4 @@
-package com.gerald.pillagercampaigns.engine
+package com.gerald.warband.core
 
 enum class ActiveCampaignDecision { CONTINUE, DEFEATED, MORALE_RETURN, IDLE_RETURN }
 
@@ -11,7 +11,7 @@ object CampaignDecisions {
         aggression: Int,
         now: Long,
         lastCombatTick: Long,
-        rules: WarbandRules = WarbandRules(),
+        rules: CoreRules = CoreRules(),
     ): ActiveCampaignDecision = when {
         aliveMembers < 1 -> ActiveCampaignDecision.DEFEATED
         committedThreat > 0.0 && liveThreat / committedThreat <=

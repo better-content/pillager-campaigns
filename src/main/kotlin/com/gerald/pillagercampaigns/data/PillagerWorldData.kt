@@ -1,154 +1,57 @@
 package com.gerald.pillagercampaigns.data
 
+import com.gerald.warband.core.CoreSnapshot
 import net.minecraft.nbt.CompoundTag
-import net.minecraft.nbt.ListTag
-import net.minecraft.nbt.Tag
 import net.minecraft.server.MinecraftServer
 import net.minecraft.world.level.saveddata.SavedData
 import java.util.UUID
 
 class PillagerWorldData : SavedData() {
+    /** The sole persisted strategic state. */
+    var coreState: CoreSnapshot = CoreSnapshot()
+    var coreCatalogRevision: String = UNRESOLVED_CATALOG_REVISION
+    var minecraftSidecar: MinecraftSidecar = MinecraftSidecar()
+
+    /*
+     * Minecraft-native projections rebuilt by WarbandCoreAdapter. They carry
+     * entity-facing metadata only and are never serialized as strategic state.
+     */
     val factions: MutableMap<UUID, PillagerFaction> = linkedMapOf()
     val warbands: MutableMap<UUID, PillagerWarband> = linkedMapOf()
     val officers: MutableMap<UUID, PillagerOfficer> = linkedMapOf()
     val campaigns: MutableMap<UUID, PillagerCampaign> = linkedMapOf()
-    val initializedPlayers: MutableSet<UUID> = linkedSetOf()
-    val protectedPlayersUntilTick: MutableMap<UUID, Long> = linkedMapOf()
-
-    var lastDiscoveryTick: Long = 0L
-    var lastCampaignTick: Long = 0L
-    var engineSequence: Long = 0L
+    val lastDiscoveryTick: Long get() = coreState.lastDiscoveryTick
+    val lastCampaignTick: Long get() = coreState.lastCampaignTick
+    val coreSequence: Long get() = coreState.sequence
 
     override fun save(tag: CompoundTag): CompoundTag {
-        tag.putInt("schema", SCHEMA_VERSION)
-        tag.putLong("lastDiscoveryTick", lastDiscoveryTick)
-        tag.putLong("lastCampaignTick", lastCampaignTick)
-        tag.putLong("engineSequence", engineSequence)
-        tag.put("factions", saveRecordList(factions.values.map { it.save() }))
-        tag.put("warbands", saveRecordList(warbands.values.map { it.save() }))
-        tag.put("officers", saveRecordList(officers.values.map { it.save() }))
-        tag.put("captains", saveRecordList(officers.values.map { it.save() }))
-        tag.put("campaigns", saveRecordList(campaigns.values.map { it.save() }))
-        tag.put("initializedPlayers", saveUuidList(initializedPlayers))
-        tag.put("protectedPlayersUntilTick", saveProtectedPlayers(protectedPlayersUntilTick))
-        return tag
+        return WarbandCorePersistence.save(
+            PersistedWarbandCore(coreState, coreCatalogRevision, minecraftSidecar),
+            tag,
+        )
     }
 
     fun markChanged() {
         setDirty()
     }
 
-    fun markPlayerInitialized(playerId: UUID): Boolean {
-        val added = initializedPlayers.add(playerId)
-        if (added) markChanged()
-        return added
-    }
-
-    fun protectPlayerUntil(playerId: UUID, untilTick: Long) {
-        if ((protectedPlayersUntilTick[playerId] ?: Long.MIN_VALUE) >= untilTick) return
-        protectedPlayersUntilTick[playerId] = untilTick
-        markChanged()
-    }
-
     fun isPlayerProtected(playerId: UUID, now: Long): Boolean {
-        val untilTick = protectedPlayersUntilTick[playerId] ?: return false
-        if (now <= untilTick) return true
-        protectedPlayersUntilTick.remove(playerId)
-        markChanged()
-        return false
+        return now <= (coreState.protectedPlayersUntilTick[playerId.toString()] ?: Long.MIN_VALUE)
     }
 
     companion object {
         private const val KEY = "pillagercampaigns_world"
-        private const val SCHEMA_VERSION = 4
+        const val UNRESOLVED_CATALOG_REVISION = "unresolved"
 
         fun get(server: MinecraftServer): PillagerWorldData =
             server.overworld().dataStorage.computeIfAbsent(::load, ::PillagerWorldData, KEY)
 
         fun load(tag: CompoundTag): PillagerWorldData {
-            val data = PillagerWorldData()
-            data.lastDiscoveryTick = tag.getLong("lastDiscoveryTick")
-            data.lastCampaignTick = tag.getLong("lastCampaignTick")
-            data.engineSequence = if (tag.contains("engineSequence")) tag.getLong("engineSequence").coerceAtLeast(0L)
-            else nextLegacyEngineSequence(tag)
-            loadRecordList(tag, "factions") { PillagerFaction.load(it).let { v -> data.factions[v.id] = v } }
-            loadRecordList(tag, "warbands") { PillagerWarband.load(it).let { v -> data.warbands[v.id] = v } }
-            if (tag.contains("captains", Tag.TAG_LIST.toInt())) {
-                loadRecordList(tag, "captains") { PillagerOfficer.load(it).let { v -> data.officers[v.id] = v } }
-            } else {
-                loadRecordList(tag, "officers") { PillagerOfficer.load(it).let { v -> data.officers[v.id] = v } }
-            }
-            loadRecordList(tag, "campaigns") { PillagerCampaign.load(it).let { v -> data.campaigns[v.id] = v } }
-            if (tag.contains("initializedPlayers", Tag.TAG_LIST.toInt())) {
-                tag.getList("initializedPlayers", Tag.TAG_COMPOUND.toInt()).forEach { raw ->
-                    val entry = raw as CompoundTag
-                    if (entry.hasUUID("id")) data.initializedPlayers += entry.getUUID("id")
-                }
-            }
-            if (tag.contains("protectedPlayersUntilTick", Tag.TAG_LIST.toInt())) {
-                tag.getList("protectedPlayersUntilTick", Tag.TAG_COMPOUND.toInt()).forEach { raw ->
-                    val entry = raw as CompoundTag
-                    if (entry.hasUUID("id") && entry.contains("untilTick")) {
-                        data.protectedPlayersUntilTick[entry.getUUID("id")] = entry.getLong("untilTick")
-                    }
-                }
-            }
-            data.repairReferences()
-            return data
-        }
-
-        private fun nextLegacyEngineSequence(tag: CompoundTag): Long {
-            var maximum = -1L
-            if (tag.contains("campaigns", Tag.TAG_LIST.toInt())) {
-                tag.getList("campaigns", Tag.TAG_COMPOUND.toInt()).forEach { raw ->
-                    val campaign = raw as CompoundTag
-                    if (!campaign.contains("plannedMembers", Tag.TAG_LIST.toInt())) return@forEach
-                    campaign.getList("plannedMembers", Tag.TAG_COMPOUND.toInt()).forEach memberLoop@{ memberRaw ->
-                        val manifest = (memberRaw as CompoundTag).getString("manifestId")
-                        val suffix = manifest.substringAfterLast(':', "").toLongOrNull() ?: return@memberLoop
-                        maximum = maxOf(maximum, suffix)
-                    }
-                }
-            }
-            return maximum + 1L
-        }
-
-        private fun saveUuidList(ids: Collection<UUID>): ListTag = ListTag().also { list ->
-            ids.forEach { id ->
-                list.add(CompoundTag().also { it.putUUID("id", id) })
-            }
-        }
-
-        private fun saveProtectedPlayers(players: Map<UUID, Long>): ListTag = ListTag().also { list ->
-            players.forEach { (id, untilTick) ->
-                list.add(CompoundTag().also {
-                    it.putUUID("id", id)
-                    it.putLong("untilTick", untilTick)
-                })
-            }
-        }
-    }
-
-    private fun repairReferences() {
-        val factionIds = factions.keys
-        val warbandIds = warbands.keys
-        val officerIds = officers.keys
-        warbands.entries.removeIf { (_, warband) ->
-            warband.factionId !in factionIds ||
-                warband.warlordOfficerId !in officerIds ||
-                (warband.rallyPresence?.warlordId?.let { it !in officerIds } == true)
-        }
-        officers.entries.removeIf { (_, officer) -> officer.factionId !in factionIds || officer.homeWarbandId !in warbandIds }
-        campaigns.entries.removeIf { (_, campaign) ->
-            campaign.factionId !in factionIds || campaign.originWarbandId !in warbandIds || campaign.officerId !in officerIds
-        }
-        warbands.values.forEach { warband ->
-            if (warband.rallyPresence == null) {
-                warband.rallyPresence = RallyPresenceRecord(
-                    state = if (warband.warlordEntityId != null) RallyPresenceState.MATERIALIZED else RallyPresenceState.DORMANT,
-                    warlordId = warband.warlordOfficerId,
-                    entityId = warband.warlordEntityId,
-                )
+            val persisted = WarbandCorePersistence.load(tag)
+            return PillagerWorldData().also { data ->
+                data.coreState = persisted.snapshot
+                data.coreCatalogRevision = persisted.catalogRevision
+                data.minecraftSidecar = persisted.sidecar
             }
         }
     }

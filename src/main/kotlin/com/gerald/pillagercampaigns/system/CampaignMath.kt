@@ -1,6 +1,6 @@
 package com.gerald.pillagercampaigns.system
 
-import com.gerald.pillagercampaigns.engine.CampaignGeometry
+import com.gerald.warband.core.CampaignGeometry
 
 object CampaignMath {
     fun stepToward(currentX: Int, currentZ: Int, targetX: Int, targetZ: Int): Pair<Int, Int> {

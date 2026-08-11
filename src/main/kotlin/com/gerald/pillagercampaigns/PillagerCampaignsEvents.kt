@@ -6,8 +6,8 @@ import com.gerald.pillagercampaigns.data.OfficerRole
 import com.gerald.pillagercampaigns.data.PillagerWorldData
 import com.gerald.pillagercampaigns.gametest.OpeningProgressionRuntimeValidation
 import com.gerald.pillagercampaigns.system.CampaignMath
-import com.gerald.pillagercampaigns.system.PillagerCampaignEngine
-import com.gerald.pillagercampaigns.system.PillagerEngineBridge
+import com.gerald.pillagercampaigns.system.PillagerCampaignCoordinator
+import com.gerald.pillagercampaigns.system.WarbandCoreAdapter
 import com.gerald.pillagercampaigns.system.PillagerDiscoveryCoordinator
 import com.gerald.pillagercampaigns.system.PillagerRuntime
 import com.gerald.pillagercampaigns.system.PillagerWarbandPresenceSystem
@@ -67,7 +67,7 @@ object PillagerCampaignsEvents {
         val player = event.entity
         val level = player.level() as? ServerLevel ?: return
         val data = PillagerWorldData.get(level.server)
-        if (data.markPlayerInitialized(player.uuid)) {
+        if (WarbandCoreAdapter.registerPlayer(data, player.uuid)) {
             armRespawnProtectionIfEligible(player, level, data)
         }
     }
@@ -77,7 +77,7 @@ object PillagerCampaignsEvents {
         val player = event.entity
         val level = player.level() as? ServerLevel ?: return
         val data = PillagerWorldData.get(level.server)
-        data.markPlayerInitialized(player.uuid)
+        WarbandCoreAdapter.registerPlayer(data, player.uuid)
         armRespawnProtectionIfEligible(player, level, data)
     }
 
@@ -85,7 +85,7 @@ object PillagerCampaignsEvents {
     fun onPlayerLoggedOut(event: PlayerEvent.PlayerLoggedOutEvent) {
         val player = event.entity
         val level = player.level() as? ServerLevel ?: return
-        PillagerCampaignEngine.pauseCampaignsForPlayer(PillagerWorldData.get(level.server), player.uuid)
+        PillagerCampaignCoordinator.pauseCampaignsForPlayer(PillagerWorldData.get(level.server), player.uuid)
     }
 
     @SubscribeEvent
@@ -96,14 +96,14 @@ object PillagerCampaignsEvents {
         val current = event.currentGameMode
         val next = event.newGameMode
 
-        if (PillagerCampaignEngine.isCampaignTargetGameMode(next) && !PillagerCampaignEngine.isCampaignTargetGameMode(current)) {
-            data.markPlayerInitialized(player.uuid)
-            data.protectPlayerUntil(player.uuid, level.gameTime + PillagerCampaignEngine.PLAYER_RESPAWN_PROTECTION_TICKS)
+        if (PillagerCampaignCoordinator.isCampaignTargetGameMode(next) && !PillagerCampaignCoordinator.isCampaignTargetGameMode(current)) {
+            WarbandCoreAdapter.registerPlayer(data, player.uuid)
+            WarbandCoreAdapter.protectPlayer(data, player.uuid, level.gameTime + PillagerCampaignCoordinator.PLAYER_RESPAWN_PROTECTION_TICKS)
             return
         }
 
-        if (!PillagerCampaignEngine.isCampaignTargetGameMode(next)) {
-            PillagerCampaignEngine.pauseCampaignsForPlayer(data, player.uuid)
+        if (!PillagerCampaignCoordinator.isCampaignTargetGameMode(next)) {
+            PillagerCampaignCoordinator.pauseCampaignsForPlayer(data, player.uuid)
         }
     }
 
@@ -124,11 +124,11 @@ object PillagerCampaignsEvents {
         val now = server.overworld().gameTime
         if (metricsWindowStartTick == 0L) metricsWindowStartTick = now
 
-        val discoveryMs = measureMs { PillagerCampaignEngine.discoveryTick(server, data, now) }
+        val discoveryMs = measureMs { PillagerCampaignCoordinator.discoveryTick(server, data, now) }
         recordDiscovery(discoveryMs)
         if (now - data.lastCampaignTick >= PillagerCampaignsConfig.schedulerIntervalTicks.get()) {
-            data.lastCampaignTick = now
-            val campaignMs = measureMs { PillagerCampaignEngine.tick(server, data, now) }
+            WarbandCoreAdapter.recordSchedulerProgress(data, campaignTick = now)
+            val campaignMs = measureMs { PillagerCampaignCoordinator.tick(server, data, now) }
             recordCampaign(campaignMs)
             data.markChanged()
         }
@@ -166,14 +166,17 @@ object PillagerCampaignsEvents {
             .map { it.persistentData.getUUID(PillagerRuntime.CAMPAIGN_TAG) }.distinct().mapNotNull(data.campaigns::get)
         campaigns.forEach { campaign ->
             if (PillagerRuntime.snapshotCampaign(level, campaign) > 0) {
-                val warband = data.warbands[campaign.originWarbandId] ?: return@forEach
-                val transition = PillagerEngineBridge.transitionCampaign(
-                    warband, data.officers[campaign.officerId], campaign,
-                    PillagerRuntime.recruitDefinitions(level, warband), level.gameTime, 0L, true,
-                    snapshots = listOf(PillagerEngineBridge.snapshotResult(campaign)),
-                    sequence = data.engineSequence,
+                WarbandCoreAdapter.transition(
+                    data,
+                    com.gerald.warband.core.CoreFrame(
+                        0L,
+                    snapshots = listOf(WarbandCoreAdapter.snapshotResult(campaign)),
+                        advanceEconomy = false,
+                        allowAutomaticDispatch = false,
+                    ),
+                    WarbandCoreAdapter.liveCatalog(level.server, data),
                 )
-                data.engineSequence = transition.result.state.sequence
+                WarbandCoreAdapter.synchronizeNativeViews(data)
             }
         }
         if (campaigns.isNotEmpty()) data.markChanged()
@@ -210,7 +213,7 @@ object PillagerCampaignsEvents {
 
         if (tag.hasUUID(PillagerRuntime.CAMPAIGN_TAG)) {
             data.campaigns[tag.getUUID(PillagerRuntime.CAMPAIGN_TAG)]?.let { campaign ->
-                PillagerCampaignEngine.pauseCampaignsForPlayer(data, campaign.targetPlayerId)
+                PillagerCampaignCoordinator.pauseCampaignsForPlayer(data, campaign.targetPlayerId)
             }
         }
 
@@ -222,7 +225,7 @@ object PillagerCampaignsEvents {
                 // The purge is part of respawn protection. Keep a purged warlord
                 // dormant for that same window instead of rematerializing it on
                 // the next presence retry.
-                warband.lastPresenceAttemptTick = level.gameTime + PillagerCampaignEngine.PLAYER_RESPAWN_PROTECTION_TICKS
+                warband.lastPresenceAttemptTick = level.gameTime + PillagerCampaignCoordinator.PLAYER_RESPAWN_PROTECTION_TICKS
                 warband.rallyPresence?.state = com.gerald.pillagercampaigns.data.RallyPresenceState.DORMANT
                 warband.rallyPresence?.entityId = null
                 data.factions[warband.factionId]?.bossEntityId = null
@@ -243,7 +246,7 @@ object PillagerCampaignsEvents {
                 val warband = campaign?.let { data.warbands[it.originWarbandId] }
                 if (campaign != null && warband != null) {
                     PillagerRuntime.placeFactionDeathBanner(level, event.entity.blockPosition(), warband.bannerSeed)
-                    PillagerCampaignEngine.abortCampaignAfterPlayerKill(data, campaign.id, level.gameTime)
+                    PillagerCampaignCoordinator.abortCampaignAfterPlayerKill(data, campaign.id, level.gameTime)
                     data.markChanged()
                 }
             }
@@ -254,8 +257,43 @@ object PillagerCampaignsEvents {
         val killerPlayer = event.source.entity as? Player
         val tag = mob.persistentData
         PillagerRuntime.forgetLiveMob(mob)
-        if (killerPlayer != null) {
-            PillagerRuntime.campaignCoinDropsForMob(mob, data).forEach { reward -> mob.spawnAtLocation(reward) }
+        tag.getString(PillagerRuntime.GARRISON_ID_TAG).takeIf(String::isNotBlank)?.let { garrisonId ->
+            val garrison = data.coreState.garrisons[garrisonId]
+            if (garrison != null) {
+                val survivors = garrison.members.mapNotNull { member ->
+                    val entityId = data.minecraftSidecar.entityIds[member.id] ?: return@mapNotNull null
+                    val survivor = level.getEntity(entityId) as? Mob ?: return@mapNotNull null
+                    if (!survivor.isAlive || survivor.uuid == mob.uuid) return@mapNotNull null
+                    val equipment = member.equipment?.let { manifest ->
+                        val stack = net.minecraft.world.entity.EquipmentSlot.values().asSequence()
+                            .map(survivor::getItemBySlot).firstOrNull { !it.isEmpty }
+                        val durability = stack?.takeIf { it.isDamageableItem }
+                            ?.let { 1.0 - it.damageValue.toDouble() / it.maxDamage.coerceAtLeast(1) } ?: manifest.durabilityFraction
+                        manifest.copy(durabilityFraction = durability.coerceIn(0.0, 1.0))
+                    }
+                    com.gerald.warband.core.MemberSnapshot(
+                        member.id,
+                        (survivor.health / survivor.maxHealth.coerceAtLeast(1.0f)).toDouble(),
+                        member.experience,
+                        equipment,
+                        member.cargo,
+                    )
+                }
+                WarbandCoreAdapter.transition(
+                    data,
+                    com.gerald.warband.core.CoreFrame(
+                        elapsedTicks = 0L,
+                        garrisonSnapshots = listOf(com.gerald.warband.core.GarrisonSnapshotResult(garrisonId, survivors)),
+                        commands = if (survivors.isEmpty()) {
+                            listOf(com.gerald.warband.core.CoreCommand.ResolveGarrison(garrisonId))
+                        } else emptyList(),
+                        advanceEconomy = false,
+                        allowAutomaticDispatch = false,
+                    ),
+                    WarbandCoreAdapter.liveCatalog(level.server, data),
+                )
+                WarbandCoreAdapter.synchronizeNativeViews(data)
+            }
         }
         if (tag.hasUUID(PillagerRuntime.OFFICER_TAG)) {
             val officer = data.officers[tag.getUUID(PillagerRuntime.OFFICER_TAG)]
@@ -276,24 +314,92 @@ object PillagerCampaignsEvents {
             val officerId = if (tag.hasUUID(PillagerRuntime.OFFICER_TAG)) tag.getUUID(PillagerRuntime.OFFICER_TAG) else null
             val warbandId = officerId?.let { data.officers[it]?.homeWarbandId }
             if (warbandId != null) {
-                PillagerCampaignEngine.collapseWarband(data, warbandId, observedTick = level.gameTime)
+                PillagerCampaignCoordinator.collapseWarband(data, warbandId)
                 PillagerCampaignsMod.LOGGER.info("Warband {} defeated after warlord death", warbandId)
             } else {
                 val factionId = tag.getUUID(PillagerRuntime.FACTION_TAG)
-                PillagerCampaignEngine.collapseFaction(data, factionId)
+                PillagerCampaignCoordinator.collapseFaction(data, factionId)
                 PillagerCampaignsMod.LOGGER.info("Faction {} collapsed after boss death", factionId)
             }
             return
         }
         if (!tag.hasUUID(PillagerRuntime.CAMPAIGN_TAG)) return
         val campaign = data.campaigns[tag.getUUID(PillagerRuntime.CAMPAIGN_TAG)] ?: return
+        val manifestId = tag.getString(PillagerRuntime.MANIFEST_ID_TAG)
+        if (killerPlayer != null && manifestId.isNotBlank()) {
+            val authority = when {
+                tag.getBoolean(PillagerRuntime.BOSS_TAG) -> 3.0
+                tag.getBoolean(PillagerRuntime.LEADER_TAG) -> 1.0
+                else -> 0.0
+            }
+            val rewardTransition = WarbandCoreAdapter.transition(
+                data,
+                com.gerald.warband.core.CoreFrame(
+                    elapsedTicks = 0L,
+                    defeats = listOf(com.gerald.warband.core.DefeatObservation(
+                        campaign.id.toString(), manifestId, killerPlayer.uuid.toString(), authority,
+                    )),
+                    advanceEconomy = false,
+                    allowAutomaticDispatch = false,
+                ),
+                WarbandCoreAdapter.liveCatalog(level.server, data),
+            )
+            val rewards = rewardTransition.effects.filter {
+                it.kind == com.gerald.warband.core.EffectKind.REWARD_PLAYER && manifestId in it.memberIds
+            }
+            rewards.forEach { effect ->
+                val item = effect.itemId?.let(net.minecraft.resources.ResourceLocation::tryParse)
+                    ?.let(net.minecraftforge.registries.ForgeRegistries.ITEMS::getValue)
+                if (item != null && effect.count > 0) mob.spawnAtLocation(net.minecraft.world.item.ItemStack(item, effect.count))
+            }
+            if (rewards.isNotEmpty()) {
+                WarbandCoreAdapter.transition(
+                    data,
+                    com.gerald.warband.core.CoreFrame(
+                        elapsedTicks = 0L,
+                        acknowledgements = rewards.map { com.gerald.warband.core.EffectAcknowledgement(it.effectId) },
+                        advanceEconomy = false,
+                        allowAutomaticDispatch = false,
+                    ),
+                    WarbandCoreAdapter.liveCatalog(level.server, data),
+                )
+            }
+        }
         PillagerRuntime.dropCampaignCargo(mob, campaign)
-        tag.getString(PillagerRuntime.MANIFEST_ID_TAG).takeIf(String::isNotBlank)?.let(campaign.pendingCasualtyManifestIds::add)
+        manifestId.takeIf(String::isNotBlank)?.let(campaign.pendingCasualtyManifestIds::add)
         campaign.memberEquipment.remove(mob.uuid)
         campaign.memberThreat.remove(mob.uuid)
         if (tag.getBoolean(PillagerRuntime.LEADER_TAG)) {
-            if (!PillagerRuntime.promoteSuccessor(level, campaign.id, campaign.officerId)) {
-                PillagerCampaignEngine.queueCampaignOutcome(campaign, CampaignOutcome.CAPTAIN_KILLED, "captain_killed")
+            val selection = WarbandCoreAdapter.transition(
+                data,
+                com.gerald.warband.core.CoreFrame(
+                    elapsedTicks = 0L,
+                    commands = listOf(com.gerald.warband.core.CoreCommand.SelectCampaignSuccessor(
+                        campaign.id.toString(), setOf(manifestId),
+                    )),
+                    advanceEconomy = false,
+                    allowAutomaticDispatch = false,
+                ),
+                WarbandCoreAdapter.liveCatalog(level.server, data),
+            ).effects.firstOrNull {
+                it.kind == com.gerald.warband.core.EffectKind.PROMOTE_SUCCESSOR && it.campaignId == campaign.id.toString()
+            }
+            val promoted = selection?.memberIds?.singleOrNull()?.let {
+                PillagerRuntime.promoteSuccessor(level, campaign.id, campaign.officerId, it)
+            } == true
+            if (selection != null && promoted) {
+                WarbandCoreAdapter.transition(
+                    data,
+                    com.gerald.warband.core.CoreFrame(
+                        elapsedTicks = 0L,
+                        acknowledgements = listOf(com.gerald.warband.core.EffectAcknowledgement(selection.effectId)),
+                        advanceEconomy = false,
+                        allowAutomaticDispatch = false,
+                    ),
+                    WarbandCoreAdapter.liveCatalog(level.server, data),
+                )
+            } else {
+                PillagerCampaignCoordinator.queueCampaignOutcome(campaign, CampaignOutcome.CAPTAIN_KILLED, "captain_killed")
                 data.markChanged()
             }
         } else if (campaign.state == CampaignState.ACTIVE) {
@@ -303,7 +409,7 @@ object PillagerCampaignsEvents {
                     candidate.isAlive
             }
             if (survivors.isEmpty()) {
-                PillagerCampaignEngine.queueCampaignOutcome(campaign, CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT, "squad_defeated")
+                PillagerCampaignCoordinator.queueCampaignOutcome(campaign, CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT, "squad_defeated")
                 data.markChanged()
             }
         }
@@ -317,9 +423,20 @@ object PillagerCampaignsEvents {
         val attackingPlayer = event.source.entity as? Player
         if (attackingPlayer != null && victim is Mob && victim.persistentData.hasUUID(PillagerRuntime.OFFICER_TAG)) {
             val data = PillagerWorldData.get(level.server)
-            data.officers[victim.persistentData.getUUID(PillagerRuntime.OFFICER_TAG)]?.let { officer ->
-                data.warbands[officer.homeWarbandId]?.playerRelations?.set(attackingPlayer.uuid, com.gerald.pillagercampaigns.system.TerritorialRelation.HOSTILE.name)
-                data.markChanged()
+            data.coreState.officers[victim.persistentData.getUUID(PillagerRuntime.OFFICER_TAG).toString()]?.let { officer ->
+                WarbandCoreAdapter.transition(
+                    data,
+                    com.gerald.warband.core.CoreFrame(
+                        elapsedTicks = 0L,
+                        territory = listOf(com.gerald.warband.core.TerritoryObservation(
+                            officer.homeWarbandId, attackingPlayer.uuid.toString(), true,
+                        )),
+                        advanceEconomy = false,
+                        allowAutomaticDispatch = false,
+                    ),
+                    WarbandCoreAdapter.snapshotCatalog(data),
+                )
+                WarbandCoreAdapter.synchronizeNativeViews(data)
             }
         }
         val campaignId = when {
@@ -363,8 +480,8 @@ object PillagerCampaignsEvents {
 
     private fun armRespawnProtectionIfEligible(player: Player, level: ServerLevel, data: PillagerWorldData) {
         val gameMode = (player as? net.minecraft.server.level.ServerPlayer)?.gameMode?.gameModeForPlayer ?: GameType.SURVIVAL
-        if (PillagerCampaignEngine.isCampaignTargetGameMode(gameMode)) {
-            data.protectPlayerUntil(player.uuid, level.gameTime + PillagerCampaignEngine.PLAYER_RESPAWN_PROTECTION_TICKS)
+        if (PillagerCampaignCoordinator.isCampaignTargetGameMode(gameMode)) {
+            WarbandCoreAdapter.protectPlayer(data, player.uuid, level.gameTime + PillagerCampaignCoordinator.PLAYER_RESPAWN_PROTECTION_TICKS)
         }
     }
 
@@ -441,9 +558,9 @@ object PillagerCampaignsEvents {
         val server = source.server
         val data = PillagerWorldData.get(server)
         val now = server.overworld().gameTime
-        PillagerCampaignEngine.tick(server, data, now)
+        PillagerCampaignCoordinator.tick(server, data, now)
         data.markChanged()
-        source.sendSuccess({ Component.literal("Campaign engine ticked once") }, true)
+        source.sendSuccess({ Component.literal("Campaign Core ticked once") }, true)
         return Command.SINGLE_SUCCESS
     }
 
@@ -602,12 +719,7 @@ object PillagerCampaignsEvents {
 
     private fun reset(source: CommandSourceStack): Int {
         val data = PillagerWorldData.get(source.server)
-        data.factions.clear()
-        data.warbands.clear()
-        data.officers.clear()
-        data.campaigns.clear()
-        data.lastCampaignTick = 0L
-        data.lastDiscoveryTick = 0L
+        WarbandCoreAdapter.resetWorld(data)
         PillagerDiscoveryCoordinator.reset()
         data.markChanged()
         source.sendSuccess({ Component.literal("Pillager Campaigns state reset") }, true)

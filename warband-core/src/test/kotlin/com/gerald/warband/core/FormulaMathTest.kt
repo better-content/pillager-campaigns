@@ -1,4 +1,4 @@
-package com.gerald.pillagercampaigns.engine
+package com.gerald.warband.core
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -43,6 +43,6 @@ class FormulaMathTest {
             preferences = mutableMapOf("damage" to 2.0),
         )
         val recruit = RecruitDefinition("recruit", 4.0, CapabilityVector(damage = 3.0))
-        assertEquals(1.5, WarbandEngine.recruitScore(warband, null, recruit))
+        assertEquals(1.5, WarbandCore.recruitScore(warband, null, recruit))
     }
 }

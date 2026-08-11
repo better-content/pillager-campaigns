@@ -1,9 +1,9 @@
 package com.gerald.pillagercampaigns.system
 
-import com.gerald.pillagercampaigns.engine.CapabilityVector
-import com.gerald.pillagercampaigns.engine.ChunkPosition
-import com.gerald.pillagercampaigns.engine.EcologyMath
-import com.gerald.pillagercampaigns.engine.TacticalPosition
+import com.gerald.warband.core.CapabilityVector
+import com.gerald.warband.core.ChunkPosition
+import com.gerald.warband.core.TacticalPosition
+import com.gerald.warband.core.WarbandCore
 import net.minecraft.core.BlockPos
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.world.entity.Mob
@@ -26,7 +26,8 @@ object SquadRoutePlanner {
         var targetChunkZ: Int = Int.MIN_VALUE,
         var probeIndex: Int = 0,
         var chosen: BlockPos? = null,
-        var chosenScore: Double = Double.NEGATIVE_INFINITY,
+        val positions: MutableMap<String, TacticalPosition> = linkedMapOf(),
+        val blocks: MutableMap<String, BlockPos> = linkedMapOf(),
         var lastProbeTick: Long = Long.MIN_VALUE,
         var lastProgressTick: Long = 0L,
         var lastX: Double = 0.0,
@@ -58,7 +59,8 @@ object SquadRoutePlanner {
             plan.lastZ = mob.z
         } else if (now - plan.lastProgressTick >= STUCK_TICKS) {
             plan.chosen = null
-            plan.chosenScore = Double.NEGATIVE_INFINITY
+            plan.positions.clear()
+            plan.blocks.clear()
             plan.lastProgressTick = now
             plan.probeIndex++
         }
@@ -66,7 +68,8 @@ object SquadRoutePlanner {
             plan.targetChunkX = target.chunkPosition().x
             plan.targetChunkZ = target.chunkPosition().z
             plan.chosen = null
-            plan.chosenScore = Double.NEGATIVE_INFINITY
+            plan.positions.clear()
+            plan.blocks.clear()
         }
         if (now - plan.lastProbeTick >= PROBE_INTERVAL) {
             plan.lastProbeTick = now
@@ -115,10 +118,10 @@ object SquadRoutePlanner {
             path.nodeCount.toDouble(), kotlin.math.sqrt(candidate.distSqr(target.blockPosition()).toDouble()),
             ((y - target.y) / 8.0).coerceIn(-1.0, 1.0), cover, flank, nearestAlly,
         )
-        val score = EcologyMath.tacticalScore(tactical, capabilities, preferences, cohesionRadius)
-        if (score > plan.chosenScore || plan.chosen == null) {
-            plan.chosen = candidate
-            plan.chosenScore = score
-        }
+        plan.positions[tactical.id] = tactical
+        plan.blocks[tactical.id] = candidate
+        plan.chosen = WarbandCore.chooseTacticalPosition(
+            plan.positions.values, capabilities, preferences, cohesionRadius,
+        )?.id?.let(plan.blocks::get)
     }
 }

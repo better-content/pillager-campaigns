@@ -12,10 +12,10 @@ import com.gerald.pillagercampaigns.data.PillagerWarband
 import com.gerald.pillagercampaigns.data.PillagerWorldData
 import com.gerald.pillagercampaigns.data.PresenceMaterializationResult
 import com.gerald.pillagercampaigns.data.RallyPresenceState
-import com.gerald.pillagercampaigns.engine.EngineCatalog
-import com.gerald.pillagercampaigns.engine.EnvironmentTraits
-import com.gerald.pillagercampaigns.engine.MaterialDefinition
-import com.gerald.pillagercampaigns.system.PillagerCampaignEngine
+import com.gerald.warband.core.CoreCatalog
+import com.gerald.warband.core.EnvironmentTraits
+import com.gerald.warband.core.MaterialDefinition
+import com.gerald.pillagercampaigns.system.PillagerCampaignCoordinator
 import com.gerald.pillagercampaigns.system.PillagerRuntime
 import com.gerald.pillagercampaigns.system.PillagerWarbandPresenceSystem
 import com.gerald.pillagercampaigns.system.PillagerWarbandDiscoveryRules
@@ -23,6 +23,7 @@ import com.gerald.pillagercampaigns.system.PillagerWarbandDiscoveryService
 import com.gerald.pillagercampaigns.system.TinkersArmoryOptimizer
 import com.gerald.pillagercampaigns.system.WarbandFormulaData
 import com.gerald.pillagercampaigns.system.WarbandResourceCatalog
+import com.gerald.pillagercampaigns.system.WarbandCoreAdapter
 import com.mojang.authlib.GameProfile
 import net.minecraft.core.BlockPos
 import net.minecraft.gametest.framework.GameTest
@@ -77,9 +78,9 @@ object PillagerCampaignsGameTests {
             .firstOrNull { TinkersArmoryOptimizer.equipmentSlot(it.stack) != net.minecraft.world.entity.EquipmentSlot.MAINHAND }
             ?: TinkersArmoryOptimizer.liveEquipmentCandidates(warband, level.server).firstOrNull()
         helper.assertTrue(liveArmament != null, "a live TCon armament must be formulable")
-        warband.armory += TinkersArmoryOptimizer.realize(warband, liveArmament!!, consume = false)!!.save(net.minecraft.nbt.CompoundTag())
+        warband.armory += TinkersArmoryOptimizer.realize(liveArmament!!).save(net.minecraft.nbt.CompoundTag())
         val planned = PillagerRuntime.planCampaignSquad(level, warband, officer, minimum!!, 42L)
-        helper.assertTrue(planned.isNotEmpty(), "authoritative engine should persist an affordable squad manifest")
+        helper.assertTrue(planned.isNotEmpty(), "authoritative Warband Core should persist an affordable squad manifest")
         planned.first().cargo["minecraft:bread"] = 3
         val campaign = PillagerCampaign(
             id = UUID.nameUUIDFromBytes("gametest:minimum-campaign".toByteArray()), factionId = warband.factionId,
@@ -99,7 +100,7 @@ object PillagerCampaignsGameTests {
         campaign.squadMemberIds += spawned
         helper.assertTrue(spawned.isNotEmpty(), "minimum affordable campaign should materialize a live candidate")
         val materializedTypes = spawned.mapNotNull { id -> (level.getEntity(id) as? net.minecraft.world.entity.Mob)?.let { ForgeRegistries.ENTITY_TYPES.getKey(it.type)?.toString() } }
-        helper.assertTrue(materializedTypes == planned.map { it.recruitId.toString() }, "Forge must materialize the exact engine-selected recruit manifest")
+        helper.assertTrue(materializedTypes == planned.map { it.recruitId.toString() }, "Forge must materialize the exact Core-selected recruit manifest")
         planned.zip(spawned).forEach { (member, entityId) -> member.equipment?.let { equipment ->
             val expected = ItemStack.of(equipment)
             val mob = level.getEntity(entityId) as net.minecraft.world.entity.Mob
@@ -172,9 +173,9 @@ object PillagerCampaignsGameTests {
         materials.forEach { warband.materialLedger[it.id] = 10_000.0 }
         val equipment = equipmentCandidates.map { it.definition }
         val resources = WarbandResourceCatalog.definitions()
-        val canonical = Json.encodeToString(EngineCatalog("unhashed", recruits, materials, equipment, environments, resources))
+        val canonical = Json.encodeToString(CoreCatalog("unhashed", recruits, materials, equipment, environments, resources))
         val digest = MessageDigest.getInstance("SHA-256").digest(canonical.toByteArray()).joinToString("") { "%02x".format(it) }
-        val catalog = EngineCatalog("forge-live-sha256:$digest", recruits, materials, equipment, environments, resources)
+        val catalog = CoreCatalog("forge-live-sha256:$digest", recruits, materials, equipment, environments, resources)
         helper.assertTrue(catalog.recruits.isNotEmpty(), "snapshot must contain the live recruit tag")
         helper.assertTrue(catalog.materials.isNotEmpty(), "snapshot must contain live TCon materials")
         helper.assertTrue(catalog.materials.map { it.capabilities }.distinct().size >= 10, "live TCon material stats must project to a varied capability population")
@@ -210,15 +211,18 @@ object PillagerCampaignsGameTests {
         )
         helper.assertTrue(PillagerWarbandDiscoveryService.registerDiscoveredWarband(level, data, candidate, level.gameTime), "warband should register")
         val warband = data.warbands.getValue(candidate.id)
-        warband.armory.clear()
-        warband.materialLedger.clear()
-        TinkersArmoryOptimizer.seedLedger(warband, 96.0)
-        val before = warband.materialLedger.toMap()
-        val stack = TinkersArmoryOptimizer.create(warband, level.server)
+        val coreWarband = data.coreState.warbands.getValue(candidate.id.toString())
+        coreWarband.armory.clear()
+        coreWarband.materialLedger.clear()
+        TinkersArmoryOptimizer.materialDefinitions().forEach { coreWarband.materialLedger[it.id] = 96.0 }
+        WarbandCoreAdapter.synchronizeNativeViews(data)
+        val before = coreWarband.materialLedger.toMap()
+        WarbandCoreAdapter.manufacture(level.server, data, warband.id)
+        val stack = data.warbands.getValue(warband.id).armory.singleOrNull()?.let(ItemStack::of)
         helper.assertTrue(stack != null && !stack.isEmpty, "an affordable live TCon formulation should be constructed")
         val cost = stack?.let(TinkersArmoryOptimizer::cost).orEmpty()
         helper.assertTrue(cost.isNotEmpty() && cost.values.all { it > 0.0 }, "constructed equipment should retain an exact positive bill of materials")
-        cost.forEach { (id, amount) -> helper.assertTrue(kotlin.math.abs(before.getOrDefault(id, 0.0) - warband.materialLedger.getOrDefault(id, 0.0) - amount) < 0.0001, "ledger should consume exactly $amount of $id") }
+        cost.forEach { (id, amount) -> helper.assertTrue(kotlin.math.abs(before.getOrDefault(id, 0.0) - coreWarband.materialLedger.getOrDefault(id, 0.0) - amount) < 0.0001, "Core ledger should consume exactly $amount of $id") }
         helper.succeed()
     }
 
@@ -245,7 +249,10 @@ object PillagerCampaignsGameTests {
         helper.assertTrue(data.factions.containsKey(warband!!.factionId), "warband faction should exist")
         helper.assertTrue(data.officers.containsKey(warband.warlordOfficerId), "warband should have a warlord officer")
         helper.assertTrue(data.officers.getValue(warband.warlordOfficerId).role == OfficerRole.WARLORD, "rally leader should stay a warlord role")
-        helper.assertTrue(warband.reserve == PillagerCampaignEngine.INITIAL_RESERVE, "new warbands should start with the configured reserve")
+        helper.assertTrue(
+            warband.reserve == data.coreState.warbands.getValue(warband.id.toString()).reserveThreat.toInt(),
+            "native reserve should project the environment-derived Core value",
+        )
         helper.succeed()
     }
 
@@ -317,56 +324,25 @@ object PillagerCampaignsGameTests {
         val officerId = UUID.nameUUIDFromBytes("gametest:collapse-officer".toByteArray())
         val campaignId = UUID.nameUUIDFromBytes("gametest:collapse-campaign".toByteArray())
 
-        data.factions[factionId] = PillagerFaction(factionId, "Test Faction", 7, officerId)
-        data.warbands[warbandId] = PillagerWarband(
-            id = warbandId,
-            factionId = factionId,
-            dimension = helper.level.dimension().location(),
-            bannerSeed = 7,
-            rallyChunkX = 0,
-            rallyChunkZ = 0,
-            reserve = 18,
-            defeated = false,
-            warlordOfficerId = officerId,
-            warlordEntityId = UUID.randomUUID(),
-            nextRaidTick = 0L,
-            cooldownUntilTick = 0L,
-            lastIntelTick = 0L,
-            lastPresenceFailure = PresenceMaterializationResult.SUCCESS,
+        val dimension = helper.level.dimension().location().toString()
+        data.coreState.factions[factionId.toString()] = com.gerald.warband.core.FactionState(factionId.toString(), "Test Faction", 7)
+        data.coreState.warbands[warbandId.toString()] = com.gerald.warband.core.WarbandState(
+            warbandId.toString(), factionId.toString(), com.gerald.warband.core.ChunkPosition(dimension, 0, 0),
+            capacity = 156.0, reserveThreat = 18.0,
         )
-        data.officers[officerId] = PillagerOfficer(
-            id = officerId,
-            factionId = factionId,
-            homeWarbandId = warbandId,
-            name = "Ghor",
-            title = "the Warlord",
-            role = OfficerRole.WARLORD,
-            rank = OfficerRank.DREAD_CAPTAIN,
-            state = OfficerState.DEPLOYED,
-            preferenceGraph = mutableMapOf(),
+        data.coreState.officers[officerId.toString()] = com.gerald.warband.core.OfficerState(
+            officerId.toString(), factionId.toString(), warbandId.toString(),
+            rank = 3, deployedCampaignId = campaignId.toString(),
         )
-        data.campaigns[campaignId] = PillagerCampaign(
-            id = campaignId,
-            factionId = factionId,
-            originWarbandId = warbandId,
-            officerId = officerId,
-            targetPlayerId = UUID.randomUUID(),
-            targetDimension = helper.level.dimension().location(),
-            currentChunkX = 0,
-            currentChunkZ = 0,
-            targetChunkX = 1,
-            targetChunkZ = 1,
-            difficultySnapshot = 3,
-            loadoutSeed = 1L,
-            tickDebt = 0,
-            state = CampaignState.ACTIVE,
-            resumeState = null,
-            materializeAttemptId = null,
-            materializingUntilTick = 0L,
-            squadMemberIds = mutableListOf(),
+        data.coreState.campaigns[campaignId.toString()] = com.gerald.warband.core.CampaignState(
+            campaignId.toString(), warbandId.toString(), officerId.toString(), UUID.randomUUID().toString(),
+            com.gerald.warband.core.ChunkPosition(dimension, 0, 0),
+            com.gerald.warband.core.ChunkPosition(dimension, 1, 1),
+            mutableListOf(), phase = com.gerald.warband.core.CampaignPhase.ACTIVE,
         )
+        WarbandCoreAdapter.synchronizeNativeViews(data)
 
-        PillagerCampaignEngine.collapseWarband(data, warbandId)
+        PillagerCampaignCoordinator.collapseWarband(data, warbandId)
 
         helper.assertTrue(data.warbands.getValue(warbandId).defeated, "warband should be defeated")
         helper.assertTrue(data.campaigns.getValue(campaignId).state == CampaignState.RESOLVED, "campaign should resolve")
@@ -376,13 +352,7 @@ object PillagerCampaignsGameTests {
 
     private fun resetWorldData(helper: GameTestHelper): PillagerWorldData {
         val data = PillagerWorldData.get(helper.level.server)
-        data.factions.clear()
-        data.warbands.clear()
-        data.officers.clear()
-        data.campaigns.clear()
-        data.lastCampaignTick = 0L
-        data.lastDiscoveryTick = 0L
-        data.markChanged()
+        WarbandCoreAdapter.resetWorld(data)
         return data
     }
 

@@ -1,4 +1,4 @@
-package com.gerald.pillagercampaigns.engine
+package com.gerald.warband.core
 
 import kotlinx.serialization.Serializable
 
@@ -66,6 +66,14 @@ data class ResourceDefinition(
     val maximumStackSize: Int = 64,
 )
 
+/** A runtime-supplied reward denomination; Core chooses continuously by value. */
+@Serializable
+data class RewardDefinition(
+    val itemId: String,
+    val value: Double,
+    val maximumStackSize: Int = 64,
+)
+
 @Serializable
 data class TerrainObservation(val position: ChunkPosition, val traits: EnvironmentTraits)
 
@@ -83,13 +91,14 @@ data class TacticalPosition(
 )
 
 @Serializable
-data class EngineCatalog(
+data class CoreCatalog(
     val revision: String,
     val recruits: List<RecruitDefinition>,
     val materials: List<MaterialDefinition> = emptyList(),
     val equipment: List<EquipmentDefinition> = emptyList(),
     val environmentSamples: List<EnvironmentTraits> = emptyList(),
     val resources: List<ResourceDefinition> = emptyList(),
+    val rewards: List<RewardDefinition> = emptyList(),
 )
 
 @Serializable
@@ -118,6 +127,8 @@ data class MaterializationResult(
     val campaignId: String,
     val success: Boolean,
     val physicalMemberIds: Set<String> = emptySet(),
+    val effectId: String? = null,
+    val attemptedMemberIds: Set<String> = emptySet(),
 )
 
 /**
@@ -139,6 +150,77 @@ data class CampaignSnapshotResult(
     val campaignId: String,
     val position: ChunkPosition,
     val members: List<MemberSnapshot>,
+    val effectId: String? = null,
+)
+
+@Serializable
+data class WarbandDiscoveryObservation(
+    val siteId: String,
+    val rally: ChunkPosition,
+    val environment: EnvironmentTraits,
+    val factionName: String,
+    val bannerSeed: Int,
+    val preferenceSeed: Long = 0L,
+    val factionId: String? = null,
+    val warbandId: String? = null,
+    val officerId: String? = null,
+)
+
+@Serializable
+data class TerritoryObservation(
+    val warbandId: String,
+    val playerId: String,
+    val hostile: Boolean,
+    val protectedUntilTick: Long = 0L,
+    val initialized: Boolean = true,
+)
+
+@Serializable
+data class TerritoryContactObservation(
+    val warbandId: String,
+    val playerId: String,
+    val distanceChunks: Double,
+    val territoryRadiusChunks: Int,
+    val warningBandChunks: Int,
+    val attacked: Boolean = false,
+    val protectedUntilTick: Long = 0L,
+)
+
+@Serializable
+data class GarrisonResult(
+    val garrisonId: String,
+    val success: Boolean,
+    val physicalMemberIds: Set<String> = emptySet(),
+    val effectId: String? = null,
+)
+
+@Serializable
+data class GarrisonSnapshotResult(
+    val garrisonId: String,
+    val members: List<MemberSnapshot>,
+    val effectId: String? = null,
+)
+
+@Serializable
+data class DefeatObservation(
+    val campaignId: String,
+    val memberId: String,
+    val playerId: String,
+    val authority: Double = 0.0,
+)
+
+@Serializable
+data class TacticalObservation(
+    val campaignId: String,
+    val positions: List<TacticalPosition>,
+    val cohesionRadius: Double = 24.0,
+)
+
+@Serializable
+data class EffectAcknowledgement(
+    val effectId: String,
+    val successful: Boolean = true,
+    val detail: String = "",
 )
 
 @Serializable
@@ -156,7 +238,7 @@ data class CampaignOutcomeObservation(
 data class PositionObservation(val campaignId: String, val position: ChunkPosition)
 
 @Serializable
-data class EngineFrame(
+data class CoreFrame(
     val elapsedTicks: Long,
     val players: List<PlayerFact> = emptyList(),
     val combat: List<CombatObservation> = emptyList(),
@@ -165,37 +247,81 @@ data class EngineFrame(
     val outcomes: List<CampaignOutcomeObservation> = emptyList(),
     val physicalPositions: List<PositionObservation> = emptyList(),
     val terrain: List<TerrainObservation> = emptyList(),
-    val commands: List<EngineCommand> = emptyList(),
+    val discoveries: List<WarbandDiscoveryObservation> = emptyList(),
+    val territory: List<TerritoryObservation> = emptyList(),
+    val territoryContacts: List<TerritoryContactObservation> = emptyList(),
+    val garrisonResults: List<GarrisonResult> = emptyList(),
+    val garrisonSnapshots: List<GarrisonSnapshotResult> = emptyList(),
+    val defeats: List<DefeatObservation> = emptyList(),
+    val tactical: List<TacticalObservation> = emptyList(),
+    val acknowledgements: List<EffectAcknowledgement> = emptyList(),
+    val commands: List<CoreCommand> = emptyList(),
     val advanceEconomy: Boolean = true,
     val allowAutomaticDispatch: Boolean = true,
 )
 
 @Serializable
-sealed interface EngineCommand {
-    @Serializable data class Dispatch(val warbandId: String, val playerId: String, val officerId: String? = null) : EngineCommand
-    @Serializable data class BeginReturn(val campaignId: String, val reason: String, val aggressionDelta: Int = 0) : EngineCommand
-    @Serializable data class Dematerialize(val campaignId: String) : EngineCommand
-    @Serializable data class Manufacture(val warbandId: String, val count: Int = 1) : EngineCommand
+sealed interface CoreCommand {
+    @Serializable data class Dispatch(
+        val warbandId: String,
+        val playerId: String,
+        val officerId: String? = null,
+        val campaignId: String? = null,
+        val target: ChunkPosition? = null,
+    ) : CoreCommand
+    @Serializable data class BeginReturn(val campaignId: String, val reason: String, val aggressionDelta: Int = 0) : CoreCommand
+    @Serializable data class Dematerialize(val campaignId: String) : CoreCommand
+    @Serializable data class Manufacture(val warbandId: String, val count: Int = 1) : CoreCommand
+    @Serializable data class ReserveGarrison(
+        val warbandId: String,
+        val position: ChunkPosition,
+        val desiredThreat: Double? = null,
+    ) : CoreCommand
+    @Serializable data class ResolveGarrison(val garrisonId: String, val survivingMemberIds: Set<String> = emptySet()) : CoreCommand
+    @Serializable data class CollapseWarband(val warbandId: String, val reason: String) : CoreCommand
+    @Serializable data class CollapseFaction(val factionId: String, val reason: String) : CoreCommand
+    @Serializable data class PromoteSuccessor(val warbandId: String, val fallenOfficerId: String? = null) : CoreCommand
+    @Serializable data class SelectCampaignSuccessor(
+        val campaignId: String,
+        val excludedMemberIds: Set<String> = emptySet(),
+    ) : CoreCommand
+    @Serializable data class DelayWarband(val warbandId: String, val untilTick: Long) : CoreCommand
+    @Serializable data class ResolveCampaign(val campaignId: String, val reason: String) : CoreCommand
+    @Serializable data class RegisterPlayer(val playerId: String) : CoreCommand
+    @Serializable data class ProtectPlayer(val playerId: String, val untilTick: Long) : CoreCommand
+    @Serializable data class RecordSchedulerProgress(
+        val discoveryTick: Long? = null,
+        val campaignTick: Long? = null,
+    ) : CoreCommand
+    @Serializable data object ResetWorld : CoreCommand
 }
 
-@Serializable enum class EffectKind { MATERIALIZE, PROBE_ROUTE, CAPTURE_SNAPSHOTS, RESTORE_SNAPSHOTS, WARN_PLAYER, REWARD_PLAYER }
+@Serializable enum class EffectKind {
+    MATERIALIZE, PROBE_ROUTE, CAPTURE_SNAPSHOTS, RESTORE_SNAPSHOTS, WARN_PLAYER, REWARD_PLAYER,
+    MATERIALIZE_GARRISON, NAVIGATE, PROMOTE_SUCCESSOR,
+}
 
 @Serializable
-data class EngineEffect(
+data class CoreEffect(
     val kind: EffectKind,
     val warbandId: String? = null,
     val campaignId: String? = null,
     val playerId: String? = null,
     val position: ChunkPosition? = null,
     val memberIds: List<String> = emptyList(),
+    val garrisonId: String? = null,
+    val tacticalPositionId: String? = null,
+    val itemId: String? = null,
+    val count: Int = 0,
+    val effectId: String = "",
 )
 
 @Serializable
-data class EngineEvent(val tick: Long, val type: String, val subjectId: String, val detail: String = "")
+data class CoreEvent(val tick: Long, val type: String, val subjectId: String, val detail: String = "")
 
 @Serializable
-data class TransitionResult(
-    val state: EngineState,
-    val events: List<EngineEvent>,
-    val effects: List<EngineEffect>,
+data class CoreTransition(
+    val state: CoreSnapshot,
+    val events: List<CoreEvent>,
+    val effects: List<CoreEffect>,
 )

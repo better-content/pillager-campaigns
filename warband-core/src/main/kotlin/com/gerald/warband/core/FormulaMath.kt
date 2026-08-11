@@ -1,4 +1,4 @@
-package com.gerald.pillagercampaigns.engine
+package com.gerald.warband.core
 
 import kotlin.random.Random
 
@@ -15,7 +15,7 @@ object FormulaMath {
 
     fun escortCount(unallocatedReserve: Double): Int = (unallocatedReserve / 18.0).toInt().coerceIn(0, 8)
 
-    fun retreatThreshold(conservationPreference: Double, aggression: Int, rules: WarbandRules = WarbandRules()): Double {
+    fun retreatThreshold(conservationPreference: Double, aggression: Int, rules: CoreRules = CoreRules()): Double {
         val normalizedAggression = (aggression - rules.minimumAggression).toDouble() /
             (rules.maximumAggression - rules.minimumAggression).coerceAtLeast(1)
         return (0.35 + 0.25 * conservationPreference.coerceIn(0.0, 1.0) - 0.15 * normalizedAggression.coerceIn(0.0, 1.0))
