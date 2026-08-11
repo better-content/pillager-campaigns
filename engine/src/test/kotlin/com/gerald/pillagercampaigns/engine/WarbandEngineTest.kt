@@ -215,6 +215,36 @@ class WarbandEngineTest {
         assertEquals(listOf("weak"), warband.armory.map { it.id })
     }
 
+    @Test fun `armament demand rises continuously with aggression power and hostile terrain`() {
+        val low = state(reserve = 2.0, pool = 6.0).warbands.getValue("warband").also {
+            it.aggression = rules.minimumAggression
+            it.environment = EnvironmentTraits(habitability = 1.0, biomass = 1.0, mineralPotential = 0.0, exoticPotential = 0.0, travelFriction = 0.0)
+        }
+        val high = low.copy(
+            reserveThreat = 70.0, raidPool = 50.0, aggression = rules.maximumAggression,
+            environment = EnvironmentTraits(habitability = 0.0, biomass = 0.0, mineralPotential = 1.0, exoticPotential = 1.0, travelFriction = 1.0),
+        )
+        val lowPreference = rules.armamentPreferences(low, null)
+        val highPreference = rules.armamentPreferences(high, null)
+        assertTrue(rules.armamentCoverageTarget(high) > rules.armamentCoverageTarget(low))
+        assertTrue(rules.desiredArmoryItems(high, catalog.recruits) > rules.desiredArmoryItems(low, catalog.recruits))
+        assertTrue(highPreference.damage > lowPreference.damage)
+        assertTrue(highPreference.durability > lowPreference.durability)
+        assertTrue(highPreference.mobility > lowPreference.mobility)
+        assertTrue(highPreference.range > lowPreference.range)
+    }
+
+    @Test fun `defensive and utility equipment remain functional without hard coded recruit kits`() {
+        val state = state()
+        val warband = state.warbands.getValue("warband")
+        warband.preferences["durability"] = 8.0
+        warband.armory += EquipmentManifest("shield", "shield", emptyList(), emptyMap(), CapabilityVector(durability = 3.0), setOf("defense"))
+        warband.armory += EquipmentManifest("pick", "pick", emptyList(), emptyMap(), CapabilityVector(mobility = 1.0), setOf("utility"))
+        val plan = WarbandEngine.planSquad(state, warband, null, catalog.copy(recruits = listOf(catalog.recruits.last())), 12.0, rules)
+        assertEquals(2, plan.members.size)
+        assertEquals(setOf("shield", "pick"), plan.members.mapNotNull { it.equipment?.id }.toSet())
+    }
+
     @Test fun `dispatch provisions exact items and returning refunds only unconsumed cargo`() {
         val resources = listOf(
             ResourceDefinition("ration", ResourceVector(sustenance = 1.0)),

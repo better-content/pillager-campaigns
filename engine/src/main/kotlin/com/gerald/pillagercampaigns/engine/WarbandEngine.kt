@@ -102,20 +102,20 @@ object WarbandEngine {
     ): SquadPlan {
         val members = mutableListOf<MemberManifest>()
         var remaining = budget.coerceAtLeast(0.0)
-        val preferences = rules.effectivePreferences(warband, officer)
+        val preferences = rules.armamentPreferences(warband, officer)
+        val assignedActions = linkedMapOf<String, Int>()
         while (members.size < rules.maximumSquadMembers) {
             val recruit = chooseRecruit(state, warband, officer, catalog, remaining, members, rules) ?: break
             val threat = observedThreat(warband, recruit)
             val equipmentIndex = warband.armory.withIndex().asSequence()
-                .filter { (_, item) ->
-                    item.supportedActions.isEmpty() || recruit.supportedEquipmentActions.isEmpty() ||
-                        item.supportedActions.any(recruit.supportedEquipmentActions::contains)
-                }
+                .filter { (_, item) -> rules.equipmentSupportsRecruit(item, recruit) }
                 .maxWithOrNull(compareBy<IndexedValue<EquipmentManifest>> { (_, item) ->
                     item.capabilities.dot(preferences) + item.capabilities.dot(recruit.capabilities) * 0.25 +
-                        item.durabilityFraction * (0.1 + preferences.durability.coerceAtLeast(0.0))
+                        item.durabilityFraction * (0.1 + preferences.durability.coerceAtLeast(0.0)) +
+                        item.supportedActions.sumOf { action -> 0.35 / (1.0 + assignedActions.getOrDefault(action, 0)) }
                 }.thenByDescending { it.value.id })?.index
             val equipment = equipmentIndex?.let(warband.armory::removeAt)
+            equipment?.supportedActions?.forEach { action -> assignedActions[action] = assignedActions.getOrDefault(action, 0) + 1 }
             members += MemberManifest(nextId(state, "member"), recruit.id, threat, equipment = equipment)
             warband.selectionMemory.recruits[recruit.id] = warband.selectionMemory.recruits.getOrDefault(recruit.id, 0.0) + 1.0
             remaining -= threat
@@ -248,6 +248,9 @@ object WarbandEngine {
             while (warband.extractionTickDebt + EPSILON >= extractionTicks) {
                 warband.extractionTickDebt -= extractionTicks
                 extract(state, warband, catalog, events)
+                if (warband.armory.size < rules.desiredArmoryItems(warband, catalog.recruits)) {
+                    manufacture(state, warband, catalog, events)
+                }
             }
 
             warband.mobilizationTickDebt += elapsed

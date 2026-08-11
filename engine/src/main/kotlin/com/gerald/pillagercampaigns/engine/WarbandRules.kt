@@ -1,6 +1,7 @@
 package com.gerald.pillagercampaigns.engine
 
 import kotlinx.serialization.Serializable
+import kotlin.math.ceil
 import kotlin.math.roundToInt
 
 @Serializable
@@ -64,4 +65,49 @@ data class WarbandRules(
             values["control"] ?: 0.0,
         )
     }
+
+    /**
+     * Continuous operational demand layered over learned preferences. Aggression
+     * demands lethality, accumulated power demands equipment that survives a
+     * campaign, and terrain changes what is useful without assigning a roster or
+     * loadout archetype.
+     */
+    fun armamentPreferences(warband: WarbandState, officer: OfficerState?): CapabilityVector {
+        val environment = warband.environment.bounded()
+        val aggression = normalizedAggression(warband)
+        val power = ((warband.reserveThreat + warband.raidPool + warband.garrisonThreat) /
+            warband.capacity.coerceAtLeast(1.0)).coerceIn(0.0, 1.0)
+        return effectivePreferences(warband, officer) + CapabilityVector(
+            durability = 0.35 * (1.0 - environment.habitability) + 0.25 * environment.travelFriction + 0.20 * power,
+            damage = 0.40 * aggression + 0.15 * environment.mineralPotential,
+            mobility = 0.35 * environment.travelFriction + 0.15 * (1.0 - environment.habitability),
+            range = 0.25 * (1.0 - environment.biomass) + 0.25 * aggression,
+            control = 0.25 * environment.biomass + 0.20 * environment.exoticPotential + 0.20 * power,
+        )
+    }
+
+    /** Fraction of a dispatch that logistics should be able to arm. */
+    fun armamentCoverageTarget(warband: WarbandState): Double {
+        val environment = warband.environment.bounded()
+        val power = ((warband.reserveThreat + warband.raidPool + warband.garrisonThreat) /
+            warband.capacity.coerceAtLeast(1.0)).coerceIn(0.0, 1.0)
+        return (0.45 + 0.30 * normalizedAggression(warband) + 0.15 * power +
+            0.05 * environment.mineralPotential + 0.05 * environment.exoticPotential).coerceIn(0.45, 1.0)
+    }
+
+    fun desiredArmoryItems(warband: WarbandState, recruits: List<RecruitDefinition>): Int {
+        val typicalThreat = recruits.map { it.baseThreat.coerceAtLeast(1.0) }.average().takeIf(Double::isFinite) ?: return 0
+        val expectedMembers = aggressionRaidThreat(warband, recruits.minOf { it.baseThreat }) / typicalThreat
+        return ceil(expectedMembers * armamentCoverageTarget(warband)).toInt().coerceIn(1, maximumSquadMembers)
+    }
+
+    fun equipmentSupportsRecruit(equipment: EquipmentManifest, recruit: RecruitDefinition): Boolean {
+        val actions = equipment.supportedActions
+        return actions.isEmpty() || recruit.supportedEquipmentActions.isEmpty() ||
+            "defense" in actions || "utility" in actions || actions.any(recruit.supportedEquipmentActions::contains)
+    }
+
+    private fun normalizedAggression(warband: WarbandState): Double =
+        ((warband.aggression - minimumAggression).toDouble() /
+            (maximumAggression - minimumAggression).coerceAtLeast(1)).coerceIn(0.0, 1.0)
 }
