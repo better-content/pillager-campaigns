@@ -66,6 +66,7 @@ repositories {
 }
 
 dependencies {
+    implementation(project(":engine"))
     minecraft("net.minecraftforge:forge:$minecraftVersion-$forgeVersion")
     implementation("thedarkcolour:kotlinforforge:$kotlinForForgeVersion")
     compileOnly(fg.deobf("curse.maven:mantle-74924:7563777"))
@@ -97,6 +98,8 @@ tasks.processResources {
 
 tasks.jar {
     from("src/compat/resources")
+    dependsOn(":engine:jar")
+    from({ zipTree(project(":engine").tasks.named<Jar>("jar").get().archiveFile.get().asFile) })
     finalizedBy("reobfJar")
 }
 
@@ -212,10 +215,8 @@ tasks.register("verifyFull") {
     dependsOn(tasks.named("headlessGameTest"))
 }
 
-tasks.register<JavaExec>("warbandSim") {
+tasks.register("warbandSim") {
     group = "application"
     description = "Runs the Minecraft-free deterministic warband spreadsheet game."
-    classpath = sourceSets.main.get().runtimeClasspath
-    mainClass.set("com.gerald.pillagercampaigns.sim.WarbandScenarioMain")
-    standardInput = System.`in`
+    dependsOn(":runner:run")
 }
