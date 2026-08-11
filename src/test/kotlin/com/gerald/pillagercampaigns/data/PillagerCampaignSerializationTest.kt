@@ -62,9 +62,12 @@ class PillagerCampaignSerializationTest {
             )),
             memberSnapshots = mutableListOf(CompoundTag().also { it.putString("id", "minecraft:pillager") }),
             returnOutcome = CampaignOutcome.CAPTAIN_VICTORY, returnReason = "test", returnStartedTick = 456, returnAggressionDelta = 1,
+            pendingEngineOutcome = CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT, pendingEngineOutcomeReason = "queued",
             route = mutableListOf(CampaignRouteStep(2, 3), CampaignRouteStep(3, 4)), routeIndex = 1,
             supplySatisfaction = 0.6, deficitExposure = 2.5, forageDebt = 0.4,
             lostAssetCaches = mutableListOf(LostAssetCache(8, 9, mutableListOf(CompoundTag().also { it.putString("id", "minecraft:bread") }))),
+            pendingCampaignDamage = 4.0, pendingPlayerDamage = 6.0, pendingEffectiveRange = 11.0,
+            pendingCasualtyManifestIds = mutableSetOf("engine:member:1"),
         )
         val loaded = PillagerCampaign.load(campaign.save())
         assertEquals(123, loaded.lastCombatTick)
@@ -76,6 +79,8 @@ class PillagerCampaignSerializationTest {
         assertEquals(campaign.squadMemberIds, loaded.squadMemberIds)
         assertEquals("minecraft:pillager", loaded.memberSnapshots.single().getString("id"))
         assertEquals(CampaignOutcome.CAPTAIN_VICTORY, loaded.returnOutcome)
+        assertEquals(CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT, loaded.pendingEngineOutcome)
+        assertEquals("queued", loaded.pendingEngineOutcomeReason)
         assertEquals("test", loaded.returnReason)
         assertEquals(456, loaded.returnStartedTick)
         assertEquals(1, loaded.returnAggressionDelta)
@@ -85,6 +90,10 @@ class PillagerCampaignSerializationTest {
         assertEquals(2.5, loaded.deficitExposure)
         assertEquals(0.4, loaded.forageDebt)
         assertEquals("minecraft:bread", loaded.lostAssetCaches.single().stacks.single().getString("id"))
+        assertEquals(4.0, loaded.pendingCampaignDamage)
+        assertEquals(6.0, loaded.pendingPlayerDamage)
+        assertEquals(11.0, loaded.pendingEffectiveRange)
+        assertEquals(setOf("engine:member:1"), loaded.pendingCasualtyManifestIds)
     }
 
     private fun minimumWarbandTag() = CompoundTag().also {

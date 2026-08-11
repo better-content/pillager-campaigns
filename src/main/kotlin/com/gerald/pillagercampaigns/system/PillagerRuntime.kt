@@ -38,6 +38,7 @@ object PillagerRuntime {
     internal data class PlannedCampaignManifest(
         val members: List<PlannedCampaignMember>,
         val route: List<CampaignRouteStep>,
+        val nextSequence: Long,
     )
     const val CAMPAIGN_TAG = "PillagerCampaignId"
     const val OFFICER_TAG = "PillagerOfficerId"
@@ -113,6 +114,25 @@ object PillagerRuntime {
         return members.size
     }
 
+    /** Captures live facts into the persisted manifest without applying campaign rules. */
+    fun syncLiveCampaignState(level: ServerLevel, campaign: PillagerCampaign) {
+        campaign.squadMemberIds.mapNotNull { level.getEntity(it) as? Mob }.filter { it.isAlive }.forEach { mob ->
+            val manifestId = mob.persistentData.getString(MANIFEST_ID_TAG)
+            val member = campaign.plannedMembers.firstOrNull { it.manifestId == manifestId } ?: return@forEach
+            member.healthFraction = (mob.health / mob.maxHealth.coerceAtLeast(1.0f)).toDouble().coerceIn(0.0, 1.0)
+            member.cargo.clear()
+            val cargo = mob.persistentData.getCompound(CARGO_TAG)
+            cargo.allKeys.forEach { id -> cargo.getInt(id).takeIf { it > 0 }?.let { member.cargo[id] = it } }
+            member.equipment?.let { original ->
+                val stack = mob.getItemBySlot(TinkersArmoryOptimizer.equipmentSlot(ItemStack.of(original)))
+                if (!stack.isEmpty) {
+                    original.allKeys.toList().forEach(original::remove)
+                    original.merge(stack.save(CompoundTag()))
+                }
+            }
+        }
+    }
+
     fun withdrawTowardHome(level: ServerLevel, campaign: PillagerCampaign, warband: PillagerWarband): WithdrawalProgress {
         if (campaign.memberSnapshots.isNotEmpty()) return WithdrawalProgress.DEMATERIALIZED
         val members = campaign.squadMemberIds.mapNotNull { level.getEntity(it) as? Mob }.filter { it.isAlive }
@@ -170,6 +190,7 @@ object PillagerRuntime {
     }
 
     private fun snapshotAndDismiss(level: ServerLevel, campaign: PillagerCampaign, members: List<Mob>) {
+        syncLiveCampaignState(level, campaign)
         campaign.memberSnapshots.clear()
         members.forEach { mob ->
             val snapshot = CompoundTag()
@@ -263,6 +284,7 @@ object PillagerRuntime {
                 )
             },
             plan.route.map { CampaignRouteStep(it.x, it.z) },
+            plan.nextSequence,
         )
     }
 

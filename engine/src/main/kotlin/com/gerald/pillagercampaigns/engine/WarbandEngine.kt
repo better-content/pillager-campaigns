@@ -17,11 +17,14 @@ object WarbandEngine {
 
         frame.terrain.forEach { observation -> state.terrain[terrainKey(observation.position)] = observation }
         applyMaterializations(state, frame.materializations, events)
+        applySnapshots(state, frame.snapshots, events)
         applyPositions(state, frame.physicalPositions)
-        frame.combat.forEach { observeCombat(state, catalog, rules, it, events, effects) }
+        val outcomeCampaigns = frame.outcomes.mapTo(hashSetOf(), CampaignOutcomeObservation::campaignId)
+        frame.combat.forEach { observeCombat(state, catalog, rules, it, events, effects, decide = it.campaignId !in outcomeCampaigns) }
+        frame.outcomes.forEach { observeOutcome(state, rules, it, events, effects) }
         frame.commands.forEach { command ->
             when (command) {
-                is EngineCommand.Dispatch -> dispatch(state, catalog, rules, command.warbandId, command.playerId, events)
+                is EngineCommand.Dispatch -> dispatch(state, catalog, rules, command.warbandId, command.playerId, events, officerId = command.officerId)
                 is EngineCommand.BeginReturn -> beginReturn(state, command.campaignId, command.reason, command.aggressionDelta, events, effects)
                 is EngineCommand.Dematerialize -> dematerialize(state, command.campaignId, events)
                 is EngineCommand.Manufacture -> repeat(command.count.coerceAtLeast(0)) {
@@ -30,8 +33,8 @@ object WarbandEngine {
             }
         }
 
-        advanceEconomies(state, catalog, rules, frame.elapsedTicks, events)
-        automaticDispatch(state, catalog, rules, frame.players, events)
+        if (frame.advanceEconomy) advanceEconomies(state, catalog, rules, frame.elapsedTicks, events)
+        if (frame.allowAutomaticDispatch) automaticDispatch(state, catalog, rules, frame.players, events)
         advanceCampaigns(state, catalog, rules, frame.players, frame.elapsedTicks, events, effects)
         validate(state, catalog, rules)
         return TransitionResult(state, events, effects)
@@ -86,6 +89,26 @@ object WarbandEngine {
         )
         return if (warband.raidPool + EPSILON >= desired) desired else 0.0
     }
+
+    fun assignmentScore(warband: WarbandState, officer: OfficerState, player: PlayerFact): Int {
+        if (!player.eligible || player.protected || warband.id !in player.hostileWarbands ||
+            player.position.dimension != warband.rally.dimension) return Int.MIN_VALUE / 4
+        val distance = manhattan(warband.rally, player.position)
+        val grudge = if (officer.lastTargetPlayerId == player.id) 48 else 0
+        val rankBias = (officer.rank - 1).coerceAtLeast(0) * 6
+        return grudge + rankBias + officer.victories * 5 - officer.defeats * 3 - distance * 4
+    }
+
+    fun chooseAssignment(
+        state: EngineState,
+        warband: WarbandState,
+        players: Collection<PlayerFact>,
+        officers: Collection<OfficerState> = state.officers.values,
+    ): DispatchAssignment? = officers.asSequence()
+        .filter { it.homeWarbandId == warband.id && it.availableAtTick <= state.tick }
+        .flatMap { officer -> players.asSequence().map { player -> DispatchAssignment(officer.id, player.id, assignmentScore(warband, officer, player)) } }
+        .filter { it.score > Int.MIN_VALUE / 4 }
+        .maxWithOrNull(compareBy<DispatchAssignment> { it.score }.thenByDescending { "${it.officerId}|${it.playerId}" })
 
     /**
      * Builds the exact member/equipment manifest used by campaign dispatch.
@@ -323,10 +346,10 @@ object WarbandEngine {
         state.warbands.values.sortedBy { it.id }.forEach { warband ->
             if (warband.defeated || state.tick < warband.nextRaidTick) return@forEach
             if (state.campaigns.values.count { it.warbandId == warband.id && it.phase != CampaignPhase.RESOLVED } >= warband.activeCampaignLimit) return@forEach
-            val player = players.asSequence().filter { it.eligible && !it.protected && it.id !in targeted && warband.id in it.hostileWarbands }
-                .filter { it.position.dimension == warband.rally.dimension }
-                .minWithOrNull(compareBy<PlayerFact> { manhattan(warband.rally, it.position) }.thenBy { it.id }) ?: return@forEach
-            if (dispatch(state, catalog, rules, warband.id, player.id, events, player.position)) targeted += player.id
+            val candidates = players.filter { it.id !in targeted }
+            val assignment = chooseAssignment(state, warband, candidates) ?: return@forEach
+            val player = candidates.first { it.id == assignment.playerId }
+            if (dispatch(state, catalog, rules, warband.id, player.id, events, player.position, assignment.officerId)) targeted += player.id
         }
     }
 
@@ -338,11 +361,12 @@ object WarbandEngine {
         playerId: String,
         events: MutableList<EngineEvent>,
         target: ChunkPosition? = null,
+        officerId: String? = null,
     ): Boolean {
         if (state.campaigns.values.any { it.phase != CampaignPhase.RESOLVED && it.targetPlayerId == playerId }) return false
         val warband = state.warbands[warbandId] ?: return false
-        val officer = state.officers.values.filter { it.homeWarbandId == warband.id && it.availableAtTick <= state.tick }
-            .minByOrNull { it.id }
+        val officer = officerId?.let(state.officers::get)?.takeIf { it.homeWarbandId == warband.id && it.availableAtTick <= state.tick }
+            ?: state.officers.values.filter { it.homeWarbandId == warband.id && it.availableAtTick <= state.tick }.minByOrNull { it.id }
         val budget = raidBudget(state, warband, officer, catalog, rules)
         if (budget <= EPSILON) return false
         val plan = planSquad(state, warband, officer, catalog, budget, rules)
@@ -358,6 +382,7 @@ object WarbandEngine {
             campaignId, warband.id, officer?.id ?: "", playerId, warband.rally,
             destination, members, lastCombatTick = state.tick, route = route,
         )
+        officer?.lastTargetPlayerId = playerId
         warband.nextRaidTick = state.tick + rules.raidCooldownTicks
         events += event(state, "dispatched", campaignId, "target=$playerId threat=$committed")
         return true
@@ -386,7 +411,7 @@ object WarbandEngine {
                 val conservation = state.officers[campaign.officerId]?.preferences?.get("conservation") ?: 0.5
                 when (CampaignDecisions.activeDecision(campaign.members.size, liveThreat, committed, conservation, warband.aggression, state.tick, campaign.lastCombatTick, rules)) {
                     ActiveCampaignDecision.DEFEATED, ActiveCampaignDecision.MORALE_RETURN ->
-                        beginReturn(state, campaign.id, "morale", 0, events, effects)
+                        beginDefeatReturn(state, campaign, rules, "morale", events, effects)
                     ActiveCampaignDecision.IDLE_RETURN -> beginReturn(state, campaign.id, "idle", 1, events, effects)
                     ActiveCampaignDecision.CONTINUE -> Unit
                 }
@@ -403,6 +428,12 @@ object WarbandEngine {
                 applySegmentLogistics(state, campaign, warband, catalog, rules, events)
                 if (campaign.members.isEmpty()) {
                     campaign.phase = CampaignPhase.RESOLVED
+                    warband.aggression = (warband.aggression + 1).coerceIn(rules.minimumAggression, rules.maximumAggression)
+                    state.officers[campaign.officerId]?.let { officer ->
+                        officer.defeats += 1
+                        officer.availableAtTick = state.tick + rules.captainRecoveryTicks
+                    }
+                    campaign.returnReason = "supply_attrition"
                     events += event(state, "campaign_lost_to_attrition", campaign.id)
                     break
                 }
@@ -418,7 +449,7 @@ object WarbandEngine {
                 }
             }
         }
-        resolved.forEach { campaign -> reconcile(state, campaign, events) }
+        resolved.forEach { campaign -> reconcile(state, campaign, rules, events) }
     }
 
     private fun observeCombat(
@@ -428,6 +459,7 @@ object WarbandEngine {
         observation: CombatObservation,
         events: MutableList<EngineEvent>,
         effects: MutableList<EngineEffect>,
+        decide: Boolean = true,
     ) {
         val campaign = state.campaigns[observation.campaignId] ?: return
         if (campaign.phase != CampaignPhase.ACTIVE) return
@@ -439,10 +471,12 @@ object WarbandEngine {
             campaign.members.remove(it)
             events += event(state, "member_lost", it.id, campaign.id)
         }
-        val damageRatio = observation.playerDamage / (observation.playerDamage + observation.campaignDamage + 1.0)
-        campaign.members.forEach { member -> member.healthFraction = (member.healthFraction - damageRatio / campaign.members.size.coerceAtLeast(1)).coerceIn(0.0, 1.0) }
-        campaign.members.mapNotNull(MemberManifest::equipment).forEach { equipment ->
-            equipment.durabilityFraction = (equipment.durabilityFraction - damageRatio * 0.08).coerceAtLeast(0.0)
+        if (observation.applyHealthDamage) {
+            val damageRatio = observation.playerDamage / (observation.playerDamage + observation.campaignDamage + 1.0)
+            campaign.members.forEach { member -> member.healthFraction = (member.healthFraction - damageRatio / campaign.members.size.coerceAtLeast(1)).coerceIn(0.0, 1.0) }
+            campaign.members.mapNotNull(MemberManifest::equipment).forEach { equipment ->
+                equipment.durabilityFraction = (equipment.durabilityFraction - damageRatio * 0.08).coerceAtLeast(0.0)
+            }
         }
         val contribution = mapOf(
             "durability" to if (observation.playerDamage > observation.campaignDamage) 1.0 else -0.4,
@@ -462,12 +496,13 @@ object WarbandEngine {
             warband.empiricalThreat[id] = current + rules.threatLearningRate * (observed - current)
         }
         events += event(state, "combat_observed", campaign.id)
+        if (!decide) return
         val liveThreat = campaign.members.sumOf { it.threat * it.healthFraction }
         val committed = campaign.members.sumOf(MemberManifest::threat) + dead.sumOf(MemberManifest::threat)
         val conservation = state.officers[campaign.officerId]?.preferences?.get("conservation") ?: 0.5
         when (CampaignDecisions.activeDecision(campaign.members.size, liveThreat, committed, conservation, warband.aggression, state.tick, campaign.lastCombatTick, rules)) {
             ActiveCampaignDecision.DEFEATED, ActiveCampaignDecision.MORALE_RETURN ->
-                beginReturn(state, campaign.id, "morale", 0, events, effects)
+                beginDefeatReturn(state, campaign, rules, "morale", events, effects)
             ActiveCampaignDecision.IDLE_RETURN -> beginReturn(state, campaign.id, "idle", 1, events, effects)
             ActiveCampaignDecision.CONTINUE -> Unit
         }
@@ -481,6 +516,86 @@ object WarbandEngine {
             campaign.physical = result.success
             events += event(state, if (result.success) "materialized" else "materialization_failed", campaign.id)
         }
+    }
+
+    private fun applySnapshots(state: EngineState, results: List<CampaignSnapshotResult>, events: MutableList<EngineEvent>) {
+        results.forEach snapshotLoop@{ result ->
+            val campaign = state.campaigns[result.campaignId] ?: return@snapshotLoop
+            if (campaign.phase != CampaignPhase.RETURNING && campaign.phase != CampaignPhase.ACTIVE &&
+                campaign.phase != CampaignPhase.MATERIALIZING) return@snapshotLoop
+            val returning = campaign.phase == CampaignPhase.RETURNING
+            val existing = campaign.members.associateBy(MemberManifest::id)
+            campaign.members.clear()
+            result.members.forEach memberLoop@{ snapshot ->
+                val member = existing[snapshot.memberId] ?: return@memberLoop
+                member.healthFraction = snapshot.healthFraction.coerceIn(0.0, 1.0)
+                member.experience = snapshot.experience.coerceAtLeast(0.0)
+                member.equipment = snapshot.equipment
+                member.cargo.clear()
+                snapshot.cargo.filterValues { it > 0 }.forEach(member.cargo::put)
+                if (member.healthFraction > EPSILON) campaign.members += member
+                else cacheMember(state, campaign, member)
+            }
+            campaign.position = result.position
+            campaign.physical = false
+            if (!returning) campaign.phase = CampaignPhase.READY_TO_MATERIALIZE
+            events += event(state, "snapshots_applied", campaign.id, "members=${campaign.members.size}")
+            events += event(state, "dematerialized", campaign.id)
+        }
+    }
+
+    private fun observeOutcome(
+        state: EngineState,
+        rules: WarbandRules,
+        observation: CampaignOutcomeObservation,
+        events: MutableList<EngineEvent>,
+        effects: MutableList<EngineEffect>,
+    ) {
+        val campaign = state.campaigns[observation.campaignId] ?: return
+        val officer = state.officers[campaign.officerId]
+        when (observation.outcome) {
+            CampaignOutcomeKind.CAPTAIN_VICTORY -> {
+                officer?.let { it.victories += 1; it.availableAtTick = state.tick + rules.captainSuccessRecoveryTicks }
+                beginReturn(state, campaign.id, observation.reason, -1, events, effects)
+            }
+            CampaignOutcomeKind.SURVIVING_DEFEAT -> {
+                officer?.let { it.defeats += 1; it.availableAtTick = state.tick + rules.captainRecoveryTicks }
+                beginReturn(state, campaign.id, observation.reason, 1, events, effects)
+            }
+            CampaignOutcomeKind.CAPTAIN_KILLED -> {
+                officer?.let { it.defeats += 1; it.availableAtTick = Long.MAX_VALUE }
+                beginReturn(state, campaign.id, observation.reason, 1, events, effects)
+            }
+            CampaignOutcomeKind.ABORTED -> beginReturn(state, campaign.id, observation.reason, 0, events, effects)
+            CampaignOutcomeKind.WARBAND_COLLAPSE -> {
+                state.warbands[campaign.warbandId]?.let { warband ->
+                    warband.defeated = true
+                    warband.reserveThreat = 0.0
+                    warband.raidPool = 0.0
+                }
+                campaign.members.toList().forEach { cacheMember(state, campaign, it) }
+                campaign.members.clear()
+                campaign.phase = CampaignPhase.RESOLVED
+                campaign.physical = false
+                events += event(state, "campaign_resolved", campaign.id, observation.reason)
+            }
+        }
+        events += event(state, "campaign_outcome_observed", campaign.id, observation.outcome.name.lowercase())
+    }
+
+    private fun beginDefeatReturn(
+        state: EngineState,
+        campaign: CampaignState,
+        rules: WarbandRules,
+        reason: String,
+        events: MutableList<EngineEvent>,
+        effects: MutableList<EngineEffect>,
+    ) {
+        state.officers[campaign.officerId]?.let { officer ->
+            officer.defeats += 1
+            officer.availableAtTick = state.tick + rules.captainRecoveryTicks
+        }
+        beginReturn(state, campaign.id, reason, 1, events, effects)
     }
 
     private fun applyPositions(state: EngineState, positions: List<PositionObservation>) {
@@ -513,7 +628,7 @@ object WarbandEngine {
         }
     }
 
-    private fun reconcile(state: EngineState, campaign: CampaignState, events: MutableList<EngineEvent>) {
+    private fun reconcile(state: EngineState, campaign: CampaignState, rules: WarbandRules, events: MutableList<EngineEvent>) {
         val warband = state.warbands[campaign.warbandId] ?: return
         val returned = campaign.members.sumOf { it.threat * it.healthFraction }
         warband.raidPool = (warband.raidPool + returned).coerceAtMost(warband.capacity)
@@ -522,9 +637,10 @@ object WarbandEngine {
             member.cargo.clear()
             member.equipment?.takeIf { it.durabilityFraction > EPSILON }?.let(warband.armory::add)
         }
-        warband.aggression = (warband.aggression + campaign.returnAggressionDelta).coerceIn(6, 18)
+        warband.aggression = (warband.aggression + campaign.returnAggressionDelta)
+            .coerceIn(rules.minimumAggression, rules.maximumAggression)
         campaign.phase = CampaignPhase.RESOLVED
-        state.officers[campaign.officerId]?.availableAtTick = state.tick
+        state.officers[campaign.officerId]?.let { officer -> officer.availableAtTick = maxOf(officer.availableAtTick, state.tick) }
         events += event(state, "returned", campaign.id, "threat=$returned")
     }
 

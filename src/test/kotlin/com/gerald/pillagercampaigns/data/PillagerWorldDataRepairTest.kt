@@ -133,4 +133,24 @@ class PillagerWorldDataRepairTest {
         assertTrue(playerId in loaded.initializedPlayers)
         assertEquals(6_000L, loaded.protectedPlayersUntilTick[playerId])
     }
+
+    @Test
+    fun `engine sequence persists and legacy manifests advance it without collisions`() {
+        val current = PillagerWorldData().apply { engineSequence = 91L }
+        assertEquals(91L, PillagerWorldData.load(current.save(net.minecraft.nbt.CompoundTag())).engineSequence)
+
+        val legacy = current.save(net.minecraft.nbt.CompoundTag()).also {
+            it.remove("engineSequence")
+            val legacyCampaign = PillagerCampaign(
+                UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+                ResourceLocation("minecraft", "overworld"), 0, 0, 1, 0, 1, 0L, 0,
+                CampaignState.TRAVELING, null, null, 0L, mutableListOf(),
+                plannedMembers = mutableListOf(PlannedCampaignMember(
+                    ResourceLocation("minecraft", "pillager"), 5.0, manifestId = "engine:member:41",
+                )),
+            )
+            it.put("campaigns", net.minecraft.nbt.ListTag().also { campaigns -> campaigns.add(legacyCampaign.save()) })
+        }
+        assertEquals(42L, PillagerWorldData.load(legacy).engineSequence)
+    }
 }

@@ -125,7 +125,10 @@ data class OfficerState(
     var victories: Int = 0,
     var defeats: Int = 0,
     var availableAtTick: Long = 0L,
+    var lastTargetPlayerId: String? = null,
 )
+
+@Serializable data class DispatchAssignment(val officerId: String, val playerId: String, val score: Int)
 
 @Serializable enum class CampaignPhase { OUTBOUND, READY_TO_MATERIALIZE, MATERIALIZING, ACTIVE, RETURNING, RESOLVED }
 

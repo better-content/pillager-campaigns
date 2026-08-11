@@ -36,6 +36,16 @@ class FormulaicArchitectureTest {
         assertTrue("CampaignGeometry" in geometrySource)
         assertTrue("PillagerEngineBridge.chooseRecruit" in runtimeSource && "PillagerEngineBridge.planCampaign" in runtimeSource)
         assertTrue("PillagerEngineBridge.advanceEconomies" in campaignSource && "PillagerEngineBridge.raidBudget" in campaignSource)
-        assertTrue("EcologyMath.consumeCargo" in campaignSource && "EcologyMath.tacticalScore" in Files.readString(Path("src/main/kotlin/com/gerald/pillagercampaigns/system/SquadRoutePlanner.kt")))
+        assertTrue("PillagerEngineBridge.transitionCampaign" in campaignSource)
+        assertTrue("EcologyMath.consumeCargo" !in campaignSource && "CampaignDecisions" !in campaignSource)
+        assertTrue("EcologyMath.tacticalScore" in Files.readString(Path("src/main/kotlin/com/gerald/pillagercampaigns/system/SquadRoutePlanner.kt")))
+        val eventSource = Files.readString(Path("src/main/kotlin/com/gerald/pillagercampaigns/PillagerCampaignsEvents.kt"))
+        assertTrue("recordCombatObservation" !in eventSource && "recordThreatObservation" !in eventSource)
+        val directTransitionCallers = Files.walk(Path("src/main/kotlin")).use { paths ->
+            paths.filter { it.extension == "kt" && it.fileName.toString() != "PillagerEngineBridge.kt" }
+                .filter { "WarbandEngine.transition" in Files.readString(it) }
+                .toList()
+        }
+        assertTrue(directTransitionCallers.isEmpty(), "Forge bypassed the canonical projection bridge: $directTransitionCallers")
     }
 }

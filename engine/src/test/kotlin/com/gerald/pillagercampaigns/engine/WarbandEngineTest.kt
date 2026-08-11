@@ -89,6 +89,22 @@ class WarbandEngineTest {
         assertEquals(2, state.campaigns.values.single().members.map { it.recruitId }.distinct().size)
     }
 
+    @Test fun `assignment and selected officer are engine owned`() {
+        val state = state(pool = 20.0)
+        state.officers["rival"] = OfficerState(
+            "rival", "faction", "warband", lastTargetPlayerId = "far",
+        )
+        val near = PlayerFact("near", ChunkPosition("overworld", 4, 0), setOf("warband"))
+        val far = PlayerFact("far", ChunkPosition("overworld", 8, 0), setOf("warband"))
+        val assignment = WarbandEngine.chooseAssignment(state, state.warbands.getValue("warband"), listOf(near, far))
+        assertEquals("rival", assignment?.officerId)
+        assertEquals("far", assignment?.playerId)
+        WarbandEngine.transition(state, EngineFrame(0L, listOf(near, far)), catalog, rules)
+        assertEquals("rival", state.campaigns.values.single().officerId)
+        assertEquals("far", state.campaigns.values.single().targetPlayerId)
+        assertEquals("far", state.officers.getValue("rival").lastTargetPlayerId)
+    }
+
     @Test fun `readiness accounts for a preferred expensive lead and distinct support`() {
         val state = state(reserve = 0.0, pool = 12.9)
         val warband = state.warbands.getValue("warband")
@@ -142,6 +158,75 @@ class WarbandEngineTest {
         assertEquals(CampaignPhase.RETURNING, campaign.phase)
         assertTrue(result.effects.any { it.kind == EffectKind.CAPTURE_SNAPSHOTS })
         assertEquals("idle", campaign.returnReason)
+    }
+
+    @Test fun `physical outcomes and captured snapshots reconcile through engine only`() {
+        val state = state(pool = 12.0)
+        WarbandEngine.transition(state, EngineFrame(0L, commands = listOf(EngineCommand.Dispatch("warband", "player"))), catalog, rules)
+        val campaign = state.campaigns.values.single().also { it.phase = CampaignPhase.ACTIVE; it.physical = true }
+        val survivor = campaign.members.first()
+        val outcome = WarbandEngine.transition(
+            state,
+            EngineFrame(0L, outcomes = listOf(CampaignOutcomeObservation(campaign.id, CampaignOutcomeKind.SURVIVING_DEFEAT, "repelled"))),
+            catalog,
+            rules,
+        )
+        assertTrue(outcome.effects.any { it.kind == EffectKind.CAPTURE_SNAPSHOTS })
+        WarbandEngine.transition(
+            state,
+            EngineFrame(0L, snapshots = listOf(CampaignSnapshotResult(
+                campaign.id,
+                ChunkPosition("overworld", 2, 0),
+                listOf(MemberSnapshot(survivor.id, .5, cargo = mapOf("ration" to 2))),
+            ))),
+            catalog,
+            rules,
+        )
+        assertEquals(false, campaign.physical)
+        assertEquals(.5, campaign.members.single().healthFraction)
+        assertEquals(2, campaign.members.single().cargo["ration"])
+        WarbandEngine.transition(state, EngineFrame(3L * rules.travelTicksPerChunk), catalog, rules)
+        assertEquals(CampaignPhase.RESOLVED, campaign.phase)
+        assertEquals(7, state.warbands.getValue("warband").aggression)
+        assertEquals(1, state.officers.getValue("captain").defeats)
+    }
+
+    @Test fun `explicit outcome and combat facts in one frame count defeat once`() {
+        val state = state(pool = 12.0)
+        WarbandEngine.transition(state, EngineFrame(0L, commands = listOf(EngineCommand.Dispatch("warband", "player"))), catalog, rules)
+        val campaign = state.campaigns.values.single().also { it.phase = CampaignPhase.ACTIVE; it.physical = true }
+        val victim = campaign.members.first().id
+        val result = WarbandEngine.transition(
+            state,
+            EngineFrame(
+                0L,
+                combat = listOf(CombatObservation(campaign.id, 1.0, 12.0, 10.0, 0.4, 0.3, setOf(victim))),
+                outcomes = listOf(CampaignOutcomeObservation(campaign.id, CampaignOutcomeKind.SURVIVING_DEFEAT, "repelled")),
+            ),
+            catalog,
+            rules,
+        )
+        assertEquals(1, state.officers.getValue("captain").defeats)
+        assertEquals(CampaignPhase.RETURNING, campaign.phase)
+        assertEquals("repelled", campaign.returnReason)
+        assertTrue(campaign.members.none { it.id == victim })
+        assertTrue(result.events.any { it.type == "combat_observed" })
+        assertTrue(result.events.any { it.type == "campaign_outcome_observed" })
+    }
+
+    @Test fun `reconciliation honors configured aggression bounds`() {
+        val boundedRules = rules.copy(minimumAggression = 20, maximumAggression = 30)
+        val state = state(pool = 100.0)
+        state.warbands.getValue("warband").aggression = 20
+        WarbandEngine.transition(state, EngineFrame(0L, commands = listOf(EngineCommand.Dispatch("warband", "player"))), catalog, boundedRules)
+        val campaign = state.campaigns.values.single().also {
+            it.phase = CampaignPhase.RETURNING
+            it.position = state.warbands.getValue("warband").rally
+            it.returnAggressionDelta = -100
+        }
+        WarbandEngine.transition(state, EngineFrame(boundedRules.travelTicksPerChunk), catalog, boundedRules)
+        assertEquals(CampaignPhase.RESOLVED, campaign.phase)
+        assertEquals(20, state.warbands.getValue("warband").aggression)
     }
 
     @Test fun `resolved campaign history does not duplicate returned equipment ownership`() {

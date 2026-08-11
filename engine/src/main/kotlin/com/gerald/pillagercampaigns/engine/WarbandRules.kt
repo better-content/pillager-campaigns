@@ -13,6 +13,8 @@ data class WarbandRules(
     val travelTicksPerChunk: Long = 120L,
     val materializeDistanceChunks: Int = 6,
     val raidCooldownTicks: Long = 6_000L,
+    val captainRecoveryTicks: Long = 6_000L,
+    val captainSuccessRecoveryTicks: Long = 2_400L,
     val maximumSquadMembers: Int = 24,
     val warbandLearningRate: Double = 0.05,
     val captainLearningRate: Double = 0.10,

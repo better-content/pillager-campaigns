@@ -17,11 +17,13 @@ class PillagerWorldData : SavedData() {
 
     var lastDiscoveryTick: Long = 0L
     var lastCampaignTick: Long = 0L
+    var engineSequence: Long = 0L
 
     override fun save(tag: CompoundTag): CompoundTag {
         tag.putInt("schema", SCHEMA_VERSION)
         tag.putLong("lastDiscoveryTick", lastDiscoveryTick)
         tag.putLong("lastCampaignTick", lastCampaignTick)
+        tag.putLong("engineSequence", engineSequence)
         tag.put("factions", saveRecordList(factions.values.map { it.save() }))
         tag.put("warbands", saveRecordList(warbands.values.map { it.save() }))
         tag.put("officers", saveRecordList(officers.values.map { it.save() }))
@@ -58,7 +60,7 @@ class PillagerWorldData : SavedData() {
 
     companion object {
         private const val KEY = "pillagercampaigns_world"
-        private const val SCHEMA_VERSION = 3
+        private const val SCHEMA_VERSION = 4
 
         fun get(server: MinecraftServer): PillagerWorldData =
             server.overworld().dataStorage.computeIfAbsent(::load, ::PillagerWorldData, KEY)
@@ -67,6 +69,8 @@ class PillagerWorldData : SavedData() {
             val data = PillagerWorldData()
             data.lastDiscoveryTick = tag.getLong("lastDiscoveryTick")
             data.lastCampaignTick = tag.getLong("lastCampaignTick")
+            data.engineSequence = if (tag.contains("engineSequence")) tag.getLong("engineSequence").coerceAtLeast(0L)
+            else nextLegacyEngineSequence(tag)
             loadRecordList(tag, "factions") { PillagerFaction.load(it).let { v -> data.factions[v.id] = v } }
             loadRecordList(tag, "warbands") { PillagerWarband.load(it).let { v -> data.warbands[v.id] = v } }
             if (tag.contains("captains", Tag.TAG_LIST.toInt())) {
@@ -91,6 +95,22 @@ class PillagerWorldData : SavedData() {
             }
             data.repairReferences()
             return data
+        }
+
+        private fun nextLegacyEngineSequence(tag: CompoundTag): Long {
+            var maximum = -1L
+            if (tag.contains("campaigns", Tag.TAG_LIST.toInt())) {
+                tag.getList("campaigns", Tag.TAG_COMPOUND.toInt()).forEach { raw ->
+                    val campaign = raw as CompoundTag
+                    if (!campaign.contains("plannedMembers", Tag.TAG_LIST.toInt())) return@forEach
+                    campaign.getList("plannedMembers", Tag.TAG_COMPOUND.toInt()).forEach memberLoop@{ memberRaw ->
+                        val manifest = (memberRaw as CompoundTag).getString("manifestId")
+                        val suffix = manifest.substringAfterLast(':', "").toLongOrNull() ?: return@memberLoop
+                        maximum = maxOf(maximum, suffix)
+                    }
+                }
+            }
+            return maximum + 1L
         }
 
         private fun saveUuidList(ids: Collection<UUID>): ListTag = ListTag().also { list ->

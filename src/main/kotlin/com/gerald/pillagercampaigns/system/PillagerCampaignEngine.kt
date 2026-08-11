@@ -14,32 +14,25 @@ import com.gerald.pillagercampaigns.data.PillagerOfficer
 import com.gerald.pillagercampaigns.data.PillagerWarband
 import com.gerald.pillagercampaigns.data.PillagerWorldData
 import com.gerald.pillagercampaigns.util.PillagerIdentity
-import com.gerald.pillagercampaigns.engine.EcologyMath
-import com.gerald.pillagercampaigns.engine.ResourceDefinition
+import com.gerald.pillagercampaigns.engine.CampaignOutcomeKind
+import com.gerald.pillagercampaigns.engine.CampaignOutcomeObservation
+import com.gerald.pillagercampaigns.engine.PlayerFact
 import net.minecraft.server.MinecraftServer
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.server.level.ServerPlayer
-import net.minecraft.nbt.CompoundTag
 import net.minecraft.sounds.SoundEvents
 import net.minecraft.sounds.SoundSource
 import net.minecraft.world.level.GameType
-import net.minecraft.world.item.ItemStack
-import net.minecraft.world.item.ProjectileWeaponItem
 import java.util.UUID
-import java.util.concurrent.ThreadLocalRandom
 import kotlin.math.max
 
 object PillagerCampaignEngine {
+    internal enum class MaterializationLeaseAction { WAIT, SUCCEEDED, FAILED }
     const val INITIAL_RESERVE: Int = FormulaicWarbandRules.INITIAL_RESERVE
     val PLAYER_RESPAWN_PROTECTION_TICKS: Long get() = PillagerCampaignsConfig.respawnProtectionTicks.get().toLong()
     private const val MATERIALIZE_LEASE_TICKS: Long = 200L
     private const val MIN_ACTIVE_LIVE_MEMBERS: Int = 1
-    private const val RAID_COOLDOWN_TICKS: Long = 6_000L
-    private const val CAPTAIN_RECOVERY_TICKS: Long = 6_000L
-    private const val CAPTAIN_SUCCESS_RECOVERY_TICKS: Long = 2_400L
     private const val MAX_HISTORY_EVENTS: Int = 8
-    private const val CAPTAIN_GRUDGE_WEIGHT: Int = 48
-    private const val CAPTAIN_DISTANCE_WEIGHT: Int = 4
     private const val PROMOTION_SCORE_THRESHOLD: Int = 2
     private var dispatchCursor: Int = 0
 
@@ -89,11 +82,12 @@ object PillagerCampaignEngine {
             val assignment = chooseAssignment(level, players, warband, data, now, maxRange, targetedPlayers) ?: continue
             val captain = assignment.first
             val target = assignment.second
-            val loadoutSeed = ThreadLocalRandom.current().nextLong()
+            val loadoutSeed = data.engineSequence
             val recruits = PillagerRuntime.recruitDefinitions(level, warband)
             val budgetThreat = PillagerEngineBridge.raidBudget(warband, captain.preferenceGraph, recruits, loadoutSeed)
             if (budgetThreat <= 0.0) continue
             val manifest = PillagerRuntime.planCampaignManifest(level, warband, captain, target, loadoutSeed, now, recruits) ?: continue
+            data.engineSequence = manifest.nextSequence
             val plannedMembers = manifest.members
             if (plannedMembers.isEmpty()) continue
             val committedThreat = plannedMembers.sumOf { it.threat }
@@ -124,273 +118,147 @@ object PillagerCampaignEngine {
             captain.state = OfficerState.DEPLOYED
             captain.lastTargetPlayerId = target.uuid
             captain.lastSeenTick = now
-            warband.nextRaidTick = now + RAID_COOLDOWN_TICKS
             data.campaigns[campaign.id] = campaign
             data.markChanged()
         }
     }
 
     private fun advance(server: MinecraftServer, data: PillagerWorldData, now: Long) {
-        val speed = 120
         val dt = PillagerCampaignsConfig.schedulerIntervalTicks.get()
         val materializeDistance = PillagerCampaignsConfig.materializeDistanceChunks.get()
-        val toResolve = mutableListOf<Pair<UUID, CampaignOutcome>>()
 
         data.campaigns.values.forEach { campaign ->
             if (campaign.state == CampaignState.RESOLVED) return@forEach
             val warband = data.warbands[campaign.originWarbandId] ?: return@forEach
+            val officer = data.officers[campaign.officerId]
             val player = server.playerList.players.firstOrNull { it.uuid == campaign.targetPlayerId }
             val level = player?.serverLevel() ?: server.allLevels.firstOrNull { it.dimension().location() == warband.dimension } ?: return@forEach
             if (PillagerRuntime.releaseLoadedCaches(level, campaign) > 0) data.markChanged()
-            if (campaign.state == CampaignState.RETURNING) {
-                advanceReturn(level, data, warband, campaign, now, dt, speed)
-                return@forEach
-            }
-            if (player == null) {
-                startReturn(campaign, now, CampaignOutcome.ABORTED, "target_unavailable")
-                data.markChanged()
-                return@forEach
-            }
-            if (!isCampaignTarget(player)) {
-                startReturn(campaign, now, CampaignOutcome.ABORTED, "target_ineligible")
-                data.markChanged()
-                return@forEach
-            }
-            if (campaign.state == CampaignState.PAUSED) {
-                if (data.isPlayerProtected(player.uuid, now)) return@forEach
-                resumeCampaign(campaign, data)
-            }
-            if (data.isPlayerProtected(player.uuid, now)) {
-                startReturn(campaign, now, CampaignOutcome.ABORTED, "target_protected")
-                data.markChanged()
-                return@forEach
-            }
-            when (campaign.state) {
-                CampaignState.ACTIVE -> {
-                    val alive = PillagerRuntime.countLiveMembers(level, campaign.squadMemberIds)
-                    val liveThreat = PillagerRuntime.liveThreat(level, campaign)
-                    val conservation = data.officers[campaign.officerId]?.preferenceGraph?.get("conservation") ?: 0.5
-                    val coreRules = com.gerald.pillagercampaigns.engine.WarbandRules(idleReturnTicks = PillagerCampaignsConfig.idleReturnTicks.get().toLong())
-                    when (com.gerald.pillagercampaigns.engine.CampaignDecisions.activeDecision(
-                        alive, liveThreat, campaign.committedThreat.toDouble(), conservation,
-                        data.warbands[campaign.originWarbandId]?.aggression ?: 6, now, campaign.lastCombatTick, coreRules,
-                    )) {
-                        com.gerald.pillagercampaigns.engine.ActiveCampaignDecision.DEFEATED ->
-                            toResolve += campaign.id to CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT
-                        com.gerald.pillagercampaigns.engine.ActiveCampaignDecision.MORALE_RETURN -> {
-                            startReturn(campaign, now, CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT, "morale")
-                            data.markChanged()
-                        }
-                        com.gerald.pillagercampaigns.engine.ActiveCampaignDecision.IDLE_RETURN -> {
-                            startReturn(campaign, now, CampaignOutcome.ABORTED, "idle", aggressionDelta = 1)
-                            data.markChanged()
-                        }
-                        com.gerald.pillagercampaigns.engine.ActiveCampaignDecision.CONTINUE -> Unit
-                    }
-                    return@forEach
-                }
-                CampaignState.MATERIALIZING -> {
-                    val alive = PillagerRuntime.countLiveMembers(level, campaign.squadMemberIds)
-                    if (alive >= MIN_ACTIVE_LIVE_MEMBERS) {
-                        campaign.state = CampaignState.ACTIVE
-                        campaign.materializeAttemptId = null
-                        campaign.materializingUntilTick = 0L
-                        data.markChanged()
-                        return@forEach
-                    }
-                    if (now >= campaign.materializingUntilTick) {
-                        campaign.state = CampaignState.READY_TO_MATERIALIZE
-                        campaign.materializeAttemptId = null
-                        campaign.materializingUntilTick = 0L
+            if (campaign.state == CampaignState.MATERIALIZING) {
+                val alive = PillagerRuntime.countLiveMembers(level, campaign.squadMemberIds)
+                when (materializationLeaseAction(alive, now, campaign.materializingUntilTick)) {
+                    MaterializationLeaseAction.WAIT -> Unit
+                    MaterializationLeaseAction.SUCCEEDED ->
+                        acknowledgeMaterialization(level, data, warband, officer, campaign, player, now, true)
+                    MaterializationLeaseAction.FAILED -> {
+                        acknowledgeMaterialization(level, data, warband, officer, campaign, player, now, false)
                         campaign.squadMemberIds.clear()
-                        val captain = data.officers[campaign.officerId]
-                        if (captain != null) {
-                            appendCaptainEvent(
-                                captain,
-                                NemesisEvent(now, NemesisEventType.FAILED_MATERIALIZATION, campaignId = campaign.id, warbandId = campaign.originWarbandId),
-                            )
-                        }
-                        data.markChanged()
+                        officer?.let { appendCaptainEvent(it, NemesisEvent(now, NemesisEventType.FAILED_MATERIALIZATION, campaignId = campaign.id, warbandId = campaign.originWarbandId)) }
                     }
-                    return@forEach
                 }
-                CampaignState.PAUSED, CampaignState.RETURNING -> return@forEach
-                else -> {}
+                data.markChanged()
+                return@forEach
             }
-            if (player.level().dimension().location() != campaign.targetDimension) {
-                campaign.targetDimension = player.level().dimension().location()
-            }
-            campaign.targetChunkX = player.chunkPosition().x
-            campaign.targetChunkZ = player.chunkPosition().z
-            campaign.tickDebt += dt
-            while (campaign.tickDebt >= travelTicks(speed, campaign) && campaign.state == CampaignState.TRAVELING) {
-                campaign.tickDebt -= travelTicks(speed, campaign)
-                val next = campaign.route.getOrNull(campaign.routeIndex++)?.let { it.chunkX to it.chunkZ }
-                    ?: CampaignMath.stepToward(campaign.currentChunkX, campaign.currentChunkZ, campaign.targetChunkX, campaign.targetChunkZ)
-                campaign.currentChunkX = next.first
-                campaign.currentChunkZ = next.second
-                if (!applyLogisticsSegment(level, warband, campaign)) {
-                    startReturn(campaign, now, CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT, "supply_attrition")
-                    break
-                }
-                if (EcologyMath.shouldRetreatFromShortage(campaign.deficitExposure, warband.aggression, PillagerEngineBridge.rules())) {
-                    startReturn(campaign, now, CampaignOutcome.ABORTED, "supply_shortage")
-                    break
-                }
-                val distance = CampaignMath.manhattan(campaign.currentChunkX, campaign.currentChunkZ, campaign.targetChunkX, campaign.targetChunkZ)
-                if (distance <= materializeDistance) {
-                    campaign.state = CampaignState.READY_TO_MATERIALIZE
-                }
-            }
-            if (campaign.state == CampaignState.READY_TO_MATERIALIZE) {
+            if (campaign.state == CampaignState.READY_TO_MATERIALIZE && player != null) {
                 tryMaterialize(level, campaign, player, materializeDistance, data, now)
+                return@forEach
             }
-        }
-        if (toResolve.isNotEmpty()) {
-            toResolve.forEach { (id, outcome) -> resolveCampaign(data, id, outcome = outcome, observedTick = now) }
-            data.markChanged()
-        }
-    }
 
-    private fun advanceReturn(
-        level: ServerLevel,
-        data: PillagerWorldData,
-        warband: PillagerWarband,
-        campaign: PillagerCampaign,
-        now: Long,
-        dt: Int,
-        speed: Int,
-    ) {
-        if (campaign.memberSnapshots.isEmpty() && PillagerRuntime.hasLiveCampaignMember(level, campaign.id)) {
-            when (PillagerRuntime.withdrawTowardHome(level, campaign, warband)) {
-                PillagerRuntime.WithdrawalProgress.ARRIVED -> finishReturn(data, campaign, now)
-                else -> data.markChanged()
-            }
-            return
-        }
-        campaign.tickDebt += dt
-        while (campaign.tickDebt >= travelTicks(speed, campaign) && campaign.state == CampaignState.RETURNING) {
-            campaign.tickDebt -= travelTicks(speed, campaign)
-            val next = CampaignMath.stepToward(campaign.currentChunkX, campaign.currentChunkZ, warband.rallyChunkX, warband.rallyChunkZ)
-            campaign.currentChunkX = next.first
-            campaign.currentChunkZ = next.second
-            applyLogisticsSegment(level, warband, campaign)
-            if (next.first == warband.rallyChunkX && next.second == warband.rallyChunkZ) {
-                finishReturn(data, campaign, now)
-                return
-            }
-            if (campaign.memberSnapshots.isNotEmpty() && level.hasChunk(next.first, next.second)) {
-                PillagerSpawnPlacementRules.findRallyPos(level, next.first, next.second)?.let { pos ->
-                    if (PillagerRuntime.restoreSnapshots(level, campaign, pos).isNotEmpty()) data.markChanged()
+            var snapshots = emptyList<com.gerald.pillagercampaigns.engine.CampaignSnapshotResult>()
+            var physical = PillagerRuntime.hasLiveCampaignMember(level, campaign.id)
+            if (campaign.state == CampaignState.RETURNING && physical) {
+                when (PillagerRuntime.withdrawTowardHome(level, campaign, warband)) {
+                    PillagerRuntime.WithdrawalProgress.PHYSICAL -> { data.markChanged(); return@forEach }
+                    PillagerRuntime.WithdrawalProgress.DEMATERIALIZED,
+                    PillagerRuntime.WithdrawalProgress.ARRIVED -> {
+                        physical = true
+                        snapshots = listOf(PillagerEngineBridge.snapshotResult(campaign))
+                    }
                 }
-                return
+            } else if (campaign.state == CampaignState.ACTIVE && physical) {
+                PillagerRuntime.syncLiveCampaignState(level, campaign)
             }
+
+            val protected = player?.let { data.isPlayerProtected(it.uuid, now) } == true
+            val validPlayer = player?.takeIf { isCampaignTarget(it) && !protected }
+            val queuedOutcome = campaign.pendingEngineOutcome?.let { outcome ->
+                CampaignOutcomeObservation(
+                    campaign.id.toString(),
+                    when (outcome) {
+                        CampaignOutcome.CAPTAIN_VICTORY -> CampaignOutcomeKind.CAPTAIN_VICTORY
+                        CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT -> CampaignOutcomeKind.SURVIVING_DEFEAT
+                        CampaignOutcome.CAPTAIN_KILLED -> CampaignOutcomeKind.CAPTAIN_KILLED
+                        CampaignOutcome.WARBAND_COLLAPSE -> CampaignOutcomeKind.WARBAND_COLLAPSE
+                        CampaignOutcome.ABORTED -> CampaignOutcomeKind.ABORTED
+                    },
+                    campaign.pendingEngineOutcomeReason ?: outcome.name.lowercase(),
+                )
+            }
+            val outcomes = queuedOutcome?.let(::listOf) ?: when {
+                player == null && campaign.state != CampaignState.RETURNING -> listOf(CampaignOutcomeObservation(campaign.id.toString(), CampaignOutcomeKind.ABORTED, "target_unavailable"))
+                player != null && !isCampaignTarget(player) && campaign.state != CampaignState.RETURNING -> listOf(CampaignOutcomeObservation(campaign.id.toString(), CampaignOutcomeKind.ABORTED, "target_ineligible"))
+                protected && campaign.state != CampaignState.RETURNING -> listOf(CampaignOutcomeObservation(campaign.id.toString(), CampaignOutcomeKind.ABORTED, "target_protected"))
+                else -> emptyList()
+            }
+            val facts = validPlayer?.let {
+                listOf(PlayerFact(
+                    it.uuid.toString(),
+                    com.gerald.pillagercampaigns.engine.ChunkPosition(it.level().dimension().location().toString(), it.chunkPosition().x, it.chunkPosition().z),
+                    setOf(warband.id.toString()),
+                ))
+            }.orEmpty()
+            val priorState = campaign.state
+            val combat = if (campaign.pendingCampaignDamage > 0.0 || campaign.pendingPlayerDamage > 0.0 || campaign.pendingCasualtyManifestIds.isNotEmpty()) {
+                listOf(com.gerald.pillagercampaigns.engine.CombatObservation(
+                    campaign.id.toString(), campaign.pendingCampaignDamage, campaign.pendingPlayerDamage,
+                    campaign.pendingEffectiveRange, 0.6, 0.7, campaign.pendingCasualtyManifestIds.toSet(), applyHealthDamage = false,
+                ))
+            } else emptyList()
+            val transition = PillagerEngineBridge.transitionCampaign(
+                warband, officer, campaign, PillagerRuntime.recruitDefinitions(level, warband), now, dt.toLong(), physical,
+                players = facts,
+                terrain = EnvironmentSampler.corridor(level, warband.rallyChunkX, warband.rallyChunkZ, campaign.targetChunkX, campaign.targetChunkZ),
+                combat = combat,
+                snapshots = snapshots,
+                outcomes = outcomes,
+                sequence = data.engineSequence,
+            )
+            data.engineSequence = transition.result.state.sequence
+            if (combat.isNotEmpty()) {
+                campaign.pendingCampaignDamage = 0.0
+                campaign.pendingPlayerDamage = 0.0
+                campaign.pendingEffectiveRange = 0.0
+                campaign.pendingCasualtyManifestIds.clear()
+            }
+            if (queuedOutcome != null) {
+                campaign.returnOutcome = campaign.pendingEngineOutcome
+                campaign.pendingEngineOutcome = null
+                campaign.pendingEngineOutcomeReason = null
+            }
+            if (queuedOutcome == null && priorState != CampaignState.RETURNING && campaign.state == CampaignState.RETURNING) {
+                campaign.returnStartedTick = now
+                campaign.returnOutcome = if (campaign.returnReason == "morale") CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT else CampaignOutcome.ABORTED
+            }
+            if (campaign.state == CampaignState.RESOLVED) finalizeCanonicalResolution(data, campaign, now)
+            if (campaign.state == CampaignState.READY_TO_MATERIALIZE && validPlayer != null) {
+                tryMaterialize(level, campaign, validPlayer, materializeDistance, data, now)
+            }
+            if (transition.result.events.isNotEmpty() || transition.effects.isNotEmpty()) data.markChanged()
         }
     }
 
-    private fun startReturn(
-        campaign: PillagerCampaign,
-        now: Long,
-        outcome: CampaignOutcome,
-        reason: String,
-        aggressionDelta: Int = 0,
-    ) {
-        if (campaign.state == CampaignState.RETURNING || campaign.state == CampaignState.RESOLVED) return
-        campaign.state = CampaignState.RETURNING
-        campaign.resumeState = null
-        campaign.materializeAttemptId = null
-        campaign.materializingUntilTick = 0L
-        campaign.returnOutcome = outcome
-        campaign.returnReason = reason
-        campaign.returnStartedTick = now
-        campaign.returnAggressionDelta = aggressionDelta
-    }
-
-    private fun finishReturn(data: PillagerWorldData, campaign: PillagerCampaign, now: Long) {
-        val warband = data.warbands[campaign.originWarbandId]
-        if (warband != null) {
-            val survivingThreat = campaign.memberThreat.values.sum().takeIf { it > 0.0 }
-                ?: campaign.plannedMembers.sumOf { it.threat * it.healthFraction }
-            warband.raidPool = (warband.raidPool + survivingThreat).coerceAtMost(warband.capacity.toDouble())
-            warband.armory += campaign.pendingEquipment.map { it.copy() }
-            warband.armory += campaign.memberEquipment.values.map { it.copy() }
-            warband.aggression = (warband.aggression + campaign.returnAggressionDelta)
-                .coerceIn(PillagerCampaignsConfig.minimumAggression.get(), PillagerCampaignsConfig.maximumAggression.get())
-            warband.lastIntelTick = now
-            PillagerRuntime.refundCampaignCargo(warband, campaign)
+    private fun finalizeCanonicalResolution(data: PillagerWorldData, campaign: PillagerCampaign, now: Long) {
+        val outcome = campaign.returnOutcome ?: when (campaign.returnReason) {
+            "morale", "supply_attrition" -> CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT
+            else -> CampaignOutcome.ABORTED
+        }
+        data.officers[campaign.officerId]?.let { captain ->
+            applyCampaignOutcome(data.warbands[campaign.originWarbandId], campaign, captain, outcome, now)
         }
         campaign.pendingEquipment.clear()
         campaign.memberEquipment.clear()
         campaign.memberThreat.clear()
         campaign.memberSnapshots.clear()
         campaign.committedThreat = 0.0
-        resolveCampaign(data, campaign.id, defeatedByPlayer = false, observedTick = now, outcome = campaign.returnOutcome ?: CampaignOutcome.ABORTED)
-    }
-
-    private fun travelTicks(base: Int, campaign: PillagerCampaign): Int =
-        (base * (2.0 - campaign.supplySatisfaction.coerceIn(0.0, 1.0))).toInt().coerceAtLeast(1)
-
-    private fun applyLogisticsSegment(level: ServerLevel, warband: PillagerWarband, campaign: PillagerCampaign): Boolean {
-        if (campaign.plannedMembers.isEmpty()) return false
-        val rules = PillagerEngineBridge.rules()
-        val resources = WarbandResourceCatalog.definitions()
-        if (resources.isEmpty()) return true
-        val local = EnvironmentSampler.sample(level, campaign.currentChunkX, campaign.currentChunkZ)
-        val environment = com.gerald.pillagercampaigns.engine.EnvironmentTraits(
-            local.habitability, local.biomass, local.mineralPotential, local.exoticPotential, local.travelFriction,
-        )
-        val recruitActions = PillagerRuntime.recruitDefinitions(level, warband).associate { it.id to it.supportedEquipmentActions }
-        val livingThreat = campaign.plannedMembers.sumOf { it.threat * it.healthFraction }
-        val rangedThreat = campaign.plannedMembers.filter { member ->
-            "ranged" in recruitActions.getOrDefault(member.recruitId.toString(), emptySet()) ||
-                member.equipment?.let(ItemStack::of)?.item is ProjectileWeaponItem
-        }.sumOf { it.threat * it.healthFraction }
-        val demand = EcologyMath.segmentDemand(
-            livingThreat, rangedThreat, campaign.plannedMembers.count { it.equipment != null },
-            campaign.plannedMembers.sumOf { 1.0 - it.healthFraction }, environment, rules,
-        )
-        if (campaign.deficitExposure > 0.0) {
-            val aggression = ((warband.aggression - rules.minimumAggression).toDouble() /
-                (rules.maximumAggression - rules.minimumAggression).coerceAtLeast(1)).coerceIn(0.0, 1.0)
-            campaign.forageDebt += rules.forageUnitsPerDeficitChunk * campaign.deficitExposure.coerceAtMost(1.0) * (1.0 - aggression * 0.5)
-            while (campaign.forageDebt >= 1.0) {
-                campaign.forageDebt -= 1.0
-                val carrier = campaign.plannedMembers.minByOrNull { it.cargo.values.sum() } ?: break
-                val selected = EcologyMath.chooseEnvironmentalResource(resources, environment, carrier.cargo, demand) { id ->
-                    (campaign.id.toString() + id).fold(0L) { hash, character -> hash * 31L + character.code }
-                } ?: break
-                carrier.cargo[selected.itemId] = carrier.cargo.getOrDefault(selected.itemId, 0) + 1
-            }
-        }
-        val consumption = EcologyMath.consumeCargo(
-            campaign.plannedMembers.map { it.cargo }, resources.associateBy(ResourceDefinition::itemId), demand,
-        )
-        campaign.supplySatisfaction = EcologyMath.supplySatisfaction(demand, consumption.remaining)
-        campaign.deficitExposure = (campaign.deficitExposure + 1.0 - campaign.supplySatisfaction).coerceAtLeast(0.0)
-        val wear = EcologyMath.equipmentWear(environment, campaign.supplySatisfaction, rules)
-        campaign.plannedMembers.mapNotNull { it.equipment }.forEach { tag ->
-            val stack = ItemStack.of(tag)
-            if (stack.isDamageableItem && wear > 0.0) {
-                stack.damageValue = (stack.damageValue + kotlin.math.ceil(stack.maxDamage * wear).toInt()).coerceAtMost(stack.maxDamage)
-                tag.allKeys.toList().forEach(tag::remove)
-                tag.merge(stack.save(CompoundTag()))
-            }
-        }
-        val loss = EcologyMath.attritionLoss(environment, campaign.supplySatisfaction, campaign.deficitExposure, rules)
-        if (loss > 0.0) {
-            campaign.plannedMembers.forEach { it.healthFraction = (it.healthFraction - loss).coerceAtLeast(0.0) }
-            val dead = campaign.plannedMembers.filter { it.healthFraction <= 1.0e-9 }
-            dead.forEach { PillagerRuntime.cacheAbstractMember(campaign, it) }
-            campaign.plannedMembers.removeAll(dead.toSet())
-        }
-        return campaign.plannedMembers.isNotEmpty()
+        campaign.resolvedTick = now
+        data.markChanged()
     }
 
     private fun tryMaterialize(level: ServerLevel, campaign: PillagerCampaign, player: ServerPlayer, distanceChunks: Int, data: PillagerWorldData, now: Long) {
         if (campaign.state == CampaignState.MATERIALIZING && now < campaign.materializingUntilTick) return
         if (PillagerRuntime.hasLiveOfficerLeader(level, campaign.officerId) || PillagerRuntime.hasLiveCampaignMember(level, campaign.id)) {
-            campaign.state = CampaignState.ACTIVE
-            data.markChanged()
+            val warband = data.warbands[campaign.originWarbandId] ?: return
+            acknowledgeMaterialization(level, data, warband, data.officers[campaign.officerId], campaign, player, now, true)
             return
         }
         campaign.state = CampaignState.MATERIALIZING
@@ -402,16 +270,42 @@ object PillagerCampaignEngine {
 
         val warband = data.warbands[campaign.originWarbandId] ?: return
         val result = PillagerWarbandPresenceSystem.materializeInvasionSquad(level, data, warband, campaign, player, distanceChunks, now)
-        if (result == com.gerald.pillagercampaigns.data.PresenceMaterializationResult.SUCCESS ||
+        val success = result == com.gerald.pillagercampaigns.data.PresenceMaterializationResult.SUCCESS ||
             result == com.gerald.pillagercampaigns.data.PresenceMaterializationResult.LIVE_ALREADY_PRESENT
-        ) {
-            campaign.state = CampaignState.ACTIVE
-            campaign.resumeState = null
-            campaign.materializeAttemptId = null
-            campaign.materializingUntilTick = 0L
-            data.markChanged()
+        acknowledgeMaterialization(level, data, warband, data.officers[campaign.officerId], campaign, player, now, success)
+        if (success) {
             PillagerCampaignsMod.LOGGER.info("Materialized campaign {} from warband {}", campaign.id, warband.id)
         }
+    }
+
+    private fun acknowledgeMaterialization(
+        level: ServerLevel,
+        data: PillagerWorldData,
+        warband: PillagerWarband,
+        officer: PillagerOfficer?,
+        campaign: PillagerCampaign,
+        player: ServerPlayer?,
+        now: Long,
+        success: Boolean,
+    ) {
+        val facts = player?.let {
+            listOf(PlayerFact(
+                it.uuid.toString(),
+                com.gerald.pillagercampaigns.engine.ChunkPosition(it.level().dimension().location().toString(), it.chunkPosition().x, it.chunkPosition().z),
+                setOf(warband.id.toString()),
+            ))
+        }.orEmpty()
+        val transition = PillagerEngineBridge.transitionCampaign(
+            warband, officer, campaign, PillagerRuntime.recruitDefinitions(level, warband), now, 0L, false,
+            players = facts,
+            materializations = listOf(com.gerald.pillagercampaigns.engine.MaterializationResult(campaign.id.toString(), success)),
+            sequence = data.engineSequence,
+        )
+        data.engineSequence = transition.result.state.sequence
+        campaign.resumeState = null
+        campaign.materializeAttemptId = null
+        campaign.materializingUntilTick = 0L
+        data.markChanged()
     }
 
     fun resolveCampaign(
@@ -432,45 +326,8 @@ object PillagerCampaignEngine {
 
         val captain = data.officers[campaign.officerId]
         val warband = data.warbands[campaign.originWarbandId]
-        if (captain != null) applyCampaignOutcome(data, warband, campaign, captain, outcome, observedTick)
+        if (captain != null) applyCampaignOutcome(warband, campaign, captain, outcome, observedTick)
         data.markChanged()
-    }
-
-    fun recordCampaignVictory(data: PillagerWorldData, warbandId: UUID, observedTick: Long = -1L) {
-        data.warbands[warbandId]?.let { warband ->
-            warband.aggression = (warband.aggression - 1).coerceAtLeast(PillagerCampaignsConfig.minimumAggression.get())
-            if (observedTick >= 0L) warband.lastIntelTick = observedTick
-        }
-    }
-
-    fun recordCampaignLoss(data: PillagerWorldData, warbandId: UUID, observedTick: Long = -1L) {
-        data.warbands[warbandId]?.let { warband ->
-            warband.aggression = (warband.aggression + 1).coerceAtMost(PillagerCampaignsConfig.maximumAggression.get())
-            if (observedTick >= 0L) warband.lastIntelTick = observedTick
-        }
-    }
-
-    fun recordCombatObservation(data: PillagerWorldData, campaign: PillagerCampaign, preference: String, contribution: Double) {
-        data.warbands[campaign.originWarbandId]?.let { warband ->
-            val current = warband.preferences[preference] ?: 0.0
-            warband.preferences[preference] = FormulaicWarbandRules.updatePreference(current, contribution, PillagerCampaignsConfig.warbandLearningRate.get())
-        }
-        data.officers[campaign.officerId]?.let { captain ->
-            val current = captain.preferenceGraph[preference] ?: 0.0
-            captain.preferenceGraph[preference] = FormulaicWarbandRules.updatePreference(current, contribution, PillagerCampaignsConfig.captainLearningRate.get())
-        }
-        data.markChanged()
-    }
-
-    fun recordThreatObservation(data: PillagerWorldData, campaign: PillagerCampaign, entityType: String, observation: Double) {
-        if (entityType.isBlank()) return
-        data.warbands[campaign.originWarbandId]?.let { warband ->
-            val current = warband.empiricalThreat[entityType]
-                ?: campaign.memberThreat.values.average().takeIf { it.isFinite() && it > 0.0 }
-                ?: 1.0
-            warband.empiricalThreat[entityType] = FormulaicWarbandRules.updateThreat(current, observation, PillagerCampaignsConfig.threatLearningRate.get())
-            data.markChanged()
-        }
     }
 
     fun abortCampaignAfterPlayerKill(data: PillagerWorldData, campaignId: UUID, observedTick: Long = -1L) {
@@ -482,8 +339,14 @@ object PillagerCampaignEngine {
                 warband.nextRaidTick = maxOf(warband.nextRaidTick, warband.cooldownUntilTick)
             }
         }
-        startReturn(campaign, observedTick.coerceAtLeast(0L), CampaignOutcome.CAPTAIN_VICTORY, "captain_victory")
+        queueCampaignOutcome(campaign, CampaignOutcome.CAPTAIN_VICTORY, "captain_victory")
         data.markChanged()
+    }
+
+    fun queueCampaignOutcome(campaign: PillagerCampaign, outcome: CampaignOutcome, reason: String) {
+        if (campaign.state == CampaignState.RESOLVED) return
+        campaign.pendingEngineOutcome = outcome
+        campaign.pendingEngineOutcomeReason = reason
     }
 
     fun collapseFaction(data: PillagerWorldData, factionId: UUID) {
@@ -535,6 +398,12 @@ object PillagerCampaignEngine {
         return false
     }
 
+    internal fun materializationLeaseAction(alive: Int, now: Long, leaseUntil: Long): MaterializationLeaseAction = when {
+        alive >= MIN_ACTIVE_LIVE_MEMBERS -> MaterializationLeaseAction.SUCCEEDED
+        now >= leaseUntil -> MaterializationLeaseAction.FAILED
+        else -> MaterializationLeaseAction.WAIT
+    }
+
     private fun chooseAssignment(
         level: ServerLevel,
         players: List<ServerPlayer>,
@@ -555,29 +424,31 @@ object PillagerCampaignEngine {
             .toList()
         if (eligiblePlayers.isEmpty()) return null
         val captains = availableCaptains(data, warband, now).ifEmpty {
-            listOf(obtainOfficer(data, warband.factionId, warband.id, warband.aggression, now))
+            listOf(obtainOfficer(data, warband.factionId, warband.id, now))
         }
-        var best: Pair<PillagerOfficer, ServerPlayer>? = null
-        var bestScore = Int.MIN_VALUE
-        for (player in eligiblePlayers) {
-            val distance = CampaignMath.manhattan(warband.rallyChunkX, warband.rallyChunkZ, player.chunkPosition().x, player.chunkPosition().z)
-            for (captain in captains) {
-                val score = assignmentWeight(captain, player.uuid, distance, data.isPlayerProtected(player.uuid, now))
-                if (score > bestScore) {
-                    best = captain to player
-                    bestScore = score
-                }
-            }
+        val coreWarband = PillagerEngineBridge.coreWarband(warband)
+        val coreOfficers = captains.map { captain ->
+            com.gerald.pillagercampaigns.engine.OfficerState(
+                captain.id.toString(), captain.factionId.toString(), captain.homeWarbandId.toString(),
+                captain.preferenceGraph.toMutableMap(), captain.rank.ordinal + 1,
+                captain.campaignVictories, captain.campaignDefeats, captain.injuryOrRecoveryUntilTick,
+                captain.lastTargetPlayerId?.toString(),
+            )
         }
-        return best
-    }
-
-    internal fun assignmentWeight(captain: PillagerOfficer, targetPlayerId: UUID, distance: Int, isProtected: Boolean): Int {
-        if (captain.role != OfficerRole.CAPTAIN || captain.state == OfficerState.DEAD || isProtected) return Int.MIN_VALUE / 4
-        val grudge = if (captain.lastTargetPlayerId == targetPlayerId) CAPTAIN_GRUDGE_WEIGHT else 0
-        val rankBias = captain.rank.ordinal * 6
-        val recoveryDebt = if (captain.state == OfficerState.RECOVERING) 18 else 0
-        return grudge + rankBias + captain.campaignVictories * 5 - captain.campaignDefeats * 3 - distance * CAPTAIN_DISTANCE_WEIGHT - recoveryDebt
+        val corePlayers = eligiblePlayers.map { player ->
+            PlayerFact(
+                player.uuid.toString(),
+                com.gerald.pillagercampaigns.engine.ChunkPosition(level.dimension().location().toString(), player.chunkPosition().x, player.chunkPosition().z),
+                setOf(coreWarband.id),
+            )
+        }
+        val state = com.gerald.pillagercampaigns.engine.EngineState(
+            tick = now, warbands = linkedMapOf(coreWarband.id to coreWarband),
+            officers = coreOfficers.associateTo(linkedMapOf()) { it.id to it },
+        )
+        val assignment = com.gerald.pillagercampaigns.engine.WarbandEngine.chooseAssignment(state, coreWarband, corePlayers, coreOfficers) ?: return null
+        return captains.first { it.id.toString() == assignment.officerId } to
+            eligiblePlayers.first { it.uuid.toString() == assignment.playerId }
     }
 
     internal fun availableCaptains(data: PillagerWorldData, warband: PillagerWarband, now: Long): List<PillagerOfficer> {
@@ -599,51 +470,23 @@ object PillagerCampaignEngine {
         return baseDifficulty + captain.rank.ordinal + captain.promotionTier + (captain.campaignVictories / 2)
     }
 
-    internal fun pauseCampaignRecord(campaign: PillagerCampaign) {
-        campaign.resumeState = pausedResumeState(campaign.state)
-        campaign.state = CampaignState.PAUSED
-        campaign.materializeAttemptId = null
-        campaign.materializingUntilTick = 0L
-        campaign.squadMemberIds.clear()
-    }
-
-    internal fun pausedResumeState(state: CampaignState): CampaignState = when (state) {
-        CampaignState.ACTIVE, CampaignState.MATERIALIZING -> CampaignState.READY_TO_MATERIALIZE
-        CampaignState.PAUSED -> CampaignState.READY_TO_MATERIALIZE
-        else -> state
-    }
-
     internal fun isCampaignTarget(player: ServerPlayer): Boolean = isCampaignTargetGameMode(player.gameMode.gameModeForPlayer)
 
     internal fun isCampaignTargetGameMode(gameType: GameType): Boolean = gameType == GameType.SURVIVAL
 
-    internal fun pauseCampaignsForPlayer(server: MinecraftServer, data: PillagerWorldData, playerId: UUID) {
+    internal fun pauseCampaignsForPlayer(data: PillagerWorldData, playerId: UUID) {
         var changed = false
         data.campaigns.values
             .asSequence()
             .filter { it.targetPlayerId == playerId && it.state != CampaignState.RESOLVED && it.state != CampaignState.RETURNING }
             .forEach { campaign ->
-                val observedTick = server.overworld().gameTime
-                startReturn(campaign, observedTick, CampaignOutcome.ABORTED, "target_unavailable")
+                queueCampaignOutcome(campaign, CampaignOutcome.ABORTED, "target_unavailable")
                 changed = true
             }
         if (changed) data.markChanged()
     }
 
-    private fun pauseCampaign(level: ServerLevel, campaign: PillagerCampaign, data: PillagerWorldData) {
-        if (campaign.state == CampaignState.PAUSED || campaign.state == CampaignState.RESOLVED) return
-        PillagerRuntime.dismissCampaign(level, campaign.id, campaign.squadMemberIds)
-        pauseCampaignRecord(campaign)
-        data.markChanged()
-    }
-
-    private fun resumeCampaign(campaign: PillagerCampaign, data: PillagerWorldData) {
-        campaign.state = campaign.resumeState ?: CampaignState.TRAVELING
-        campaign.resumeState = null
-        data.markChanged()
-    }
-
-    private fun obtainOfficer(data: PillagerWorldData, factionId: UUID, homeWarbandId: UUID, baseDifficulty: Int, now: Long): PillagerOfficer {
+    private fun obtainOfficer(data: PillagerWorldData, factionId: UUID, homeWarbandId: UUID, now: Long): PillagerOfficer {
         val pooled = data.officers.values.firstOrNull {
             it.factionId == factionId &&
                 it.homeWarbandId == homeWarbandId &&
@@ -666,7 +509,6 @@ object PillagerCampaignEngine {
     }
 
     private fun applyCampaignOutcome(
-        data: PillagerWorldData,
         warband: PillagerWarband?,
         campaign: PillagerCampaign,
         captain: PillagerOfficer,
@@ -677,28 +519,20 @@ object PillagerCampaignEngine {
         captain.lastSeenTick = tick
         when (outcome) {
             CampaignOutcome.CAPTAIN_VICTORY -> {
-                captain.campaignVictories += 1
                 captain.kills += 1
                 captain.deathsInflicted += 1
                 captain.state = OfficerState.RECOVERING
-                captain.injuryOrRecoveryUntilTick = tick + CAPTAIN_SUCCESS_RECOVERY_TICKS
                 appendCaptainEvent(captain, NemesisEvent(tick, NemesisEventType.KILLED_PLAYER, playerId = campaign.targetPlayerId, warbandId = campaign.originWarbandId, campaignId = campaign.id, severity = "kill"))
                 appendCaptainEvent(captain, NemesisEvent(tick, NemesisEventType.LED_SUCCESSFUL_ASSAULT, playerId = campaign.targetPlayerId, warbandId = campaign.originWarbandId, campaignId = campaign.id, severity = "victory"))
-                recordCampaignVictory(data, campaign.originWarbandId, tick)
             }
             CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT -> {
-                captain.campaignDefeats += 1
                 captain.state = OfficerState.RECOVERING
-                captain.injuryOrRecoveryUntilTick = tick + CAPTAIN_RECOVERY_TICKS
                 appendCaptainEvent(captain, NemesisEvent(tick, NemesisEventType.LOST_CAMPAIGN, playerId = campaign.targetPlayerId, warbandId = campaign.originWarbandId, campaignId = campaign.id, severity = "defeat"))
                 appendCaptainEvent(captain, NemesisEvent(tick, NemesisEventType.SURVIVED_RETREAT, playerId = campaign.targetPlayerId, warbandId = campaign.originWarbandId, campaignId = campaign.id, severity = "survived"))
-                recordCampaignLoss(data, campaign.originWarbandId, tick)
             }
             CampaignOutcome.CAPTAIN_KILLED -> {
-                captain.campaignDefeats += 1
                 captain.state = OfficerState.DEAD
                 appendCaptainEvent(captain, NemesisEvent(tick, NemesisEventType.WAS_DEFEATED_BY_PLAYER, playerId = campaign.targetPlayerId, warbandId = campaign.originWarbandId, campaignId = campaign.id, severity = "death"))
-                recordCampaignLoss(data, campaign.originWarbandId, tick)
             }
             CampaignOutcome.WARBAND_COLLAPSE -> {
                 captain.state = OfficerState.DEAD

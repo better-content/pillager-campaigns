@@ -408,6 +408,8 @@ data class PillagerCampaign(
     val memberThreat: MutableMap<UUID, Double> = mutableMapOf(),
     val memberSnapshots: MutableList<CompoundTag> = mutableListOf(),
     var returnOutcome: CampaignOutcome? = null,
+    var pendingEngineOutcome: CampaignOutcome? = null,
+    var pendingEngineOutcomeReason: String? = null,
     var returnReason: String? = null,
     var returnStartedTick: Long = 0L,
     var returnAggressionDelta: Int = 0,
@@ -417,6 +419,10 @@ data class PillagerCampaign(
     var deficitExposure: Double = 0.0,
     var forageDebt: Double = 0.0,
     val lostAssetCaches: MutableList<LostAssetCache> = mutableListOf(),
+    var pendingCampaignDamage: Double = 0.0,
+    var pendingPlayerDamage: Double = 0.0,
+    var pendingEffectiveRange: Double = 0.0,
+    val pendingCasualtyManifestIds: MutableSet<String> = mutableSetOf(),
 ) {
     fun save(): CompoundTag = CompoundTag().also {
         it.putUUID("id", id)
@@ -452,6 +458,8 @@ data class PillagerCampaign(
         it.put("memberThreat", CompoundTag().also { values -> memberThreat.forEach { (id, threat) -> values.putDouble(id.toString(), threat) } })
         it.put("memberSnapshots", saveRecordList(memberSnapshots))
         returnOutcome?.let { outcome -> it.putString("returnOutcome", outcome.name) }
+        pendingEngineOutcome?.let { outcome -> it.putString("pendingEngineOutcome", outcome.name) }
+        pendingEngineOutcomeReason?.let { reason -> it.putString("pendingEngineOutcomeReason", reason) }
         returnReason?.let { reason -> it.putString("returnReason", reason) }
         it.putLong("returnStartedTick", returnStartedTick)
         it.putInt("returnAggressionDelta", returnAggressionDelta)
@@ -461,6 +469,10 @@ data class PillagerCampaign(
         it.putDouble("deficitExposure", deficitExposure.coerceAtLeast(0.0))
         it.putDouble("forageDebt", forageDebt.coerceAtLeast(0.0))
         it.put("lostAssetCaches", saveRecordList(lostAssetCaches.map(LostAssetCache::save)))
+        it.putDouble("pendingCampaignDamage", pendingCampaignDamage.coerceAtLeast(0.0))
+        it.putDouble("pendingPlayerDamage", pendingPlayerDamage.coerceAtLeast(0.0))
+        it.putDouble("pendingEffectiveRange", pendingEffectiveRange.coerceAtLeast(0.0))
+        it.put("pendingCasualtyManifestIds", ListTag().also { values -> pendingCasualtyManifestIds.forEach { id -> values.add(CompoundTag().also { entry -> entry.putString("id", id) }) } })
     }
 
     companion object {
@@ -505,6 +517,8 @@ data class PillagerCampaign(
             memberThreat = mutableMapOf<UUID, Double>().also { values -> if (tag.contains("memberThreat", Tag.TAG_COMPOUND.toInt())) tag.getCompound("memberThreat").allKeys.forEach { key -> runCatching { UUID.fromString(key) }.getOrNull()?.let { values[it] = tag.getCompound("memberThreat").getDouble(key) } } },
             memberSnapshots = mutableListOf<CompoundTag>().also { values -> if (tag.contains("memberSnapshots", Tag.TAG_LIST.toInt())) tag.getList("memberSnapshots", Tag.TAG_COMPOUND.toInt()).forEach { values += (it as CompoundTag).copy() } },
             returnOutcome = if (tag.contains("returnOutcome")) runCatching { CampaignOutcome.valueOf(tag.getString("returnOutcome")) }.getOrNull() else null,
+            pendingEngineOutcome = if (tag.contains("pendingEngineOutcome")) runCatching { CampaignOutcome.valueOf(tag.getString("pendingEngineOutcome")) }.getOrNull() else null,
+            pendingEngineOutcomeReason = if (tag.contains("pendingEngineOutcomeReason")) tag.getString("pendingEngineOutcomeReason") else null,
             returnReason = if (tag.contains("returnReason")) tag.getString("returnReason") else null,
             returnStartedTick = if (tag.contains("returnStartedTick")) tag.getLong("returnStartedTick") else 0L,
             returnAggressionDelta = if (tag.contains("returnAggressionDelta")) tag.getInt("returnAggressionDelta") else 0,
@@ -514,6 +528,14 @@ data class PillagerCampaign(
             deficitExposure = if (tag.contains("deficitExposure")) tag.getDouble("deficitExposure").coerceAtLeast(0.0) else 0.0,
             forageDebt = if (tag.contains("forageDebt")) tag.getDouble("forageDebt").coerceAtLeast(0.0) else 0.0,
             lostAssetCaches = mutableListOf<LostAssetCache>().also { values -> if (tag.contains("lostAssetCaches", Tag.TAG_LIST.toInt())) tag.getList("lostAssetCaches", Tag.TAG_COMPOUND.toInt()).forEach { values += LostAssetCache.load(it as CompoundTag) } },
+            pendingCampaignDamage = if (tag.contains("pendingCampaignDamage")) tag.getDouble("pendingCampaignDamage").coerceAtLeast(0.0) else 0.0,
+            pendingPlayerDamage = if (tag.contains("pendingPlayerDamage")) tag.getDouble("pendingPlayerDamage").coerceAtLeast(0.0) else 0.0,
+            pendingEffectiveRange = if (tag.contains("pendingEffectiveRange")) tag.getDouble("pendingEffectiveRange").coerceAtLeast(0.0) else 0.0,
+            pendingCasualtyManifestIds = mutableSetOf<String>().also { values ->
+                if (tag.contains("pendingCasualtyManifestIds", Tag.TAG_LIST.toInt())) tag.getList("pendingCasualtyManifestIds", Tag.TAG_COMPOUND.toInt()).forEach { raw ->
+                    (raw as CompoundTag).getString("id").takeIf(String::isNotBlank)?.let(values::add)
+                }
+            },
         )
     }
 }

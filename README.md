@@ -34,7 +34,7 @@ Common commands:
 
 ## Notes
 
-The pure engine owns economy, selection, manufacturing, campaign decisions, learning, geometry, and conservation. Forge supplies live registry/world facts and executes physical effects. The old parallel simulation has been removed, so runner and live play cannot silently evolve separate formulas.
+The pure engine owns economy, selection, manufacturing, campaign decisions, learning, geometry, logistics, return outcomes, and reconciliation. Forge supplies registry/world observations, physical combat facts, entity snapshots, and effect execution through one projection bridge. The persisted engine sequence also owns generated identities across dispatch and later lifecycle frames. The old parallel simulation has been removed, so runner and live play cannot silently evolve separate formulas.
 
 ## Community and support
 

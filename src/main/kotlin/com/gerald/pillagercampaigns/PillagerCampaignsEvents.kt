@@ -7,6 +7,7 @@ import com.gerald.pillagercampaigns.data.PillagerWorldData
 import com.gerald.pillagercampaigns.gametest.OpeningProgressionRuntimeValidation
 import com.gerald.pillagercampaigns.system.CampaignMath
 import com.gerald.pillagercampaigns.system.PillagerCampaignEngine
+import com.gerald.pillagercampaigns.system.PillagerEngineBridge
 import com.gerald.pillagercampaigns.system.PillagerDiscoveryCoordinator
 import com.gerald.pillagercampaigns.system.PillagerRuntime
 import com.gerald.pillagercampaigns.system.PillagerWarbandPresenceSystem
@@ -84,7 +85,7 @@ object PillagerCampaignsEvents {
     fun onPlayerLoggedOut(event: PlayerEvent.PlayerLoggedOutEvent) {
         val player = event.entity
         val level = player.level() as? ServerLevel ?: return
-        PillagerCampaignEngine.pauseCampaignsForPlayer(level.server, PillagerWorldData.get(level.server), player.uuid)
+        PillagerCampaignEngine.pauseCampaignsForPlayer(PillagerWorldData.get(level.server), player.uuid)
     }
 
     @SubscribeEvent
@@ -102,7 +103,7 @@ object PillagerCampaignsEvents {
         }
 
         if (!PillagerCampaignEngine.isCampaignTargetGameMode(next)) {
-            PillagerCampaignEngine.pauseCampaignsForPlayer(level.server, data, player.uuid)
+            PillagerCampaignEngine.pauseCampaignsForPlayer(data, player.uuid)
         }
     }
 
@@ -164,10 +165,15 @@ object PillagerCampaignsEvents {
         val campaigns = level.getEntitiesOfClass(Mob::class.java, box) { it.persistentData.hasUUID(PillagerRuntime.CAMPAIGN_TAG) }
             .map { it.persistentData.getUUID(PillagerRuntime.CAMPAIGN_TAG) }.distinct().mapNotNull(data.campaigns::get)
         campaigns.forEach { campaign ->
-            if (PillagerRuntime.snapshotCampaign(level, campaign) > 0 && campaign.state != CampaignState.RETURNING) {
-                campaign.state = CampaignState.READY_TO_MATERIALIZE
-                campaign.materializeAttemptId = null
-                campaign.materializingUntilTick = 0L
+            if (PillagerRuntime.snapshotCampaign(level, campaign) > 0) {
+                val warband = data.warbands[campaign.originWarbandId] ?: return@forEach
+                val transition = PillagerEngineBridge.transitionCampaign(
+                    warband, data.officers[campaign.officerId], campaign,
+                    PillagerRuntime.recruitDefinitions(level, warband), level.gameTime, 0L, true,
+                    snapshots = listOf(PillagerEngineBridge.snapshotResult(campaign)),
+                    sequence = data.engineSequence,
+                )
+                data.engineSequence = transition.result.state.sequence
             }
         }
         if (campaigns.isNotEmpty()) data.markChanged()
@@ -204,7 +210,7 @@ object PillagerCampaignsEvents {
 
         if (tag.hasUUID(PillagerRuntime.CAMPAIGN_TAG)) {
             data.campaigns[tag.getUUID(PillagerRuntime.CAMPAIGN_TAG)]?.let { campaign ->
-                PillagerCampaignEngine.pauseCampaignsForPlayer(level.server, data, campaign.targetPlayerId)
+                PillagerCampaignEngine.pauseCampaignsForPlayer(data, campaign.targetPlayerId)
             }
         }
 
@@ -282,14 +288,13 @@ object PillagerCampaignsEvents {
         if (!tag.hasUUID(PillagerRuntime.CAMPAIGN_TAG)) return
         val campaign = data.campaigns[tag.getUUID(PillagerRuntime.CAMPAIGN_TAG)] ?: return
         PillagerRuntime.dropCampaignCargo(mob, campaign)
-        val entityType = tag.getString(PillagerRuntime.ENTITY_TYPE_TAG)
-        val priorThreat = campaign.memberThreat[mob.uuid] ?: tag.getDouble(PillagerRuntime.THREAT_TAG)
-        PillagerCampaignEngine.recordThreatObservation(data, campaign, entityType, priorThreat.coerceAtLeast(1.0) * 1.35)
+        tag.getString(PillagerRuntime.MANIFEST_ID_TAG).takeIf(String::isNotBlank)?.let(campaign.pendingCasualtyManifestIds::add)
         campaign.memberEquipment.remove(mob.uuid)
         campaign.memberThreat.remove(mob.uuid)
         if (tag.getBoolean(PillagerRuntime.LEADER_TAG)) {
             if (!PillagerRuntime.promoteSuccessor(level, campaign.id, campaign.officerId)) {
-                PillagerCampaignEngine.resolveCampaign(data, campaign.id, observedTick = level.gameTime, outcome = CampaignOutcome.CAPTAIN_KILLED)
+                PillagerCampaignEngine.queueCampaignOutcome(campaign, CampaignOutcome.CAPTAIN_KILLED, "captain_killed")
+                data.markChanged()
             }
         } else if (campaign.state == CampaignState.ACTIVE) {
             val survivors = level.getEntitiesOfClass(Mob::class.java, mob.boundingBox.inflate(80.0)) { candidate ->
@@ -298,7 +303,8 @@ object PillagerCampaignsEvents {
                     candidate.isAlive
             }
             if (survivors.isEmpty()) {
-                PillagerCampaignEngine.resolveCampaign(data, campaign.id, observedTick = level.gameTime, outcome = CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT)
+                PillagerCampaignEngine.queueCampaignOutcome(campaign, CampaignOutcome.CAPTAIN_SURVIVED_DEFEAT, "squad_defeated")
+                data.markChanged()
             }
         }
     }
@@ -328,32 +334,12 @@ object PillagerCampaignsEvents {
             else -> null
         }
         if (playerId == campaign.targetPlayerId) {
-            campaign.lastCombatTick = level.gameTime
             val campaignDealtDamage = attacker?.persistentData?.hasUUID(PillagerRuntime.CAMPAIGN_TAG) == true
             val distance = event.source.entity?.distanceTo(victim)?.toDouble() ?: 0.0
-            val preference = when {
-                campaignDealtDamage && distance > 8.0 -> "range"
-                campaignDealtDamage -> "damage"
-                else -> "durability"
-            }
-            PillagerCampaignEngine.recordCombatObservation(PillagerWorldData.get(level.server), campaign, preference, 1.0)
-            val campaignMob = when {
-                attacker?.persistentData?.hasUUID(PillagerRuntime.CAMPAIGN_TAG) == true -> attacker
-                victim is Mob && victim.persistentData.hasUUID(PillagerRuntime.CAMPAIGN_TAG) -> victim
-                else -> null
-            }
-            if (campaignMob != null) {
-                val currentThreat = campaign.memberThreat[campaignMob.uuid] ?: campaignMob.persistentData.getDouble(PillagerRuntime.THREAT_TAG)
-                val observation = if (campaignDealtDamage) {
-                    (currentThreat - event.amount / 20.0).coerceAtLeast(1.0)
-                } else {
-                    currentThreat + event.amount / 5.0
-                }
-                PillagerCampaignEngine.recordThreatObservation(
-                    PillagerWorldData.get(level.server), campaign,
-                    campaignMob.persistentData.getString(PillagerRuntime.ENTITY_TYPE_TAG), observation,
-                )
-            }
+            if (campaignDealtDamage) campaign.pendingCampaignDamage += event.amount.toDouble()
+            else campaign.pendingPlayerDamage += event.amount.toDouble()
+            campaign.pendingEffectiveRange = maxOf(campaign.pendingEffectiveRange, distance)
+            PillagerWorldData.get(level.server).markChanged()
         }
     }
 

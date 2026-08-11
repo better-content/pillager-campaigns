@@ -90,16 +90,28 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
                 scenario.rules,
             )
             record(result)
-            val dematerializations = result.effects.filter { it.kind == EffectKind.CAPTURE_SNAPSHOTS }
-                .mapNotNull { effect -> effect.campaignId?.let(EngineCommand::Dematerialize) }
-            if (dematerializations.isNotEmpty()) {
+            val snapshots = result.effects.filter { it.kind == EffectKind.CAPTURE_SNAPSHOTS }
+                .mapNotNull { effect ->
+                    val campaign = effect.campaignId?.let(scenario.state.campaigns::get) ?: return@mapNotNull null
+                    CampaignSnapshotResult(
+                        campaign.id,
+                        campaign.position,
+                        campaign.members.map { member ->
+                            MemberSnapshot(
+                                member.id, member.healthFraction, member.experience,
+                                member.equipment, member.cargo.toMap(),
+                            )
+                        },
+                    )
+                }
+            if (snapshots.isNotEmpty()) {
                 // The runner's bounded physical adapter treats the emitted member list as
-                // the captured snapshot and acknowledges removal immediately. The exact
-                // abstract return/reconciliation still occurs in the engine afterward.
+                // the captured snapshot and acknowledges removal immediately through the
+                // same adapter fact consumed by Forge.
                 record(
                     WarbandEngine.transition(
                         scenario.state,
-                        EngineFrame(0L, scenario.players, commands = dematerializations),
+                        EngineFrame(0L, scenario.players, snapshots = snapshots),
                         scenario.catalog,
                         scenario.rules,
                     ),

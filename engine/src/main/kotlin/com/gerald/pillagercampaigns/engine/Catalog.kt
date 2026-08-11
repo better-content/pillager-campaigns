@@ -110,6 +110,7 @@ data class CombatObservation(
     val routeConfidence: Double,
     val cohesion: Double,
     val casualties: Set<String> = emptySet(),
+    val applyHealthDamage: Boolean = true,
 )
 
 @Serializable
@@ -117,6 +118,38 @@ data class MaterializationResult(
     val campaignId: String,
     val success: Boolean,
     val physicalMemberIds: Set<String> = emptySet(),
+)
+
+/**
+ * Runtime-neutral result of capturing a physical campaign member. Adapters
+ * translate their native entity/item representation into the canonical
+ * manifest before acknowledging dematerialization.
+ */
+@Serializable
+data class MemberSnapshot(
+    val memberId: String,
+    val healthFraction: Double,
+    val experience: Double = 0.0,
+    val equipment: EquipmentManifest? = null,
+    val cargo: Map<String, Int> = emptyMap(),
+)
+
+@Serializable
+data class CampaignSnapshotResult(
+    val campaignId: String,
+    val position: ChunkPosition,
+    val members: List<MemberSnapshot>,
+)
+
+@Serializable
+enum class CampaignOutcomeKind { CAPTAIN_VICTORY, SURVIVING_DEFEAT, CAPTAIN_KILLED, WARBAND_COLLAPSE, ABORTED }
+
+/** Outcome facts originate in a physical adapter; their consequences do not. */
+@Serializable
+data class CampaignOutcomeObservation(
+    val campaignId: String,
+    val outcome: CampaignOutcomeKind,
+    val reason: String,
 )
 
 @Serializable
@@ -128,14 +161,18 @@ data class EngineFrame(
     val players: List<PlayerFact> = emptyList(),
     val combat: List<CombatObservation> = emptyList(),
     val materializations: List<MaterializationResult> = emptyList(),
+    val snapshots: List<CampaignSnapshotResult> = emptyList(),
+    val outcomes: List<CampaignOutcomeObservation> = emptyList(),
     val physicalPositions: List<PositionObservation> = emptyList(),
     val terrain: List<TerrainObservation> = emptyList(),
     val commands: List<EngineCommand> = emptyList(),
+    val advanceEconomy: Boolean = true,
+    val allowAutomaticDispatch: Boolean = true,
 )
 
 @Serializable
 sealed interface EngineCommand {
-    @Serializable data class Dispatch(val warbandId: String, val playerId: String) : EngineCommand
+    @Serializable data class Dispatch(val warbandId: String, val playerId: String, val officerId: String? = null) : EngineCommand
     @Serializable data class BeginReturn(val campaignId: String, val reason: String, val aggressionDelta: Int = 0) : EngineCommand
     @Serializable data class Dematerialize(val campaignId: String) : EngineCommand
     @Serializable data class Manufacture(val warbandId: String, val count: Int = 1) : EngineCommand
