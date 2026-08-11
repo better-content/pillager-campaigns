@@ -25,7 +25,6 @@ import net.minecraft.world.entity.Mob
 import net.minecraft.world.entity.ai.attributes.Attributes
 import net.minecraft.world.entity.item.ItemEntity
 import net.minecraft.world.item.ItemStack
-import net.minecraft.world.item.ArmorItem
 import net.minecraft.world.item.ProjectileWeaponItem
 import net.minecraft.world.item.Items
 import net.minecraft.world.level.levelgen.Heightmap
@@ -298,8 +297,7 @@ object PillagerRuntime {
                 campaign.memberThreat[mob.uuid] = member.threat
                 member.equipment?.let { equipmentTag ->
                     val stack = ItemStack.of(equipmentTag)
-                    val slot = (stack.item as? ArmorItem)?.equipmentSlot ?: EquipmentSlot.MAINHAND
-                    mob.setItemSlot(slot, stack)
+                    mob.setItemSlot(TinkersArmoryOptimizer.equipmentSlot(stack), stack)
                     campaign.memberEquipment[mob.uuid] = equipmentTag.copy()
                 }
             } else mob.discard()

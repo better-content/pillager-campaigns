@@ -12,14 +12,16 @@ import com.gerald.pillagercampaigns.engine.WarbandEngine
 import com.gerald.pillagercampaigns.engine.WarbandState
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.server.MinecraftServer
+import net.minecraft.world.entity.EquipmentSlot
 import net.minecraft.world.item.ItemStack
-import net.minecraft.world.item.ProjectileWeaponItem
 import net.minecraftforge.registries.ForgeRegistries
+import slimeknights.tconstruct.common.TinkerTags
 import slimeknights.tconstruct.library.materials.MaterialRegistry
 import slimeknights.tconstruct.library.materials.definition.IMaterial
 import slimeknights.tconstruct.library.materials.definition.MaterialVariant
 import slimeknights.tconstruct.library.recipe.TinkerRecipeTypes
 import slimeknights.tconstruct.library.tools.definition.module.material.ToolPartsHook
+import slimeknights.tconstruct.library.tools.definition.module.material.ToolMaterialHook
 import slimeknights.tconstruct.library.tools.item.IModifiable
 import slimeknights.tconstruct.library.tools.nbt.MaterialNBT
 import slimeknights.tconstruct.library.tools.nbt.ToolStack
@@ -100,13 +102,21 @@ object TinkersArmoryOptimizer {
             val definition = modifiable.toolDefinition
             if (!definition.hasMaterials() || !definition.isDataLoaded) return@mapNotNull null
             val parts = ToolPartsHook.parts(definition)
-            if (parts.isEmpty()) return@mapNotNull null
+            val statTypes = ToolMaterialHook.stats(definition)
+            if (statTypes.isEmpty()) return@mapNotNull null
             val available = warband.materialLedger.toMutableMap()
             val cost = linkedMapOf<String, Double>()
-            val chosen = parts.mapIndexedNotNull { index, part ->
-                val partId = ForgeRegistries.ITEMS.getKey(part.asItem())?.toString() ?: return@mapIndexedNotNull null
-                val units = partCosts[partId]?.toDouble() ?: return@mapIndexedNotNull null
-                val compatible = materials.filter { part.canUseMaterial(it.identifier) }.mapTo(linkedSetOf()) { it.identifier.toString() }
+            val chosen = statTypes.mapIndexedNotNull { index, statType ->
+                val part = parts.getOrNull(index)
+                val partId = part?.let { ForgeRegistries.ITEMS.getKey(it.asItem())?.toString() }
+                // Material-stat-only equipment (notably armor) has no Part Builder
+                // recipe. Each functional material contribution is one ledger unit;
+                // concrete part recipes override that with their live recipe cost.
+                val units = partId?.let(partCosts::get)?.toDouble() ?: 1.0
+                val compatible = materials.filter { material ->
+                    part?.canUseMaterial(material.identifier)
+                        ?: MaterialRegistry.getInstance().getAllStats(material.identifier).any { it.identifier == statType }
+                }.mapTo(linkedSetOf()) { it.identifier.toString() }
                 WarbandEngine.choosePartMaterial(
                     engineState, core, materialDefinitions.values, compatible, available, units, index,
                 )?.let { selected -> materials.firstOrNull { it.identifier.toString() == selected.id } }
@@ -116,24 +126,14 @@ object TinkersArmoryOptimizer {
                         cost[id] = cost.getOrDefault(id, 0.0) + units
                     }?.let(MaterialVariant::of)
             }
-            if (chosen.size != parts.size || cost.isEmpty()) return@mapNotNull null
+            if (chosen.size != statTypes.size || cost.isEmpty()) return@mapNotNull null
             val tool = runCatching { ToolStack.createTool(item, definition, MaterialNBT(chosen)).also { it.rebuildStats() } }.getOrNull() ?: return@mapNotNull null
-            val stats = tool.stats
-            val attributes = CapabilityVector(
-                durability = stats.get(ToolStats.DURABILITY).toDouble() / 1000.0,
-                damage = stats.get(ToolStats.ATTACK_DAMAGE).toDouble() / 10.0,
-                mobility = stats.get(ToolStats.ATTACK_SPEED).toDouble() / 4.0,
-                range = (stats.get(ToolStats.VELOCITY).toDouble() + stats.get(ToolStats.DRAW_SPEED).toDouble()) / 4.0,
-            )
+            val stack = tool.createStack()
+            val attributes = capabilities(tool, stack)
             val itemId = ForgeRegistries.ITEMS.getKey(item)?.toString() ?: return@mapNotNull null
             val formulation = chosen.map { it.id.toString() }
             val id = "$itemId|${formulation.joinToString(",")}"
-            val actions = when {
-                attributes.range > 0.0 -> setOf("ranged")
-                attributes.damage > 0.0 -> setOf("melee")
-                else -> emptySet()
-            }
-            LiveEquipmentCandidate(EquipmentDefinition(id, formulation, attributes, cost, actions), tool.createStack())
+            LiveEquipmentCandidate(EquipmentDefinition(id, formulation, attributes, cost, actions(stack)), stack)
         }.sortedBy { it.definition.id }.toList()
     }
 
@@ -152,21 +152,44 @@ object TinkersArmoryOptimizer {
 
     internal fun manifest(id: String, stack: ItemStack): EquipmentManifest {
         val toolStats = runCatching { ToolStack.from(stack).stats }.getOrNull()
-        val capabilities = if (toolStats == null) CapabilityVector() else CapabilityVector(
-            durability = toolStats.get(ToolStats.DURABILITY).toDouble() / 1000.0,
-            damage = toolStats.get(ToolStats.ATTACK_DAMAGE).toDouble() / 10.0,
-            mobility = toolStats.get(ToolStats.ATTACK_SPEED).toDouble() / 4.0,
-            range = (toolStats.get(ToolStats.VELOCITY).toDouble() + toolStats.get(ToolStats.DRAW_SPEED).toDouble()) / 4.0,
-        )
-        val ranged = stack.item is ProjectileWeaponItem || capabilities.range > 0.0
-        val actions = buildSet {
-            if (ranged) add("ranged")
-            if (capabilities.damage > 0.0 || !ranged) add("melee")
-        }
+        val capabilities = toolStats?.let { capabilities(ToolStack.from(stack), stack) } ?: CapabilityVector()
         val itemId = ForgeRegistries.ITEMS.getKey(stack.item)?.toString().orEmpty()
         val formulation = stack.tag?.getString(FORMULATION_TAG)?.split(',')?.filter(String::isNotBlank).orEmpty()
         val durability = if (stack.isDamageableItem) 1.0 - stack.damageValue.toDouble() / stack.maxDamage.coerceAtLeast(1) else 1.0
-        return EquipmentManifest(id, itemId, formulation, cost(stack), capabilities, actions, durability.coerceIn(0.0, 1.0))
+        return EquipmentManifest(id, itemId, formulation, cost(stack), capabilities, actions(stack), durability.coerceIn(0.0, 1.0))
+    }
+
+    /** TCon's own functional tags are authoritative; numeric ranged defaults are not item semantics. */
+    internal fun actions(stack: ItemStack): Set<String> = buildSet {
+        if (stack.`is`(TinkerTags.Items.MELEE)) add("melee")
+        if (stack.`is`(TinkerTags.Items.RANGED) || stack.`is`(TinkerTags.Items.AMMO)) add("ranged")
+        if (stack.`is`(TinkerTags.Items.ARMOR) || stack.`is`(TinkerTags.Items.SHIELDS)) add("defense")
+        if (stack.`is`(TinkerTags.Items.HARVEST) || stack.`is`(TinkerTags.Items.FISHING_RODS)) add("utility")
+    }
+
+    internal fun equipmentSlot(stack: ItemStack): EquipmentSlot = when {
+        stack.`is`(TinkerTags.Items.HELMETS) -> EquipmentSlot.HEAD
+        stack.`is`(TinkerTags.Items.CHESTPLATES) -> EquipmentSlot.CHEST
+        stack.`is`(TinkerTags.Items.LEGGINGS) -> EquipmentSlot.LEGS
+        stack.`is`(TinkerTags.Items.BOOTS) -> EquipmentSlot.FEET
+        stack.`is`(TinkerTags.Items.SHIELDS) -> EquipmentSlot.OFFHAND
+        else -> EquipmentSlot.MAINHAND
+    }
+
+    private fun capabilities(tool: ToolStack, stack: ItemStack): CapabilityVector {
+        val stats = tool.stats
+        val ranged = stack.`is`(TinkerTags.Items.RANGED) || stack.`is`(TinkerTags.Items.AMMO)
+        return CapabilityVector(
+            durability = stats.get(ToolStats.DURABILITY).toDouble() / 1000.0 +
+                stats.get(ToolStats.ARMOR).toDouble() / 10.0 + stats.get(ToolStats.ARMOR_TOUGHNESS).toDouble() / 10.0 +
+                stats.get(ToolStats.BLOCK_AMOUNT).toDouble() / 10.0,
+            damage = stats.get(ToolStats.ATTACK_DAMAGE).toDouble() / 10.0 +
+                stats.get(ToolStats.PROJECTILE_DAMAGE).toDouble() / 10.0,
+            mobility = stats.get(ToolStats.ATTACK_SPEED).toDouble() / 4.0 + stats.get(ToolStats.MINING_SPEED).toDouble() / 10.0,
+            range = if (ranged) (stats.get(ToolStats.VELOCITY).toDouble() + stats.get(ToolStats.DRAW_SPEED).toDouble()) / 4.0 else 0.0,
+            control = stats.get(ToolStats.ACCURACY).toDouble() + stats.get(ToolStats.BLOCK_ANGLE).toDouble() / 180.0 +
+                stats.get(ToolStats.KNOCKBACK_RESISTANCE).toDouble(),
+        )
     }
 
     private fun engineWarband(warband: PillagerWarband) = PillagerEngineBridge.coreWarband(warband)

@@ -175,7 +175,7 @@ class BalanceExplorer(private val json: Json = Json { prettyPrint = true; encode
         val equipment = mature.minByOrNull(ExperimentSummary::equipmentCoverage)
         if (equipment != null) findings += BalanceFinding(
             5, "Equipment expression",
-            "The weakest mature cell equips ${percent(equipment.equipmentCoverage)} of dispatched members while retaining ${equipment.armoryItems} armory items.",
+            "The weakest mature cell equips ${percent(equipment.equipmentCoverage)} of dispatched members while retaining ${equipment.armoryItems} armory items. Across mature cells the live functional mix is ${mature.flatMap { it.armamentActionCounts.entries }.groupingBy { it.key }.fold(0) { total, entry -> total + entry.value }.toSortedMap()}, and mean environment/recruit-weighted armament utility spans ${decimal(mature.minOf { it.meanArmamentUtility })}–${decimal(mature.maxOf { it.meanArmamentUtility })}.",
             mature.sortedBy(ExperimentSummary::equipmentCoverage).take(3).map(ExperimentSummary::name),
             "Keep capability-gain and action-compatibility assignment; tune manufacturing throughput and wear before changing selection utility.",
             "Aggressive stock rotation can erase the identity created by material preferences.", "medium",

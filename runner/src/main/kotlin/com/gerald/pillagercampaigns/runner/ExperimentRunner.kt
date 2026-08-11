@@ -26,6 +26,8 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
         val returnReasons = linkedMapOf<String, Int>()
         val extractedMaterials = linkedMapOf<String, Int>()
         val manufacturedEquipment = linkedMapOf<String, Int>()
+        val armamentActions = linkedMapOf<String, Int>()
+        val armamentUtilities = mutableListOf<Double>()
         val supplySatisfaction = mutableListOf<Double>()
         var resourcesAcquired = 0
         var resourcesConsumed = 0
@@ -111,6 +113,14 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
                     totalMembers += campaign.members.size
                     equippedMembers += campaign.members.count { it.equipment != null }
                     recruitSequence += campaign.members.map(MemberManifest::recruitId)
+                    val warband = scenario.state.warbands[campaign.warbandId]
+                    val officer = scenario.state.officers[campaign.officerId]
+                    if (warband != null) campaign.members.mapNotNull(MemberManifest::equipment).forEach { equipment ->
+                        equipment.supportedActions.forEach { action -> armamentActions[action] = armamentActions.getOrDefault(action, 0) + 1 }
+                        armamentUtilities += scenario.rules.capabilityUtility(
+                            equipment.capabilities, scenario.rules.armamentPreferences(warband, officer),
+                        )
+                    }
                 }
                 campaign.members.forEach { member ->
                     if (seenMembers.add(member.id)) recruitCounts[member.recruitId] = recruitCounts.getOrDefault(member.recruitId, 0) + 1
@@ -163,6 +173,8 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
                 scenario.state.campaigns.values.map { it.route.size.toDouble() }.averageDoublesOrZero(),
                 (warbands.flatMap { it.armory } + scenario.state.campaigns.values.flatMap { it.members }.mapNotNull { it.equipment })
                     .map { it.durabilityFraction }.averageDoublesOrOne(),
+                armamentActions,
+                armamentUtilities.averageDoublesOrZero(),
             ),
             trace,
         )

@@ -14,6 +14,7 @@ import com.gerald.pillagercampaigns.data.PresenceMaterializationResult
 import com.gerald.pillagercampaigns.data.RallyPresenceState
 import com.gerald.pillagercampaigns.engine.EngineCatalog
 import com.gerald.pillagercampaigns.engine.EnvironmentTraits
+import com.gerald.pillagercampaigns.engine.MaterialDefinition
 import com.gerald.pillagercampaigns.system.PillagerCampaignEngine
 import com.gerald.pillagercampaigns.system.PillagerRuntime
 import com.gerald.pillagercampaigns.system.PillagerWarbandPresenceSystem
@@ -71,7 +72,12 @@ object PillagerCampaignsGameTests {
         player.moveTo(playerPos.x + .5, playerPos.y.toDouble(), playerPos.z + .5)
         val minimum = PillagerRuntime.minimumRecruitThreat(level, warband)
         helper.assertTrue(minimum != null && minimum > 0.0, "live recruit catalogue should expose a minimum threat")
-        warband.armory += ItemStack(Items.CROSSBOW).save(net.minecraft.nbt.CompoundTag())
+        TinkersArmoryOptimizer.materialDefinitions(warband).forEach { warband.materialLedger[it.id] = 10_000.0 }
+        val liveArmament = TinkersArmoryOptimizer.liveEquipmentCandidates(warband, level.server)
+            .firstOrNull { TinkersArmoryOptimizer.equipmentSlot(it.stack) != net.minecraft.world.entity.EquipmentSlot.MAINHAND }
+            ?: TinkersArmoryOptimizer.liveEquipmentCandidates(warband, level.server).firstOrNull()
+        helper.assertTrue(liveArmament != null, "a live TCon armament must be formulable")
+        warband.armory += TinkersArmoryOptimizer.realize(warband, liveArmament!!, consume = false)!!.save(net.minecraft.nbt.CompoundTag())
         val planned = PillagerRuntime.planCampaignSquad(level, warband, officer, minimum!!, 42L)
         helper.assertTrue(planned.isNotEmpty(), "authoritative engine should persist an affordable squad manifest")
         planned.first().cargo["minecraft:bread"] = 3
@@ -94,9 +100,12 @@ object PillagerCampaignsGameTests {
         helper.assertTrue(spawned.isNotEmpty(), "minimum affordable campaign should materialize a live candidate")
         val materializedTypes = spawned.mapNotNull { id -> (level.getEntity(id) as? net.minecraft.world.entity.Mob)?.let { ForgeRegistries.ENTITY_TYPES.getKey(it.type)?.toString() } }
         helper.assertTrue(materializedTypes == planned.map { it.recruitId.toString() }, "Forge must materialize the exact engine-selected recruit manifest")
-        val expectedEquipment = planned.mapNotNull { it.equipment }.size
-        val actualEquipment = spawned.mapNotNull { level.getEntity(it) as? net.minecraft.world.entity.Mob }.count { !it.mainHandItem.isEmpty }
-        helper.assertTrue(actualEquipment == expectedEquipment, "Forge must materialize the exact engine-selected equipment count")
+        planned.zip(spawned).forEach { (member, entityId) -> member.equipment?.let { equipment ->
+            val expected = ItemStack.of(equipment)
+            val mob = level.getEntity(entityId) as net.minecraft.world.entity.Mob
+            val actual = mob.getItemBySlot(TinkersArmoryOptimizer.equipmentSlot(expected))
+            helper.assertTrue(ItemStack.isSameItemSameTags(expected, actual), "Forge must materialize the exact TCon formulation in its functional equipment slot")
+        } }
         helper.assertTrue(campaign.squadMemberIds.isNotEmpty(), "minimum campaign should contain a real recruit")
         helper.assertTrue(campaign.memberThreat.values.sum() > 0.0, "materialized recruit should carry exact threat")
         val originalIds = campaign.squadMemberIds.toSet()
@@ -129,7 +138,21 @@ object PillagerCampaignsGameTests {
         val materials = TinkersArmoryOptimizer.materialDefinitions(warband)
         materials.forEach { warband.materialLedger[it.id] = 10_000.0 }
         val recruits = PillagerRuntime.recruitDefinitions(level, warband)
-        val equipment = TinkersArmoryOptimizer.liveEquipmentCandidates(warband, level.server).map { it.definition }
+        val equipmentCandidates = buildList {
+            addAll(TinkersArmoryOptimizer.liveEquipmentCandidates(warband, level.server))
+            // The pure runner consumes a static registry boundary while live Forge
+            // reformulates from its changing ledger. Sample every observed material
+            // and natural three-material ledger window so the static boundary
+            // contains the same formulations the runtime can actually derive.
+            (materials.map { listOf(it.id) } + materials.map(MaterialDefinition::id).chunked(3)).forEach { supply ->
+                warband.materialLedger.clear()
+                supply.forEach { warband.materialLedger[it] = 10_000.0 }
+                addAll(TinkersArmoryOptimizer.liveEquipmentCandidates(warband, level.server))
+            }
+        }.distinctBy { it.definition.id }.sortedBy { it.definition.id }
+        warband.materialLedger.clear()
+        materials.forEach { warband.materialLedger[it.id] = 10_000.0 }
+        val equipment = equipmentCandidates.map { it.definition }
         val resources = WarbandResourceCatalog.definitions()
         val environments = listOf(EnvironmentTraits()) + WarbandFormulaData.traitWeights.toSortedMap().values.map { delta ->
             EnvironmentTraits(
@@ -143,6 +166,15 @@ object PillagerCampaignsGameTests {
         helper.assertTrue(catalog.recruits.isNotEmpty(), "snapshot must contain the live recruit tag")
         helper.assertTrue(catalog.materials.isNotEmpty(), "snapshot must contain live TCon materials")
         helper.assertTrue(catalog.equipment.isNotEmpty(), "snapshot must contain legal live TCon formulations")
+        val actions = catalog.equipment.flatMapTo(linkedSetOf()) { it.actions }
+        helper.assertTrue(actions.containsAll(setOf("melee", "ranged", "defense", "utility")), "live TCon formulations must expose melee, ranged, defensive, and utility functions")
+        helper.assertTrue(equipment.any { definition ->
+            val candidateStack = equipmentCandidates.firstOrNull { it.definition.id == definition.id }?.stack ?: return@any false
+            TinkersArmoryOptimizer.equipmentSlot(candidateStack) in setOf(
+                net.minecraft.world.entity.EquipmentSlot.HEAD, net.minecraft.world.entity.EquipmentSlot.CHEST,
+                net.minecraft.world.entity.EquipmentSlot.LEGS, net.minecraft.world.entity.EquipmentSlot.FEET,
+            )
+        }, "live catalog must contain wearable TCon armor")
         helper.assertTrue(catalog.resources.any { it.unitsPerItem.sustenance > 0.0 }, "snapshot must contain edible logistics resources")
         helper.assertTrue(catalog.resources.any { it.unitsPerItem.munitions > 0.0 }, "snapshot must contain ammunition resources")
         helper.assertTrue(catalog.resources.any { it.unitsPerItem.maintenance > 0.0 }, "snapshot must contain maintenance resources")

@@ -110,9 +110,10 @@ object WarbandEngine {
             val equipmentIndex = warband.armory.withIndex().asSequence()
                 .filter { (_, item) -> rules.equipmentSupportsRecruit(item, recruit) }
                 .maxWithOrNull(compareBy<IndexedValue<EquipmentManifest>> { (_, item) ->
-                    item.capabilities.dot(preferences) + item.capabilities.dot(recruit.capabilities) * 0.25 +
+                    rules.capabilityUtility(item.capabilities, preferences) +
+                        rules.capabilityUtility(item.capabilities, recruit.capabilities) * 0.25 +
                         item.durabilityFraction * (0.1 + preferences.durability.coerceAtLeast(0.0)) +
-                        item.supportedActions.sumOf { action -> 0.35 / (1.0 + assignedActions.getOrDefault(action, 0)) }
+                        item.supportedActions.sumOf { action -> 1.25 / (1.0 + assignedActions.getOrDefault(action, 0)) }
                 }.thenByDescending { it.value.id })?.index
             val equipment = equipmentIndex?.let(warband.armory::removeAt)
             equipment?.supportedActions?.forEach { action -> assignedActions[action] = assignedActions.getOrDefault(action, 0) + 1 }
@@ -135,9 +136,27 @@ object WarbandEngine {
             .maxWithOrNull(compareBy<MaterialDefinition> {
                 it.tier * (warband.environment.mineralPotential + warband.environment.exoticPotential * it.tier) +
                     it.capabilities.dot(preferences(warband)) -
-                    EcologyMath.repetitionPenalty(warband.selectionMemory.materials, it.id, rules.diversityWeight)
+                    EcologyMath.repetitionPenalty(warband.selectionMemory.materials, it.id, rules.diversityWeight) +
+                    armamentMaterialDemand(warband, it.id, catalog) * 3.0
             }.thenByDescending { deterministicTie(warband.id, it.id, state.sequence) })
     }
+
+    /** Marginal progress one extracted unit makes toward functional armament. */
+    fun armamentMaterialDemand(warband: WarbandState, materialId: String, catalog: EngineCatalog): Double =
+        catalog.equipment.sumOf { definition ->
+            val required = definition.cost[materialId]?.takeIf { it > EPSILON } ?: return@sumOf 0.0
+            val available = warband.materialLedger.getOrDefault(materialId, 0.0)
+            val progress = ((available + 1.0) / required).coerceAtMost(1.0) - (available / required).coerceAtMost(1.0)
+            if (progress <= EPSILON) return@sumOf 0.0
+            val otherCosts = definition.cost.filterKeys { it != materialId }
+            val otherReadiness = if (otherCosts.isEmpty()) 1.0 else otherCosts.entries.map { (id, amount) ->
+                (warband.materialLedger.getOrDefault(id, 0.0) / amount.coerceAtLeast(EPSILON)).coerceIn(0.0, 1.0)
+            }.average()
+            val functionalNeed = definition.actions.map { action ->
+                1.0 / (1.0 + warband.armory.count { action in it.supportedActions })
+            }.average().takeIf(Double::isFinite) ?: 0.5
+            progress * (0.5 + otherReadiness) * (1.0 + functionalNeed)
+        }
 
     fun chooseEquipment(
         state: EngineState,
@@ -152,7 +171,10 @@ object WarbandEngine {
                 // functional maximum wins without an invented cost-efficiency curve.
                 val stockCoverage = warband.armory.count { it.definitionId == definition.id }.toDouble() /
                     warband.armory.size.coerceAtLeast(1)
-                definition.capabilities.dot(preferences(warband)) -
+                rules.capabilityUtility(definition.capabilities, rules.armamentPreferences(warband, null)) +
+                    definition.actions.sumOf { action ->
+                        0.75 / (1.0 + warband.armory.count { action in it.supportedActions })
+                    } -
                     EcologyMath.repetitionPenalty(warband.selectionMemory.equipment, definition.id, rules.diversityWeight) -
                     stockCoverage * rules.diversityWeight
             }.thenByDescending { deterministicTie(warband.id, it.id, state.sequence) })

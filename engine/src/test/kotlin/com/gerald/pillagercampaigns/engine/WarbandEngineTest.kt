@@ -182,6 +182,18 @@ class WarbandEngineTest {
         assertFailsWith<IllegalArgumentException> { WarbandEngine.validate(state, catalog, rules) }
     }
 
+    @Test fun `extraction values marginal progress toward missing armament materials`() {
+        val state = state()
+        val warband = state.warbands.getValue("warband")
+        warband.materialLedger.clear()
+        warband.environment = EnvironmentTraits(mineralPotential = 0.5, exoticPotential = 0.0)
+        val logisticalCatalog = catalog.copy(
+            materials = listOf(MaterialDefinition("irrelevant", 2, 0.0), MaterialDefinition("needed", 1, 0.0)),
+            equipment = listOf(EquipmentDefinition("shield", listOf("core"), CapabilityVector(durability = 2.0), mapOf("needed" to 1.0), setOf("defense"))),
+        )
+        assertEquals("needed", WarbandEngine.chooseMaterial(state, warband, logisticalCatalog, rules)?.id)
+    }
+
     @Test fun `catalog and frames fail closed`() {
         assertFailsWith<IllegalArgumentException> { WarbandEngine.transition(state(), EngineFrame(-1L), catalog, rules) }
         assertFailsWith<IllegalArgumentException> { WarbandEngine.transition(state(), EngineFrame(0L), catalog.copy(revision = ""), rules) }

@@ -17,6 +17,8 @@ import com.gerald.pillagercampaigns.engine.WarbandEngine
 import com.gerald.pillagercampaigns.engine.WarbandRules
 import com.gerald.pillagercampaigns.engine.WarbandState
 import net.minecraft.nbt.CompoundTag
+import net.minecraft.core.registries.Registries
+import net.minecraft.resources.ResourceKey
 import net.minecraft.server.MinecraftServer
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.world.entity.Mob
@@ -56,6 +58,8 @@ object PillagerEngineBridge {
             if (elapsed == 0L) return@forEach
             warband.lastEconomyTick = now
             val candidates = TinkersArmoryOptimizer.liveEquipmentCandidates(warband, server)
+            val recruits = server.getLevel(ResourceKey.create(Registries.DIMENSION, warband.dimension))
+                ?.let { level -> PillagerRuntime.recruitDefinitions(level, warband) }.orEmpty()
             val activeThreat = data.campaigns.values.asSequence()
                 .filter { it.originWarbandId == warband.id && it.state != CampaignState.RESOLVED }
                 .sumOf { it.committedThreat.toDouble() }
@@ -69,7 +73,7 @@ object PillagerEngineBridge {
             )
             val catalog = EngineCatalog(
                 revision = "forge-live",
-                recruits = emptyList(),
+                recruits = recruits,
                 materials = TinkersArmoryOptimizer.materialDefinitions(warband),
                 equipment = candidates.map { it.definition },
                 resources = WarbandResourceCatalog.definitions(),

@@ -76,6 +76,8 @@ data class ExperimentSummary(
     val recoverableCaches: Int = 0,
     val meanRouteChunks: Double = 0.0,
     val meanEquipmentDurability: Double = 1.0,
+    val armamentActionCounts: Map<String, Int> = emptyMap(),
+    val meanArmamentUtility: Double = 0.0,
 )
 
 @Serializable

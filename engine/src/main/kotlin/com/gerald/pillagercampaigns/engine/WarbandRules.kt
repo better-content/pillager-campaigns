@@ -2,6 +2,7 @@ package com.gerald.pillagercampaigns.engine
 
 import kotlinx.serialization.Serializable
 import kotlin.math.ceil
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 @Serializable
@@ -96,10 +97,22 @@ data class WarbandRules(
     }
 
     fun desiredArmoryItems(warband: WarbandState, recruits: List<RecruitDefinition>): Int {
-        val typicalThreat = recruits.map { it.baseThreat.coerceAtLeast(1.0) }.average().takeIf(Double::isFinite) ?: return 0
-        val expectedMembers = aggressionRaidThreat(warband, recruits.minOf { it.baseThreat }) / typicalThreat
+        val minimumThreat = recruits.minOfOrNull { it.baseThreat.coerceAtLeast(1.0) } ?: return 0
+        // Planning is free to favor several inexpensive recruits. Sizing against
+        // the minimum closes that exact upper bound without defining a roster.
+        val expectedMembers = aggressionRaidThreat(warband, minimumThreat) / minimumThreat
         return ceil(expectedMembers * armamentCoverageTarget(warband)).toInt().coerceIn(1, maximumSquadMembers)
     }
+
+    /** Makes incomparable TCon stat domains commensurate without rank buckets. */
+    fun capabilityUtility(capabilities: CapabilityVector, preferences: CapabilityVector): Double =
+        listOf(
+            capabilities.durability to preferences.durability,
+            capabilities.damage to preferences.damage,
+            capabilities.mobility to preferences.mobility,
+            capabilities.range to preferences.range,
+            capabilities.control to preferences.control,
+        ).sumOf { (value, preference) -> value / (1.0 + abs(value)) * preference }
 
     fun equipmentSupportsRecruit(equipment: EquipmentManifest, recruit: RecruitDefinition): Boolean {
         val actions = equipment.supportedActions
