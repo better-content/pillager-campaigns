@@ -415,6 +415,7 @@ object WarbandEngine {
         require(catalog.recruits.all { it.id.isNotBlank() && it.baseThreat > 0.0 && it.capabilities.finite() })
         require(catalog.materials.all { it.id.isNotBlank() && it.tier > 0 && it.extractionCost >= 0.0 })
         require(catalog.equipment.all { it.id.isNotBlank() && it.cost.values.all { value -> value >= 0.0 } })
+        require(catalog.environmentSamples.all { it == it.bounded() })
     }
 
     private fun observedThreat(warband: WarbandState, recruit: RecruitDefinition) =

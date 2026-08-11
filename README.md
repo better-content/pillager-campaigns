@@ -15,6 +15,8 @@ Common commands:
 ./gradlew verifyFull
 ./gradlew warbandSim
 ./gradlew :runner:run --args='example'
+./gradlew verifyFull
+./gradlew -q :runner:run --args='explore ../build/warband-catalog/live-catalog.json ../build/warband-balance'
 ./gradlew runClient
 ./gradlew runServer
 ```

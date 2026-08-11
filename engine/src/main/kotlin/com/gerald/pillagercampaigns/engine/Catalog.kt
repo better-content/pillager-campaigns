@@ -34,6 +34,7 @@ data class EngineCatalog(
     val recruits: List<RecruitDefinition>,
     val materials: List<MaterialDefinition> = emptyList(),
     val equipment: List<EquipmentDefinition> = emptyList(),
+    val environmentSamples: List<EnvironmentTraits> = emptyList(),
 )
 
 @Serializable

@@ -35,6 +35,10 @@ Deterministic harness lane:
 # Exercise the lower/nominal/upper physical-assumption bounds
 ./gradlew -q :runner:run --args='matrix-example' > /tmp/warband-matrix.json
 ./gradlew -q :runner:run --args='sweep /tmp/warband-matrix.json build/warband-sweep/example'
+
+# Capture the actual Forge registry/TCon catalog, then explore 1/3/10/30-day balance
+./gradlew verifyFull
+./gradlew -q :runner:run --args='explore ../build/warband-catalog/live-catalog.json ../build/warband-balance'
 ```
 
 Scenario inputs provide bounded physical observations; they do not reimplement Minecraft combat or pathfinding. Every economy, composition, equipment, learning, campaign, and return transition is still executed by `engine`. Forge adapter architecture tests fail if the baseline scoring/economy/geometry paths stop delegating to that module.

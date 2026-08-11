@@ -13,12 +13,14 @@ import com.gerald.pillagercampaigns.data.PillagerWorldData
 import com.gerald.pillagercampaigns.data.PresenceMaterializationResult
 import com.gerald.pillagercampaigns.data.RallyPresenceState
 import com.gerald.pillagercampaigns.engine.EngineCatalog
+import com.gerald.pillagercampaigns.engine.EnvironmentTraits
 import com.gerald.pillagercampaigns.system.PillagerCampaignEngine
 import com.gerald.pillagercampaigns.system.PillagerRuntime
 import com.gerald.pillagercampaigns.system.PillagerWarbandPresenceSystem
 import com.gerald.pillagercampaigns.system.PillagerWarbandDiscoveryRules
 import com.gerald.pillagercampaigns.system.PillagerWarbandDiscoveryService
 import com.gerald.pillagercampaigns.system.TinkersArmoryOptimizer
+import com.gerald.pillagercampaigns.system.WarbandFormulaData
 import com.mojang.authlib.GameProfile
 import net.minecraft.core.BlockPos
 import net.minecraft.gametest.framework.GameTest
@@ -118,9 +120,15 @@ object PillagerCampaignsGameTests {
         materials.forEach { warband.materialLedger[it.id] = 10_000.0 }
         val recruits = PillagerRuntime.recruitDefinitions(level, warband)
         val equipment = TinkersArmoryOptimizer.liveEquipmentCandidates(warband, level.server).map { it.definition }
-        val canonical = Json.encodeToString(EngineCatalog("unhashed", recruits, materials, equipment))
+        val environments = listOf(EnvironmentTraits()) + WarbandFormulaData.traitWeights.toSortedMap().values.map { delta ->
+            EnvironmentTraits(
+                .5 + delta.habitability, .5 + delta.biomass, .5 + delta.mineral,
+                .5 + delta.exotic, .5 + delta.friction,
+            ).bounded()
+        }
+        val canonical = Json.encodeToString(EngineCatalog("unhashed", recruits, materials, equipment, environments))
         val digest = MessageDigest.getInstance("SHA-256").digest(canonical.toByteArray()).joinToString("") { "%02x".format(it) }
-        val catalog = EngineCatalog("forge-live-sha256:$digest", recruits, materials, equipment)
+        val catalog = EngineCatalog("forge-live-sha256:$digest", recruits, materials, equipment, environments)
         helper.assertTrue(catalog.recruits.isNotEmpty(), "snapshot must contain the live recruit tag")
         helper.assertTrue(catalog.materials.isNotEmpty(), "snapshot must contain live TCon materials")
         helper.assertTrue(catalog.equipment.isNotEmpty(), "snapshot must contain legal live TCon formulations")

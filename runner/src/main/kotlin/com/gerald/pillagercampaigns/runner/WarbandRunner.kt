@@ -15,11 +15,19 @@ object WarbandRunner {
             "experiment" -> experiment(args.drop(1))
             "compare" -> compare(args.drop(1))
             "sweep" -> sweep(args.drop(1))
+            "explore" -> explore(args.drop(1))
             "example" -> println(json.encodeToString(exampleScenario()))
             "matrix-example" -> println(json.encodeToString(exampleMatrix()))
             null, "play" -> play(exampleScenario())
-            else -> error("usage: warbandSim [play|example|matrix-example|experiment SCENARIO_JSON OUTPUT_DIRECTORY|compare SCENARIO_JSON BASELINE_JSON OUTPUT_DIRECTORY|sweep MATRIX_JSON OUTPUT_DIRECTORY]")
+            else -> error("usage: warbandSim [play|example|matrix-example|experiment SCENARIO_JSON OUTPUT_DIRECTORY|compare SCENARIO_JSON BASELINE_JSON OUTPUT_DIRECTORY|sweep MATRIX_JSON OUTPUT_DIRECTORY|explore LIVE_CATALOG_JSON OUTPUT_DIRECTORY]")
         }
+    }
+
+    private fun explore(args: List<String>) {
+        require(args.isNotEmpty()) { "explore requires a Forge live-catalog JSON path" }
+        val output = File(args.getOrElse(1) { "build/warband-balance" })
+        val result = BalanceExplorer(json).explore(File(args[0]), output)
+        println("wrote ${result.summaries.size} cells and ${result.findings.size} findings to ${output.absolutePath}")
     }
 
     private fun compare(args: List<String>) {

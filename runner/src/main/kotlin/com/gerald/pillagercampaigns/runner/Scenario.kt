@@ -11,11 +11,13 @@ data class BoundedAssumptions(
     val playerDamagePerEngagement: Double = 5.0,
     val effectiveRange: Double = 8.0,
     val engagementEveryTicks: Long = 1_200L,
+    val engagementsBeforeDisengage: Int? = null,
 ) {
     fun validate() {
         require(routeConfidence in 0.0..1.0 && cohesion in 0.0..1.0)
         require(campaignDamagePerEngagement >= 0.0 && playerDamagePerEngagement >= 0.0)
         require(effectiveRange >= 0.0 && engagementEveryTicks > 0L)
+        require(engagementsBeforeDisengage == null || engagementsBeforeDisengage > 0)
     }
 }
 
@@ -49,6 +51,21 @@ data class ExperimentSummary(
     val peakCampaignThreat: Double,
     val recruitCounts: Map<String, Int>,
     val eventCounts: Map<String, Int>,
+    val firstDispatchTick: Long? = null,
+    val activeCampaigns: Int = 0,
+    val resolvedCampaigns: Int = 0,
+    val meanSquadSize: Double = 0.0,
+    val distinctRecruits: Int = 0,
+    val dominantRecruitShare: Double = 0.0,
+    val longestRecruitStreak: Int = 0,
+    val equipmentCoverage: Double = 0.0,
+    val meanCampaignCycleTicks: Double = 0.0,
+    val returnReasons: Map<String, Int> = emptyMap(),
+    val aggressionByWarband: Map<String, Int> = emptyMap(),
+    val preferenceDrift: Double = 0.0,
+    val empiricalThreatEntries: Int = 0,
+    val extractedMaterialCounts: Map<String, Int> = emptyMap(),
+    val manufacturedEquipmentCounts: Map<String, Int> = emptyMap(),
 )
 
 @Serializable
@@ -70,4 +87,22 @@ data class ExperimentComparison(
     val campaignsDispatchedDelta: Int,
     val campaignsReturnedDelta: Int,
     val peakCampaignThreatDelta: Double,
+)
+
+@Serializable
+data class BalanceFinding(
+    val priority: Int,
+    val topic: String,
+    val observation: String,
+    val evidenceScenarios: List<String>,
+    val candidate: String,
+    val risk: String,
+    val confidence: String,
+)
+
+@Serializable
+data class BalanceExploration(
+    val catalogRevision: String,
+    val summaries: List<ExperimentSummary>,
+    val findings: List<BalanceFinding>,
 )
