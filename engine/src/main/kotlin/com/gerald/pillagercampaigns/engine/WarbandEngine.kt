@@ -24,7 +24,7 @@ object WarbandEngine {
                 is EngineCommand.BeginReturn -> beginReturn(state, command.campaignId, command.reason, command.aggressionDelta, events, effects)
                 is EngineCommand.Dematerialize -> dematerialize(state, command.campaignId, events)
                 is EngineCommand.Manufacture -> repeat(command.count.coerceAtLeast(0)) {
-                    state.warbands[command.warbandId]?.let { manufacture(state, it, catalog, rules, events) }
+                    state.warbands[command.warbandId]?.let { manufacture(state, it, catalog, events) }
                 }
             }
         }
@@ -51,6 +51,13 @@ object WarbandEngine {
             .maxWithOrNull(compareBy<RecruitDefinition> { recruitScore(warband, it, preferences) }
                 .thenByDescending { deterministicTie(warband.id, it.id, state.sequence + members.size) })
     }
+
+    fun recruitScore(
+        warband: WarbandState,
+        officer: OfficerState?,
+        recruit: RecruitDefinition,
+        rules: WarbandRules = WarbandRules(),
+    ): Double = recruitScore(warband, recruit, rules.effectivePreferences(warband, officer))
 
     fun chooseMaterial(state: EngineState, warband: WarbandState, catalog: EngineCatalog): MaterialDefinition? {
         val available = warband.reserveThreat *
@@ -97,7 +104,8 @@ object WarbandEngine {
         val memberIds = state.campaigns.values.flatMap { it.members }.map { it.id }
         require(memberIds.distinct().size == memberIds.size) { "duplicate deployed member identity" }
         val equipmentIds = state.warbands.values.flatMap { it.armory }.map { it.id } +
-            state.campaigns.values.flatMap { it.members }.mapNotNull { it.equipment?.id }
+            state.campaigns.values.filter { it.phase != CampaignPhase.RESOLVED }
+                .flatMap { it.members }.mapNotNull { it.equipment?.id }
         require(equipmentIds.distinct().size == equipmentIds.size) { "duplicate equipment identity" }
         val targets = state.campaigns.values.filter { it.phase != CampaignPhase.RESOLVED }.map { it.targetPlayerId }
         require(targets.distinct().size == targets.size) { "multiple unresolved campaigns target one player" }
@@ -139,7 +147,7 @@ object WarbandEngine {
                 warband.recruitTickDebt -= recruitTicks
                 warband.reserveThreat += 1.0
                 events += event(state, "recruited", warband.id, "threat=1")
-                manufacture(state, warband, catalog, rules, events)
+                manufacture(state, warband, catalog, events)
             }
 
             warband.extractionTickDebt += elapsed
@@ -170,7 +178,6 @@ object WarbandEngine {
         state: EngineState,
         warband: WarbandState,
         catalog: EngineCatalog,
-        rules: WarbandRules,
         events: MutableList<EngineEvent>,
     ) {
         val selected = chooseEquipment(state, warband, catalog) ?: return

@@ -10,7 +10,7 @@ import kotlin.test.assertTrue
 
 class ExperimentRunnerTest {
     private fun scenario() = ExperimentScenario(
-        "runner-test", 1_200L, 20L,
+        "runner-test", 16_000L, 20L,
         EngineState(
             warbands = linkedMapOf("w" to WarbandState("w", "f", ChunkPosition("overworld", 0, 0), 96.0, 18.0, 12.0, preferences = linkedMapOf("damage" to 1.0))),
             officers = linkedMapOf("o" to OfficerState("o", "f", "w")),
@@ -24,11 +24,15 @@ class ExperimentRunnerTest {
         val first = ExperimentRunner(json).run(scenario())
         val second = ExperimentRunner(json).run(scenario())
         assertEquals(json.encodeToString(first.summary), json.encodeToString(second.summary))
-        assertTrue(first.summary.campaignsDispatched == 1)
+        assertTrue(first.summary.campaignsDispatched >= 1)
+        assertTrue(first.summary.campaignsReturned >= 1)
+        assertTrue(first.summary.eventCounts.getOrDefault("dematerialized", 0) >= 1)
         val output = Files.createTempDirectory("warband-runner-test").toFile()
         ExperimentRunner(json).write(first, output)
         assertTrue(output.resolve("trace.jsonl").readLines().isNotEmpty())
         assertTrue(output.resolve("summary.json").isFile)
         assertTrue(output.resolve("summary.csv").readText().startsWith("name,ticks"))
+        val comparison = ExperimentRunner(json).compare(first.summary.copy(raidPool = first.summary.raidPool + 2.0), first.summary)
+        assertEquals(2.0, comparison.raidPoolDelta)
     }
 }

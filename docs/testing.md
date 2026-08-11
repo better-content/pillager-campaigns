@@ -4,6 +4,9 @@
 
 Current coverage focus:
 
+- `engine/*`: deterministic transitions, time-partition invariance, exact ledgers, global target exclusivity, recruitment, manufacturing, combat learning, travel, physical/frontier return, and reconciliation.
+- `runner/*`: reproducible experiments, JSONL traces, CSV summaries, assumption sweeps, and baseline comparisons.
+
 - `data/*`: NBT save/load, corrupt-entry isolation, reference repair, enum/resource/UUID fallback, captain history/rally presence, and campaign/warband/captain round trips.
 - `system/PillagerCampaignEngine`: captain recovery, promotion, grudge weighting, warband collapse, and campaign cleanup.
 - `system/PillagerWarbandDiscovery*`: deterministic warband placement and active discovery-radius logic.
@@ -19,6 +22,24 @@ Plain JUnit deliberately does not bootstrap full Forge networking or a Minecraft
 - `/pillagercampaigns list captains`
 
 Deterministic harness lane:
+
+```sh
+# Interactive use of the exact engine packaged by the mod
+./gradlew warbandSim
+
+# Produce a starter scenario, then run or compare it
+./gradlew -q :runner:run --args='example' > /tmp/warband-scenario.json
+./gradlew -q :runner:run --args='experiment /tmp/warband-scenario.json build/warband-experiment/example'
+./gradlew -q :runner:run --args='compare /tmp/warband-scenario.json build/warband-experiment/example/summary.json build/warband-comparison/example'
+
+# Exercise the lower/nominal/upper physical-assumption bounds
+./gradlew -q :runner:run --args='matrix-example' > /tmp/warband-matrix.json
+./gradlew -q :runner:run --args='sweep /tmp/warband-matrix.json build/warband-sweep/example'
+```
+
+Scenario inputs provide bounded physical observations; they do not reimplement Minecraft combat or pathfinding. Every economy, composition, equipment, learning, campaign, and return transition is still executed by `engine`. Forge adapter architecture tests fail if the baseline scoring/economy/geometry paths stop delegating to that module.
+
+Existing external harness lane:
 
 - `tools/bc test scenario pillager_campaigns --lane rally`
 - `tools/bc test scenario pillager_campaigns --lane nemesis_cycle`
@@ -41,4 +62,4 @@ JaCoCo reports:
 - HTML: `build/reports/jacoco/test/html/index.html`
 - XML: `build/reports/jacoco/test/jacocoTestReport.xml`
 
-The Gradle `verifyFast` lane enforces at least 90% class coverage for the bundle. This keeps new source files from silently arriving with no tests while acknowledging that world/event classes need Forge GameTest or live-instance harness coverage.
+The Gradle `verifyFast` lane enforces at least 90% line coverage for both the pure engine and the testable Forge-facing bundle. Physical adapters remain covered through Forge GameTests and live-instance validation.

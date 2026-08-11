@@ -13,10 +13,49 @@ object WarbandRunner {
     fun main(args: Array<String>) {
         when (args.firstOrNull()) {
             "experiment" -> experiment(args.drop(1))
+            "compare" -> compare(args.drop(1))
+            "sweep" -> sweep(args.drop(1))
             "example" -> println(json.encodeToString(exampleScenario()))
+            "matrix-example" -> println(json.encodeToString(exampleMatrix()))
             null, "play" -> play(exampleScenario())
-            else -> error("usage: warbandSim [play|example|experiment SCENARIO_JSON OUTPUT_DIRECTORY]")
+            else -> error("usage: warbandSim [play|example|matrix-example|experiment SCENARIO_JSON OUTPUT_DIRECTORY|compare SCENARIO_JSON BASELINE_JSON OUTPUT_DIRECTORY|sweep MATRIX_JSON OUTPUT_DIRECTORY]")
         }
+    }
+
+    private fun compare(args: List<String>) {
+        require(args.size >= 2) { "compare requires scenario and baseline summary JSON paths" }
+        val scenario = json.decodeFromString<ExperimentScenario>(File(args[0]).readText())
+        val baseline = json.decodeFromString<ExperimentSummary>(File(args[1]).readText())
+        val output = File(args.getOrElse(2) { "build/warband-comparison/${scenario.name}" })
+        val runner = ExperimentRunner(json)
+        val result = runner.run(scenario)
+        runner.write(result, output)
+        val comparison = runner.compare(result.summary, baseline)
+        output.resolve("comparison.json").writeText(json.encodeToString(comparison))
+        println(json.encodeToString(comparison))
+    }
+
+    private fun sweep(args: List<String>) {
+        require(args.isNotEmpty()) { "sweep requires an experiment matrix JSON path" }
+        val matrix = json.decodeFromString<ExperimentMatrix>(File(args[0]).readText())
+        val output = File(args.getOrElse(1) { "build/warband-sweep/${matrix.scenario.name}" })
+        val runner = ExperimentRunner(json)
+        val runs = listOf("lower" to matrix.assumptions.lower, "nominal" to matrix.assumptions.nominal, "upper" to matrix.assumptions.upper)
+        val summaries = runs.map { (label, assumptions) ->
+            val scenario = json.decodeFromString<ExperimentScenario>(json.encodeToString(matrix.scenario)).copy(
+                name = "${matrix.scenario.name}-$label",
+                assumptions = assumptions,
+            )
+            runner.run(scenario).also { runner.write(it, output.resolve(label)) }.summary
+        }
+        output.mkdirs()
+        output.resolve("matrix.csv").writeText(buildString {
+            appendLine("name,reserve_threat,raid_pool,material_units,armory_items,dispatched,returned,peak_campaign_threat")
+            summaries.forEach { summary ->
+                appendLine(listOf(summary.name, summary.reserveThreat, summary.raidPool, summary.materialUnits, summary.armoryItems, summary.campaignsDispatched, summary.campaignsReturned, summary.peakCampaignThreat).joinToString(","))
+            }
+        })
+        println(summaries.joinToString("\n") { json.encodeToString(it) })
     }
 
     private fun experiment(args: List<String>) {
@@ -29,7 +68,7 @@ object WarbandRunner {
     }
 
     private fun play(scenario: ExperimentScenario) {
-        println("Authoritative Pillager Campaigns engine. Commands: status, advance TICKS, dispatch WARBAND PLAYER, return CAMPAIGN REASON, events, quit")
+        println("Authoritative Pillager Campaigns engine. Commands: status, scores WARBAND BUDGET, advance TICKS, dispatch WARBAND PLAYER, return CAMPAIGN REASON, events, quit")
         var recent = emptyList<EngineEvent>()
         while (true) {
             print("> ")
@@ -38,6 +77,16 @@ object WarbandRunner {
             val frame = runCatching {
                 when (words[0]) {
                     "status" -> { println(json.encodeToString(scenario.state)); null }
+                    "scores" -> {
+                        val warband = scenario.state.warbands.getValue(words[1])
+                        val officer = scenario.state.officers.values.firstOrNull { it.homeWarbandId == warband.id }
+                        scenario.catalog.recruits.filter { it.baseThreat <= words[2].toDouble() }.forEach { recruit ->
+                            val selected = WarbandEngine.chooseRecruit(scenario.state, warband, officer, scenario.catalog.copy(recruits = listOf(recruit)), words[2].toDouble(), rules = scenario.rules)
+                            val score = WarbandEngine.recruitScore(warband, officer, recruit, scenario.rules)
+                            println("${recruit.id}: ${if (selected == null) "unavailable" else "eligible"} score=$score capabilities=${recruit.capabilities} threat=${recruit.baseThreat}")
+                        }
+                        null
+                    }
                     "events" -> { recent.forEach(::println); null }
                     "advance" -> EngineFrame(words[1].toLong(), scenario.players)
                     "dispatch" -> EngineFrame(0L, scenario.players, commands = listOf(EngineCommand.Dispatch(words[1], words[2])))
@@ -84,6 +133,18 @@ object WarbandRunner {
                 ),
             ),
             players = listOf(PlayerFact("player", ChunkPosition("minecraft:overworld", 12, 0), setOf(warband.id))),
+        )
+    }
+
+    private fun exampleMatrix(): ExperimentMatrix {
+        val nominal = BoundedAssumptions()
+        return ExperimentMatrix(
+            exampleScenario(),
+            AssumptionSweep(
+                lower = nominal.copy(routeConfidence = 0.35, cohesion = 0.45, campaignDamagePerEngagement = 6.0, playerDamagePerEngagement = 3.0),
+                nominal = nominal,
+                upper = nominal.copy(routeConfidence = 0.85, cohesion = 0.90, campaignDamagePerEngagement = 2.0, playerDamagePerEngagement = 8.0),
+            ),
         )
     }
 }

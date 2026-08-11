@@ -50,3 +50,24 @@ data class ExperimentSummary(
     val recruitCounts: Map<String, Int>,
     val eventCounts: Map<String, Int>,
 )
+
+@Serializable
+data class AssumptionSweep(
+    val lower: BoundedAssumptions,
+    val nominal: BoundedAssumptions,
+    val upper: BoundedAssumptions,
+)
+
+@Serializable data class ExperimentMatrix(val scenario: ExperimentScenario, val assumptions: AssumptionSweep)
+
+@Serializable
+data class ExperimentComparison(
+    val name: String,
+    val reserveThreatDelta: Double,
+    val raidPoolDelta: Double,
+    val materialUnitsDelta: Double,
+    val armoryItemsDelta: Int,
+    val campaignsDispatchedDelta: Int,
+    val campaignsReturnedDelta: Int,
+    val peakCampaignThreatDelta: Double,
+)

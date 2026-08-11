@@ -13,22 +13,26 @@ Common commands:
 ```sh
 ./gradlew verifyFast
 ./gradlew verifyFull
+./gradlew warbandSim
+./gradlew :runner:run --args='example'
 ./gradlew runClient
 ./gradlew runServer
 ```
 
-`verifyFast` runs the test suite and JaCoCo coverage verification. `verifyFull` adds the headless Forge GameTest pass.
+`verifyFast` runs the Forge-facing JVM suite, the Minecraft-independent engine suite, runner tests, and both JaCoCo gates. `verifyFull` adds the headless Forge GameTest pass.
 
 ## Project Layout
 
-- `src/main/kotlin/com/gerald/pillagercampaigns/` contains the Forge entry point, event hooks, config, domain records, persistence, and campaign systems.
+- `engine/` is the authoritative Minecraft-independent warband state machine and formula library.
+- `runner/` is the interactive spreadsheet game, batch experiment host, trace writer, and baseline comparator.
+- `src/main/kotlin/com/gerald/pillagercampaigns/` contains Forge observation/effect adapters, persistence, and physical entity behavior.
 - `src/test/kotlin/com/gerald/pillagercampaigns/` contains JVM tests for pure logic and scenario behavior.
 - `src/main/resources/META-INF/mods.toml` is expanded from Gradle properties during resource processing.
 - `docs/testing.md` documents the current test coverage focus and manual in-game validation commands.
 
 ## Notes
 
-The mod is designed to own pillager campaign scheduling. By default it can disable vanilla patrol spawning and intercept natural illager spawns near registered warbands according to common config values.
+The pure engine owns economy, selection, manufacturing, campaign decisions, learning, geometry, and conservation. Forge supplies live registry/world facts and executes physical effects. The old parallel simulation has been removed, so runner and live play cannot silently evolve separate formulas.
 
 ## Community and support
 

@@ -16,8 +16,17 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
         var dispatched = 0
         var returned = 0
         var peakThreat = 0.0
+        val seenMembers = mutableSetOf<String>()
         var elapsed = 0L
         var engagementDebt = 0L
+        fun record(result: TransitionResult) {
+            trace += result
+            result.events.forEach { event ->
+                eventCounts[event.type] = eventCounts.getOrDefault(event.type, 0) + 1
+                if (event.type == "dispatched") dispatched++
+                if (event.type == "returned") returned++
+            }
+        }
         while (elapsed < scenario.durationTicks) {
             val step = minOf(scenario.stepTicks, scenario.durationTicks - elapsed)
             engagementDebt += step
@@ -43,16 +52,28 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
                 scenario.catalog,
                 scenario.rules,
             )
-            trace += result
-            result.events.forEach { event ->
-                eventCounts[event.type] = eventCounts.getOrDefault(event.type, 0) + 1
-                if (event.type == "dispatched") dispatched++
-                if (event.type == "returned") returned++
+            record(result)
+            val dematerializations = result.effects.filter { it.kind == EffectKind.CAPTURE_SNAPSHOTS }
+                .mapNotNull { effect -> effect.campaignId?.let(EngineCommand::Dematerialize) }
+            if (dematerializations.isNotEmpty()) {
+                // The runner's bounded physical adapter treats the emitted member list as
+                // the captured snapshot and acknowledges removal immediately. The exact
+                // abstract return/reconciliation still occurs in the engine afterward.
+                record(
+                    WarbandEngine.transition(
+                        scenario.state,
+                        EngineFrame(0L, scenario.players, commands = dematerializations),
+                        scenario.catalog,
+                        scenario.rules,
+                    ),
+                )
             }
             scenario.state.campaigns.values.forEach { campaign ->
                 val threat = campaign.members.sumOf { it.threat }
                 peakThreat = maxOf(peakThreat, threat)
-                campaign.members.forEach { recruitCounts[it.recruitId] = recruitCounts.getOrDefault(it.recruitId, 0) + 1 }
+                campaign.members.forEach { member ->
+                    if (seenMembers.add(member.id)) recruitCounts[member.recruitId] = recruitCounts.getOrDefault(member.recruitId, 0) + 1
+                }
             }
             elapsed += step
         }
@@ -96,4 +117,15 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
                 ).joinToString(",") + "\n",
         )
     }
+
+    fun compare(current: ExperimentSummary, baseline: ExperimentSummary) = ExperimentComparison(
+        current.name,
+        current.reserveThreat - baseline.reserveThreat,
+        current.raidPool - baseline.raidPool,
+        current.materialUnits - baseline.materialUnits,
+        current.armoryItems - baseline.armoryItems,
+        current.campaignsDispatched - baseline.campaignsDispatched,
+        current.campaignsReturned - baseline.campaignsReturned,
+        current.peakCampaignThreat - baseline.peakCampaignThreat,
+    )
 }

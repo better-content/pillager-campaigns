@@ -36,4 +36,13 @@ class FormulaMathTest {
         assertEquals(ActiveCampaignDecision.IDLE_RETURN, CampaignDecisions.activeDecision(1, 10.0, 10.0, 0.5, 6, 12_000, 0))
         assertEquals(ActiveCampaignDecision.CONTINUE, CampaignDecisions.activeDecision(1, 10.0, 10.0, 0.5, 6, 20, 0))
     }
+
+    @Test fun `recruit inspection exposes the same score used for selection`() {
+        val warband = WarbandState(
+            "warband", "faction", ChunkPosition("overworld", 0, 0), 100.0, reserveThreat = 0.0,
+            preferences = mutableMapOf("damage" to 2.0),
+        )
+        val recruit = RecruitDefinition("recruit", 4.0, CapabilityVector(damage = 3.0))
+        assertEquals(1.5, WarbandEngine.recruitScore(warband, null, recruit))
+    }
 }

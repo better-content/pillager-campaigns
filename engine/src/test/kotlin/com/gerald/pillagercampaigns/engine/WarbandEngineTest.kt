@@ -103,6 +103,19 @@ class WarbandEngineTest {
         assertEquals("idle", campaign.returnReason)
     }
 
+    @Test fun `resolved campaign history does not duplicate returned equipment ownership`() {
+        val state = state()
+        val equipment = EquipmentManifest("equipment", "blade", emptyList(), emptyMap(), CapabilityVector(damage = 2.0))
+        state.warbands.getValue("warband").armory += equipment
+        state.campaigns["history"] = CampaignState(
+            "history", "warband", "captain", "player",
+            ChunkPosition("overworld", 0, 0), ChunkPosition("overworld", 0, 0),
+            mutableListOf(MemberManifest("historical-member", "quick", 5.0, equipment = equipment)),
+            phase = CampaignPhase.RESOLVED,
+        )
+        WarbandEngine.validate(state, catalog, rules)
+    }
+
     @Test fun `combat updates warband captain and empirical threat`() {
         val state = state(pool = 6.0)
         WarbandEngine.transition(state, EngineFrame(0L, commands = listOf(EngineCommand.Dispatch("warband", "player"))), catalog, rules)

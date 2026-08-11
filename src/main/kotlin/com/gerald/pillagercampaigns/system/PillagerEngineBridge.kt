@@ -67,8 +67,8 @@ object PillagerEngineBridge {
             warband.extractionTickDebt = core.extractionTickDebt
             warband.materialLedger.clear()
             warband.materialLedger.putAll(core.materialLedger)
-            result.events.asSequence().filter { it.type == "manufactured" }.forEach { event ->
-                if (warband.armory.size >= warband.capacity) return@forEach
+            result.events.asSequence().filter { it.type == "manufactured" }.forEach manufactured@{ event ->
+                if (warband.armory.size >= warband.capacity) return@manufactured
                 candidates.firstOrNull { it.definition.id == event.detail }?.let { candidate ->
                     TinkersArmoryOptimizer.realize(warband, candidate, consume = false)?.let { stack ->
                         warband.armory += stack.save(net.minecraft.nbt.CompoundTag())
