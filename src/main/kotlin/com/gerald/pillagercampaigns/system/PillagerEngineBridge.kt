@@ -14,8 +14,10 @@ import com.gerald.pillagercampaigns.engine.RecruitDefinition
 import com.gerald.pillagercampaigns.engine.WarbandEngine
 import com.gerald.pillagercampaigns.engine.WarbandRules
 import com.gerald.pillagercampaigns.engine.WarbandState
+import net.minecraft.nbt.CompoundTag
 import net.minecraft.server.MinecraftServer
 import net.minecraft.world.entity.Mob
+import net.minecraft.world.item.ItemStack
 import java.util.UUID
 import kotlin.math.roundToInt
 
@@ -25,6 +27,7 @@ import kotlin.math.roundToInt
  */
 object PillagerEngineBridge {
     internal data class LiveRecruit(val mob: Mob, val definition: RecruitDefinition)
+    internal data class PlannedLiveMember(val recruitId: String, val threat: Double, val equipmentIndex: Int?)
 
     private fun rules() = WarbandRules(
         minimumAggression = PillagerCampaignsConfig.minimumAggression.get(),
@@ -93,6 +96,26 @@ object PillagerEngineBridge {
             state, core, officer, EngineCatalog("forge-live", options.map { it.definition }), budget, rules = rules(),
         ) ?: return null
         return options.firstOrNull { it.definition.id == selected.id }
+    }
+
+    internal fun planSquad(
+        warband: PillagerWarband,
+        officerPreferences: Map<String, Double>,
+        budget: Double,
+        recruits: List<RecruitDefinition>,
+        armory: List<CompoundTag>,
+        sequence: Long,
+    ): List<PlannedLiveMember> {
+        val core = coreWarband(warband).copy(
+            armory = armory.mapIndexedTo(mutableListOf()) { index, tag ->
+                TinkersArmoryOptimizer.manifest("forge-armory:$index", ItemStack.of(tag))
+            },
+        )
+        val officer = OfficerState("live-officer", core.factionId, core.id, officerPreferences.toMutableMap())
+        val state = EngineState(sequence = sequence.and(Long.MAX_VALUE), warbands = linkedMapOf(core.id to core), officers = linkedMapOf(officer.id to officer))
+        return WarbandEngine.planSquad(state, core, officer, EngineCatalog("forge-live", recruits), budget, rules()).members.map { member ->
+            PlannedLiveMember(member.recruitId, member.threat, member.equipment?.id?.substringAfter("forge-armory:")?.toIntOrNull())
+        }
     }
 
     fun raidBudget(warband: PillagerWarband, minimumThreat: Double): Double = rules().raidBudget(coreWarband(warband), minimumThreat)

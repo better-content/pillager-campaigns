@@ -6,12 +6,14 @@ import com.gerald.pillagercampaigns.engine.ChunkPosition
 import com.gerald.pillagercampaigns.engine.EngineCatalog
 import com.gerald.pillagercampaigns.engine.EngineState
 import com.gerald.pillagercampaigns.engine.EquipmentDefinition
+import com.gerald.pillagercampaigns.engine.EquipmentManifest
 import com.gerald.pillagercampaigns.engine.MaterialDefinition
 import com.gerald.pillagercampaigns.engine.WarbandEngine
 import com.gerald.pillagercampaigns.engine.WarbandState
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.server.MinecraftServer
 import net.minecraft.world.item.ItemStack
+import net.minecraft.world.item.ProjectileWeaponItem
 import net.minecraftforge.registries.ForgeRegistries
 import slimeknights.tconstruct.library.materials.MaterialRegistry
 import slimeknights.tconstruct.library.materials.definition.IMaterial
@@ -144,6 +146,24 @@ object TinkersArmoryOptimizer {
     }
 
     internal fun cost(stack: ItemStack): Map<String, Double> = stack.tag?.getCompound(COST_TAG)?.let { tag -> tag.allKeys.associateWith(tag::getDouble) }.orEmpty()
+
+    internal fun manifest(id: String, stack: ItemStack): EquipmentManifest {
+        val toolStats = runCatching { ToolStack.from(stack).stats }.getOrNull()
+        val capabilities = if (toolStats == null) CapabilityVector() else CapabilityVector(
+            durability = toolStats.get(ToolStats.DURABILITY).toDouble() / 1000.0,
+            damage = toolStats.get(ToolStats.ATTACK_DAMAGE).toDouble() / 10.0,
+            mobility = toolStats.get(ToolStats.ATTACK_SPEED).toDouble() / 4.0,
+            range = (toolStats.get(ToolStats.VELOCITY).toDouble() + toolStats.get(ToolStats.DRAW_SPEED).toDouble()) / 4.0,
+        )
+        val ranged = stack.item is ProjectileWeaponItem || capabilities.range > 0.0
+        val actions = buildSet {
+            if (ranged) add("ranged")
+            if (capabilities.damage > 0.0 || !ranged) add("melee")
+        }
+        val itemId = ForgeRegistries.ITEMS.getKey(stack.item)?.toString().orEmpty()
+        val formulation = stack.tag?.getString(FORMULATION_TAG)?.split(',')?.filter(String::isNotBlank).orEmpty()
+        return EquipmentManifest(id, itemId, formulation, cost(stack), capabilities, actions)
+    }
 
     private fun engineWarband(warband: PillagerWarband) = WarbandState(
         warband.id.toString(), warband.factionId.toString(),

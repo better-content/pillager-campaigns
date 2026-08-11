@@ -5,6 +5,8 @@ import com.gerald.pillagercampaigns.data.PillagerFaction
 import com.gerald.pillagercampaigns.data.PillagerOfficer
 import com.gerald.pillagercampaigns.data.PillagerWarband
 import com.gerald.pillagercampaigns.data.PillagerWorldData
+import com.gerald.pillagercampaigns.data.PlannedCampaignMember
+import com.gerald.pillagercampaigns.engine.RecruitDefinition
 import net.minecraft.ChatFormatting
 import net.minecraft.core.BlockPos
 import net.minecraft.core.particles.DustParticleOptions
@@ -179,8 +181,43 @@ object PillagerRuntime {
         if ((level.getEntity(id) as? Mob)?.isAlive == true) threat else 0.0
     }
 
-    fun minimumRecruitThreat(level: ServerLevel, warband: PillagerWarband): Double? = recruitCandidates(level, warband)
-        .minOfOrNull { it.second }
+    fun minimumRecruitThreat(level: ServerLevel, warband: PillagerWarband): Double? = recruitDefinitions(level, warband)
+        .minOfOrNull(RecruitDefinition::baseThreat)
+
+    internal fun recruitDefinitions(level: ServerLevel, warband: PillagerWarband): List<RecruitDefinition> =
+        ForgeRegistries.ENTITY_TYPES.tags()?.getTag(recruitTag)?.toList().orEmpty().mapNotNull { type ->
+            val mob = type.create(level) as? Mob ?: return@mapNotNull null
+            try {
+                val id = ForgeRegistries.ENTITY_TYPES.getKey(type)?.toString() ?: return@mapNotNull null
+                val measured = empiricalThreat(mob) * WarbandFormulaData.threatCorrections.getOrDefault(id, 1.0)
+                val threat = warband.empiricalThreat.getOrDefault(id, measured).coerceAtLeast(1.0)
+                PillagerEngineBridge.recruitDefinition(id, threat, mob)
+            } finally {
+                mob.discard()
+            }
+        }.sortedBy(RecruitDefinition::id)
+
+    internal fun planCampaignSquad(
+        level: ServerLevel,
+        warband: PillagerWarband,
+        officer: PillagerOfficer,
+        budget: Double,
+        sequence: Long,
+    ): List<PlannedCampaignMember> {
+        val armory = warband.armory.toList()
+        val plan = PillagerEngineBridge.planSquad(
+            warband, officer.preferenceGraph, budget, recruitDefinitions(level, warband), armory, sequence,
+        )
+        plan.mapNotNull(PillagerEngineBridge.PlannedLiveMember::equipmentIndex).toSet().sortedDescending()
+            .forEach { index -> if (index in warband.armory.indices) warband.armory.removeAt(index) }
+        return plan.map { member ->
+            PlannedCampaignMember(
+                ResourceLocation.tryParse(member.recruitId) ?: error("engine selected invalid recruit id ${member.recruitId}"),
+                member.threat,
+                member.equipmentIndex?.let { armory.getOrNull(it)?.copy() },
+            )
+        }
+    }
 
     fun materializeWarbandSquad(
         level: ServerLevel,
@@ -194,30 +231,27 @@ object PillagerRuntime {
         z: Double,
     ): List<UUID> {
         val random = Random(campaign.loadoutSeed)
+        if (campaign.plannedMembers.isEmpty()) {
+            campaign.plannedMembers += planCampaignSquad(level, warband, officerRecord, campaign.committedThreat, campaign.loadoutSeed)
+        }
         val result = mutableListOf<UUID>()
-        var remaining = campaign.committedThreat.coerceAtLeast(1).toDouble()
-        var index = 0
-        while (remaining >= 1.0 && index < 24) {
-            val choice = chooseFormulaMob(level, warband, officerRecord.preferenceGraph, remaining, random) ?: break
-            val mob = choice.first
-            val threat = choice.second.coerceAtLeast(1.0)
-            prepareCampaignMob(mob, warband, campaign, officerRecord, index == 0, x + random.nextDouble() * 4.0 - 2.0, y, z + random.nextDouble() * 4.0 - 2.0)
+        campaign.plannedMembers.forEachIndexed { index, member ->
+            val type = ForgeRegistries.ENTITY_TYPES.getValue(member.recruitId) ?: return@forEachIndexed
+            val mob = type.create(level) as? Mob ?: return@forEachIndexed
+            prepareCampaignMob(mob, warband, campaign, officerRecord, member.threat, index == 0, x + random.nextDouble() * 4.0 - 2.0, y, z + random.nextDouble() * 4.0 - 2.0)
             if (index == 0) mob.setItemSlot(EquipmentSlot.HEAD, makeBanner(bannerSeed))
             mob.target = player
             if (level.addFreshEntity(mob)) {
                 registerLiveMob(mob)
                 result += mob.uuid
-                campaign.memberThreat[mob.uuid] = threat
-                if (campaign.pendingEquipment.isNotEmpty()) {
-                    val equipmentTag = campaign.pendingEquipment.removeAt(0)
+                campaign.memberThreat[mob.uuid] = member.threat
+                member.equipment?.let { equipmentTag ->
                     val stack = ItemStack.of(equipmentTag)
                     val slot = (stack.item as? ArmorItem)?.equipmentSlot ?: EquipmentSlot.MAINHAND
                     mob.setItemSlot(slot, stack)
                     campaign.memberEquipment[mob.uuid] = equipmentTag.copy()
                 }
-                remaining -= threat
-                index++
-            } else break
+            } else mob.discard()
         }
         return result
     }
@@ -283,15 +317,6 @@ object PillagerRuntime {
         return chosen.mob to chosen.definition.baseThreat
     }
 
-    private fun recruitCandidates(level: ServerLevel, warband: PillagerWarband): List<Pair<String, Double>> =
-        ForgeRegistries.ENTITY_TYPES.tags()?.getTag(recruitTag)?.toList().orEmpty().mapNotNull { type ->
-            val mob = type.create(level) as? Mob ?: return@mapNotNull null
-            val id = ForgeRegistries.ENTITY_TYPES.getKey(type)?.toString() ?: run { mob.discard(); return@mapNotNull null }
-            val measured = empiricalThreat(mob) * WarbandFormulaData.threatCorrections.getOrDefault(id, 1.0)
-            mob.discard()
-            id to warband.empiricalThreat.getOrDefault(id, measured).coerceAtLeast(1.0)
-        }
-
     private fun empiricalThreat(mob: Mob): Double = (
         mob.getAttributeValue(Attributes.MAX_HEALTH) / 10.0 +
             mob.getAttributeValue(Attributes.ATTACK_DAMAGE) +
@@ -299,7 +324,7 @@ object PillagerRuntime {
             mob.getAttributeValue(Attributes.FOLLOW_RANGE) / 32.0
         ).coerceAtLeast(1.0)
 
-    private fun prepareCampaignMob(mob: Mob, warband: PillagerWarband, campaign: PillagerCampaign, officer: PillagerOfficer, leader: Boolean, x: Double, y: Double, z: Double) {
+    private fun prepareCampaignMob(mob: Mob, warband: PillagerWarband, campaign: PillagerCampaign, officer: PillagerOfficer, threat: Double, leader: Boolean, x: Double, y: Double, z: Double) {
         mob.moveTo(x, y, z, mob.yRot, mob.xRot)
         mob.setPersistenceRequired()
         mob.persistentData.putUUID(CAMPAIGN_TAG, campaign.id)
@@ -309,7 +334,7 @@ object PillagerRuntime {
         mob.persistentData.putBoolean(LEADER_TAG, leader)
         mob.persistentData.putInt(ORIGIN_X_TAG, warband.rallyChunkX)
         mob.persistentData.putInt(ORIGIN_Z_TAG, warband.rallyChunkZ)
-        mob.persistentData.putDouble(THREAT_TAG, empiricalThreat(mob))
+        mob.persistentData.putDouble(THREAT_TAG, threat)
         ForgeRegistries.ENTITY_TYPES.getKey(mob.type)?.let { mob.persistentData.putString(ENTITY_TYPE_TAG, it.toString()) }
         if (leader) applyOfficerVisuals(mob, officer)
         guaranteeEquipmentDrops(mob)

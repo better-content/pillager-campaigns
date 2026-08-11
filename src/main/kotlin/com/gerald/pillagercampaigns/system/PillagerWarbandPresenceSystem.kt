@@ -56,7 +56,7 @@ object PillagerWarbandPresenceSystem {
         val actualThreat = spawnedIds.sumOf { id -> campaign.memberThreat[id] ?: 0.0 }
         val unusedThreat = (campaign.committedThreat - actualThreat).coerceAtLeast(0.0)
         warband.raidPool = (warband.raidPool + unusedThreat).coerceAtMost(warband.capacity.toDouble())
-        campaign.committedThreat = kotlin.math.ceil(actualThreat).toInt()
+        campaign.committedThreat = actualThreat
         campaign.squadMemberIds.clear()
         campaign.squadMemberIds.addAll(spawnedIds)
         return record(warband, PresenceMaterializationResult.SUCCESS, now)

@@ -12,6 +12,7 @@ import com.gerald.pillagercampaigns.data.PillagerWarband
 import com.gerald.pillagercampaigns.data.PillagerWorldData
 import com.gerald.pillagercampaigns.data.PresenceMaterializationResult
 import com.gerald.pillagercampaigns.data.RallyPresenceState
+import com.gerald.pillagercampaigns.engine.EngineCatalog
 import com.gerald.pillagercampaigns.system.PillagerCampaignEngine
 import com.gerald.pillagercampaigns.system.PillagerRuntime
 import com.gerald.pillagercampaigns.system.PillagerWarbandPresenceSystem
@@ -25,10 +26,16 @@ import net.minecraft.gametest.framework.GameTestHelper
 import net.minecraft.resources.ResourceLocation
 import net.minecraft.world.level.ChunkPos
 import net.minecraft.world.level.block.Blocks
+import net.minecraft.world.item.ItemStack
+import net.minecraft.world.item.Items
 import net.minecraftforge.gametest.GameTestHolder
 import net.minecraftforge.gametest.PrefixGameTestTemplate
 import net.minecraftforge.common.util.FakePlayerFactory
-import kotlin.math.ceil
+import net.minecraftforge.registries.ForgeRegistries
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import java.io.File
+import java.security.MessageDigest
 import java.util.UUID
 
 @GameTestHolder(PillagerCampaignsMod.MOD_ID)
@@ -60,6 +67,9 @@ object PillagerCampaignsGameTests {
         player.moveTo(playerPos.x + .5, playerPos.y.toDouble(), playerPos.z + .5)
         val minimum = PillagerRuntime.minimumRecruitThreat(level, warband)
         helper.assertTrue(minimum != null && minimum > 0.0, "live recruit catalogue should expose a minimum threat")
+        warband.armory += ItemStack(Items.CROSSBOW).save(net.minecraft.nbt.CompoundTag())
+        val planned = PillagerRuntime.planCampaignSquad(level, warband, officer, minimum!!, 42L)
+        helper.assertTrue(planned.isNotEmpty(), "authoritative engine should persist an affordable squad manifest")
         val campaign = PillagerCampaign(
             id = UUID.nameUUIDFromBytes("gametest:minimum-campaign".toByteArray()), factionId = warband.factionId,
             originWarbandId = warband.id, officerId = officer.id, targetPlayerId = player.uuid,
@@ -67,7 +77,7 @@ object PillagerCampaignsGameTests {
             currentChunkZ = player.chunkPosition().z, targetChunkX = player.chunkPosition().x, targetChunkZ = player.chunkPosition().z,
             difficultySnapshot = 1, loadoutSeed = 42L, tickDebt = 0, state = CampaignState.READY_TO_MATERIALIZE,
             resumeState = null, materializeAttemptId = null, materializingUntilTick = 0L, squadMemberIds = mutableListOf(),
-            committedThreat = ceil(minimum!!).toInt(),
+            committedThreat = planned.sumOf { it.threat }, plannedMembers = planned.toMutableList(),
         )
         data.campaigns[campaign.id] = campaign
         val faction = data.factions.getValue(warband.factionId)
@@ -77,6 +87,11 @@ object PillagerCampaignsGameTests {
         )
         campaign.squadMemberIds += spawned
         helper.assertTrue(spawned.isNotEmpty(), "minimum affordable campaign should materialize a live candidate")
+        val materializedTypes = spawned.mapNotNull { id -> (level.getEntity(id) as? net.minecraft.world.entity.Mob)?.let { ForgeRegistries.ENTITY_TYPES.getKey(it.type)?.toString() } }
+        helper.assertTrue(materializedTypes == planned.map { it.recruitId.toString() }, "Forge must materialize the exact engine-selected recruit manifest")
+        val expectedEquipment = planned.mapNotNull { it.equipment }.size
+        val actualEquipment = spawned.mapNotNull { level.getEntity(it) as? net.minecraft.world.entity.Mob }.count { !it.mainHandItem.isEmpty }
+        helper.assertTrue(actualEquipment == expectedEquipment, "Forge must materialize the exact engine-selected equipment count")
         helper.assertTrue(campaign.squadMemberIds.isNotEmpty(), "minimum campaign should contain a real recruit")
         helper.assertTrue(campaign.memberThreat.values.sum() > 0.0, "materialized recruit should carry exact threat")
         val originalIds = campaign.squadMemberIds.toSet()
@@ -84,6 +99,34 @@ object PillagerCampaignsGameTests {
         helper.assertTrue(campaign.memberSnapshots.size == originalIds.size, "every member should have an exact serialized snapshot")
         val restored = PillagerRuntime.restoreSnapshots(level, campaign, playerPos)
         helper.assertTrue(restored.toSet() == originalIds, "rematerialization should preserve member identities")
+        helper.succeed()
+    }
+
+    @JvmStatic
+    @GameTest(templateNamespace = "minecraft", template = "empty", timeoutTicks = 200)
+    fun liveCatalogSnapshotIsDeterministicAndComplete(helper: GameTestHelper) {
+        val data = resetWorldData(helper)
+        val level = helper.level
+        val anchor = ChunkPos(helper.absolutePos(BlockPos(2, 2, 2)))
+        val candidate = PillagerWarbandDiscoveryRules.Candidate(
+            id = UUID.nameUUIDFromBytes("gametest:live-catalog".toByteArray()), dimension = level.dimension().location(),
+            cellX = 0, cellZ = 0, chunkX = anchor.x, chunkZ = anchor.z,
+        )
+        helper.assertTrue(PillagerWarbandDiscoveryService.registerDiscoveredWarband(level, data, candidate, level.gameTime), "warband should register")
+        val warband = data.warbands.getValue(candidate.id)
+        val materials = TinkersArmoryOptimizer.materialDefinitions(warband)
+        materials.forEach { warband.materialLedger[it.id] = 10_000.0 }
+        val recruits = PillagerRuntime.recruitDefinitions(level, warband)
+        val equipment = TinkersArmoryOptimizer.liveEquipmentCandidates(warband, level.server).map { it.definition }
+        val canonical = Json.encodeToString(EngineCatalog("unhashed", recruits, materials, equipment))
+        val digest = MessageDigest.getInstance("SHA-256").digest(canonical.toByteArray()).joinToString("") { "%02x".format(it) }
+        val catalog = EngineCatalog("forge-live-sha256:$digest", recruits, materials, equipment)
+        helper.assertTrue(catalog.recruits.isNotEmpty(), "snapshot must contain the live recruit tag")
+        helper.assertTrue(catalog.materials.isNotEmpty(), "snapshot must contain live TCon materials")
+        helper.assertTrue(catalog.equipment.isNotEmpty(), "snapshot must contain legal live TCon formulations")
+        System.getProperty("pillagercampaigns.catalogOutput")?.let { path ->
+            File(path).also { it.parentFile.mkdirs() }.writeText(Json { prettyPrint = true; encodeDefaults = true }.encodeToString(catalog))
+        }
         helper.succeed()
     }
 

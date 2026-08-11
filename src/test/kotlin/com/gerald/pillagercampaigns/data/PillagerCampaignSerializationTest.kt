@@ -46,13 +46,15 @@ class PillagerCampaignSerializationTest {
         val campaign = PillagerCampaign(
             UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
             ResourceLocation("minecraft", "overworld"), 1, 2, 3, 4, 7, 99, 0,
-            CampaignState.ACTIVE, null, null, 0, mutableListOf(UUID.randomUUID()), 123, 0, 7,
+            CampaignState.ACTIVE, null, null, 0, mutableListOf(UUID.randomUUID()), 123, 0, 7.0,
+            plannedMembers = mutableListOf(PlannedCampaignMember(ResourceLocation("minecraft", "vindicator"), 7.0)),
             memberSnapshots = mutableListOf(CompoundTag().also { it.putString("id", "minecraft:pillager") }),
             returnOutcome = CampaignOutcome.CAPTAIN_VICTORY, returnReason = "test", returnStartedTick = 456, returnAggressionDelta = 1,
         )
         val loaded = PillagerCampaign.load(campaign.save())
         assertEquals(123, loaded.lastCombatTick)
-        assertEquals(7, loaded.committedThreat)
+        assertEquals(7.0, loaded.committedThreat)
+        assertEquals("minecraft:vindicator", loaded.plannedMembers.single().recruitId.toString())
         assertEquals(campaign.squadMemberIds, loaded.squadMemberIds)
         assertEquals("minecraft:pillager", loaded.memberSnapshots.single().getString("id"))
         assertEquals(CampaignOutcome.CAPTAIN_VICTORY, loaded.returnOutcome)

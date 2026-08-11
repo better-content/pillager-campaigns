@@ -87,8 +87,11 @@ object PillagerCampaignEngine {
             val target = assignment.second
             val minimumThreat = PillagerRuntime.minimumRecruitThreat(level, warband) ?: continue
             if (warband.raidPool < minimumThreat) continue
-            val committedThreat = kotlin.math.ceil(PillagerEngineBridge.raidBudget(warband, minimumThreat)).toInt()
-            if (committedThreat <= 0) continue
+            val budgetThreat = PillagerEngineBridge.raidBudget(warband, minimumThreat)
+            val loadoutSeed = ThreadLocalRandom.current().nextLong()
+            val plannedMembers = PillagerRuntime.planCampaignSquad(level, warband, captain, budgetThreat, loadoutSeed)
+            if (plannedMembers.isEmpty()) continue
+            val committedThreat = plannedMembers.sumOf { it.threat }
             warband.raidPool -= committedThreat
             val campaign = PillagerCampaign(
                 id = UUID.randomUUID(),
@@ -101,8 +104,8 @@ object PillagerCampaignEngine {
                 currentChunkZ = warband.rallyChunkZ,
                 targetChunkX = target.chunkPosition().x,
                 targetChunkZ = target.chunkPosition().z,
-                difficultySnapshot = campaignDifficultyForCaptain(committedThreat, captain),
-                loadoutSeed = ThreadLocalRandom.current().nextLong(),
+                difficultySnapshot = campaignDifficultyForCaptain(kotlin.math.ceil(committedThreat).toInt(), captain),
+                loadoutSeed = loadoutSeed,
                 tickDebt = 0,
                 state = CampaignState.TRAVELING,
                 resumeState = null,
@@ -111,8 +114,8 @@ object PillagerCampaignEngine {
                 squadMemberIds = mutableListOf(),
                 lastCombatTick = now,
                 committedThreat = committedThreat,
+                plannedMembers = plannedMembers.toMutableList(),
             )
-            repeat(minOf(committedThreat, warband.armory.size)) { campaign.pendingEquipment += warband.armory.removeAt(0) }
             captain.state = OfficerState.DEPLOYED
             captain.lastTargetPlayerId = target.uuid
             captain.lastSeenTick = now
@@ -302,7 +305,7 @@ object PillagerCampaignEngine {
         campaign.memberEquipment.clear()
         campaign.memberThreat.clear()
         campaign.memberSnapshots.clear()
-        campaign.committedThreat = 0
+        campaign.committedThreat = 0.0
         resolveCampaign(data, campaign.id, defeatedByPlayer = false, observedTick = now, outcome = campaign.returnOutcome ?: CampaignOutcome.ABORTED)
     }
 

@@ -311,6 +311,27 @@ data class PillagerOfficer(
     }
 }
 
+data class PlannedCampaignMember(
+    val recruitId: ResourceLocation,
+    val threat: Double,
+    val equipment: CompoundTag? = null,
+) {
+    fun save(): CompoundTag = CompoundTag().also {
+        it.putString("recruitId", recruitId.toString())
+        it.putDouble("threat", threat)
+        equipment?.let { stack -> it.put("equipment", stack.copy()) }
+    }
+
+    companion object {
+        fun load(tag: CompoundTag): PlannedCampaignMember? {
+            val recruitId = ResourceLocation.tryParse(tag.getString("recruitId")) ?: return null
+            val threat = tag.getDouble("threat")
+            if (!threat.isFinite() || threat <= 0.0) return null
+            return PlannedCampaignMember(recruitId, threat, tag.getCompound("equipment").takeIf { tag.contains("equipment", Tag.TAG_COMPOUND.toInt()) }?.copy())
+        }
+    }
+}
+
 data class PillagerCampaign(
     val id: UUID,
     val factionId: UUID,
@@ -332,7 +353,8 @@ data class PillagerCampaign(
     var squadMemberIds: MutableList<UUID>,
     var lastCombatTick: Long = 0L,
     var resolvedTick: Long = 0L,
-    var committedThreat: Int = 0,
+    var committedThreat: Double = 0.0,
+    val plannedMembers: MutableList<PlannedCampaignMember> = mutableListOf(),
     val pendingEquipment: MutableList<CompoundTag> = mutableListOf(),
     val memberEquipment: MutableMap<UUID, CompoundTag> = mutableMapOf(),
     val memberThreat: MutableMap<UUID, Double> = mutableMapOf(),
@@ -369,7 +391,8 @@ data class PillagerCampaign(
         it.put("squadMemberIds", members)
         it.putLong("lastCombatTick", lastCombatTick)
         it.putLong("resolvedTick", resolvedTick)
-        it.putInt("committedThreat", committedThreat)
+        it.putDouble("committedThreat", committedThreat)
+        it.put("plannedMembers", saveRecordList(plannedMembers.map(PlannedCampaignMember::save)))
         it.put("pendingEquipment", saveRecordList(pendingEquipment))
         it.put("memberEquipment", saveRecordList(memberEquipment.map { (id, stack) -> CompoundTag().also { entry -> entry.putUUID("id", id); entry.put("stack", stack.copy()) } }))
         it.put("memberThreat", CompoundTag().also { values -> memberThreat.forEach { (id, threat) -> values.putDouble(id.toString(), threat) } })
@@ -411,7 +434,12 @@ data class PillagerCampaign(
             },
             lastCombatTick = if (tag.contains("lastCombatTick")) tag.getLong("lastCombatTick") else 0L,
             resolvedTick = if (tag.contains("resolvedTick")) tag.getLong("resolvedTick") else 0L,
-            committedThreat = if (tag.contains("committedThreat")) tag.getInt("committedThreat") else 0,
+            committedThreat = if (tag.contains("committedThreat")) tag.getDouble("committedThreat") else 0.0,
+            plannedMembers = mutableListOf<PlannedCampaignMember>().also { values ->
+                if (tag.contains("plannedMembers", Tag.TAG_LIST.toInt())) tag.getList("plannedMembers", Tag.TAG_COMPOUND.toInt()).forEach { raw ->
+                    PlannedCampaignMember.load(raw as CompoundTag)?.let(values::add)
+                }
+            },
             pendingEquipment = mutableListOf<CompoundTag>().also { values -> if (tag.contains("pendingEquipment", Tag.TAG_LIST.toInt())) tag.getList("pendingEquipment", Tag.TAG_COMPOUND.toInt()).forEach { values += (it as CompoundTag).copy() } },
             memberEquipment = mutableMapOf<UUID, CompoundTag>().also { values -> if (tag.contains("memberEquipment", Tag.TAG_LIST.toInt())) tag.getList("memberEquipment", Tag.TAG_COMPOUND.toInt()).forEach { raw -> (raw as CompoundTag).let { entry -> if (entry.hasUUID("id")) values[entry.getUUID("id")] = entry.getCompound("stack").copy() } } },
             memberThreat = mutableMapOf<UUID, Double>().also { values -> if (tag.contains("memberThreat", Tag.TAG_COMPOUND.toInt())) tag.getCompound("memberThreat").allKeys.forEach { key -> runCatching { UUID.fromString(key) }.getOrNull()?.let { values[it] = tag.getCompound("memberThreat").getDouble(key) } } },

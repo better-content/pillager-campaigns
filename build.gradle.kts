@@ -120,6 +120,7 @@ val syncGameTestStructures by tasks.registering(Copy::class) {
 tasks.withType<JavaExec>().configureEach {
     if (name == "runGameTestServer") {
         dependsOn(syncGameTestStructures)
+        systemProperty("pillagercampaigns.catalogOutput", layout.buildDirectory.file("warband-catalog/live-catalog.json").get().asFile.absolutePath)
     }
 }
 
