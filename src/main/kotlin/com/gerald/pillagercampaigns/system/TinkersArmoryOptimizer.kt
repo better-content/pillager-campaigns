@@ -26,6 +26,11 @@ import slimeknights.tconstruct.library.tools.item.IModifiable
 import slimeknights.tconstruct.library.tools.nbt.MaterialNBT
 import slimeknights.tconstruct.library.tools.nbt.ToolStack
 import slimeknights.tconstruct.library.tools.stat.ToolStats
+import slimeknights.tconstruct.tools.stats.GripMaterialStats
+import slimeknights.tconstruct.tools.stats.HandleMaterialStats
+import slimeknights.tconstruct.tools.stats.HeadMaterialStats
+import slimeknights.tconstruct.tools.stats.LimbMaterialStats
+import slimeknights.tconstruct.tools.stats.PlatingMaterialStats
 
 /**
  * Live TConstruct adapter. Selection is formulaic; all selected part material
@@ -47,7 +52,7 @@ object TinkersArmoryOptimizer {
     fun extract(warband: PillagerWarband, amount: Double = 1.0): Boolean {
         val core = engineWarband(warband)
         val state = EngineState(sequence = warband.materialLedger.size.toLong(), warbands = linkedMapOf(core.id to core))
-        val material = WarbandEngine.chooseMaterial(state, core, EngineCatalog("live-tcon", emptyList(), materialDefinitions(warband))) ?: return false
+        val material = WarbandEngine.chooseMaterial(state, core, EngineCatalog("live-tcon", emptyList(), materialDefinitions())) ?: return false
         val id = material.id
         warband.materialLedger[id] = warband.materialLedger.getOrDefault(id, 0.0) + amount.coerceAtLeast(0.0)
         warband.materialSelectionMemory[id] = warband.materialSelectionMemory.getOrDefault(id, 0.0) + 1.0
@@ -67,11 +72,20 @@ object TinkersArmoryOptimizer {
         }
     }
 
-    internal fun materialDefinitions(warband: PillagerWarband): List<MaterialDefinition> =
-        if (!MaterialRegistry.isFullyLoaded()) emptyList() else MaterialRegistry.getInstance().visibleMaterials.asSequence()
-            .filter { it.isCraftable && !it.isHidden }
-            .map { material ->
+    internal fun materialDefinitions(): List<MaterialDefinition> {
+        if (!MaterialRegistry.isFullyLoaded()) return emptyList()
+        val materials = MaterialRegistry.getInstance().visibleMaterials.filter { it.isCraftable && !it.isHidden }
+        val raw = materials.associateWith(::materialCapabilities)
+        fun scale(select: (CapabilityVector) -> Double): Double = raw.values.maxOfOrNull { kotlin.math.abs(select(it)) }
+            ?.coerceAtLeast(0.0001) ?: 1.0
+        val durabilityScale = scale(CapabilityVector::durability)
+        val damageScale = scale(CapabilityVector::damage)
+        val mobilityScale = scale(CapabilityVector::mobility)
+        val rangeScale = scale(CapabilityVector::range)
+        val controlScale = scale(CapabilityVector::control)
+        return materials.asSequence().map { material ->
                 val id = material.identifier.toString()
+                val capabilities = raw.getValue(material)
                 MaterialDefinition(
                     id,
                     material.tier.coerceAtLeast(1),
@@ -79,17 +93,22 @@ object TinkersArmoryOptimizer {
                         material.tier,
                         WarbandFormulaData.ingredientWeights.keys.count { it.startsWith(id) },
                     ),
-                    CapabilityVector(durability = material.tier.toDouble(), control = deterministicFraction(warband, id, 0)),
+                    CapabilityVector(
+                        capabilities.durability / durabilityScale,
+                        capabilities.damage / damageScale,
+                        capabilities.mobility / mobilityScale,
+                        capabilities.range / rangeScale,
+                        capabilities.control / controlScale,
+                    ),
                 )
             }.sortedBy(MaterialDefinition::id).toList()
+    }
 
     internal fun liveEquipmentCandidates(warband: PillagerWarband, server: MinecraftServer): List<LiveEquipmentCandidate> {
         if (!MaterialRegistry.isFullyLoaded()) return emptyList()
-        val materials = MaterialRegistry.getInstance().visibleMaterials.asSequence()
-            .filter { it.isCraftable && !it.isHidden && warband.materialLedger.getOrDefault(it.identifier.toString(), 0.0) > 0.0 }
-            .sortedBy { it.identifier.toString() }.toList()
-        if (materials.isEmpty()) return emptyList()
-        val materialDefinitions = materialDefinitions(warband).associateBy(MaterialDefinition::id)
+        val extractable = extractableMaterials(warband)
+        if (extractable.isEmpty()) return emptyList()
+        val materialDefinitions = materialDefinitions().associateBy(MaterialDefinition::id)
         val core = engineWarband(warband)
         val engineState = EngineState(sequence = warband.armory.size.toLong(), warbands = linkedMapOf(core.id to core))
 
@@ -97,14 +116,14 @@ object TinkersArmoryOptimizer {
             .groupBy { recipe -> ForgeRegistries.ITEMS.getKey(recipe.getResultItem(server.registryAccess()).item)?.toString().orEmpty() }
             .mapValues { (_, recipes) -> recipes.minOf { it.cost }.coerceAtLeast(1) }
 
-        return ForgeRegistries.ITEMS.values.asSequence().mapNotNull { item ->
+        fun formulate(supply: Map<String, Double>): List<LiveEquipmentCandidate> = ForgeRegistries.ITEMS.values.asSequence().mapNotNull { item ->
             val modifiable = item as? IModifiable ?: return@mapNotNull null
             val definition = modifiable.toolDefinition
             if (!definition.hasMaterials() || !definition.isDataLoaded) return@mapNotNull null
             val parts = ToolPartsHook.parts(definition)
             val statTypes = ToolMaterialHook.stats(definition)
             if (statTypes.isEmpty()) return@mapNotNull null
-            val available = warband.materialLedger.toMutableMap()
+            val available = supply.toMutableMap()
             val cost = linkedMapOf<String, Double>()
             val chosen = statTypes.mapIndexedNotNull { index, statType ->
                 val part = parts.getOrNull(index)
@@ -113,13 +132,13 @@ object TinkersArmoryOptimizer {
                 // recipe. Each functional material contribution is one ledger unit;
                 // concrete part recipes override that with their live recipe cost.
                 val units = partId?.let(partCosts::get)?.toDouble() ?: 1.0
-                val compatible = materials.filter { material ->
+                val compatible = extractable.filter { material ->
                     part?.canUseMaterial(material.identifier)
                         ?: MaterialRegistry.getInstance().getAllStats(material.identifier).any { it.identifier == statType }
                 }.mapTo(linkedSetOf()) { it.identifier.toString() }
                 WarbandEngine.choosePartMaterial(
                     engineState, core, materialDefinitions.values, compatible, available, units, index,
-                )?.let { selected -> materials.firstOrNull { it.identifier.toString() == selected.id } }
+                )?.let { selected -> extractable.firstOrNull { it.identifier.toString() == selected.id } }
                     ?.also { material ->
                         val id = material.identifier.toString()
                         available[id] = available.getOrDefault(id, 0.0) - units
@@ -135,6 +154,11 @@ object TinkersArmoryOptimizer {
             val id = "$itemId|${formulation.joinToString(",")}"
             LiveEquipmentCandidate(EquipmentDefinition(id, formulation, attributes, cost, actions(stack)), stack)
         }.sortedBy { it.definition.id }.toList()
+
+        val actualSupply = warband.materialLedger.filterValues { it > 0.0 }
+        val aspirationalSupply = extractable.associate { it.identifier.toString() to 64.0 }
+        return listOf(actualSupply, aspirationalSupply).filter(Map<String, Double>::isNotEmpty)
+            .flatMap(::formulate).distinctBy { it.definition.id }.sortedBy { it.definition.id }
     }
 
     internal fun realize(warband: PillagerWarband, candidate: LiveEquipmentCandidate, consume: Boolean): ItemStack? {
@@ -196,12 +220,50 @@ object TinkersArmoryOptimizer {
 
     private fun extractableMaterials(warband: PillagerWarband): List<IMaterial> {
         if (!MaterialRegistry.isFullyLoaded()) return emptyList()
-        val available = warband.reserve * (0.5 + warband.environment.mineralPotential + warband.environment.exoticPotential)
+        val available = (warband.reserve + warband.raidPool + warband.garrisonThreat.values.sum()) *
+            (0.5 + warband.environment.mineralPotential + warband.environment.exoticPotential)
         return MaterialRegistry.getInstance().visibleMaterials.asSequence().filter { it.isCraftable && !it.isHidden }
             .filter { material -> FormulaicWarbandRules.extractionThreshold(material.tier, WarbandFormulaData.ingredientWeights.keys.count { it.startsWith(material.identifier.toString()) }) <= available }
             .sortedBy { it.identifier.toString() }.toList()
     }
 
-    private fun deterministicFraction(warband: PillagerWarband, id: String, salt: Int): Double =
-        ((warband.id.mostSignificantBits xor id.hashCode().toLong() xor salt.toLong()) and 1023L) / 1024.0
+    /**
+     * Projects the live TCon material-stat registry into the engine's shared
+     * capability space. Averaging prevents materials with more compatible part
+     * types from winning merely because they expose more records.
+     */
+    private fun materialCapabilities(material: IMaterial): CapabilityVector {
+        val vectors = MaterialRegistry.getInstance().getAllStats(material.identifier).mapNotNull { stats ->
+            when (stats) {
+                is HeadMaterialStats -> CapabilityVector(
+                    durability = stats.durability().toDouble() / 1000.0,
+                    damage = stats.attack().toDouble() / 10.0,
+                    mobility = stats.miningSpeed().toDouble() / 10.0,
+                )
+                is HandleMaterialStats -> CapabilityVector(
+                    durability = stats.durability().toDouble(),
+                    damage = stats.attackDamage().toDouble(),
+                    mobility = (stats.meleeSpeed() + stats.miningSpeed()).toDouble() / 2.0,
+                )
+                is LimbMaterialStats -> CapabilityVector(
+                    durability = stats.durability().toDouble() / 1000.0,
+                    range = (stats.drawSpeed() + stats.velocity()).toDouble() / 2.0,
+                    control = stats.accuracy().toDouble(),
+                )
+                is GripMaterialStats -> CapabilityVector(
+                    durability = stats.durability().toDouble(),
+                    damage = stats.meleeDamage().toDouble(),
+                    control = stats.accuracy().toDouble(),
+                )
+                is PlatingMaterialStats -> CapabilityVector(
+                    durability = stats.durability().toDouble() / 1000.0 + stats.armor().toDouble() / 10.0 +
+                        stats.toughness().toDouble() / 10.0,
+                    control = stats.knockbackResistance().toDouble(),
+                )
+                else -> null
+            }
+        }
+        if (vectors.isEmpty()) return CapabilityVector()
+        return vectors.fold(CapabilityVector(), CapabilityVector::plus) * (1.0 / vectors.size)
+    }
 }

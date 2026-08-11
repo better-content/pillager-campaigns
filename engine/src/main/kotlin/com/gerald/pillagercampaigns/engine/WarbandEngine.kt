@@ -130,24 +130,26 @@ object WarbandEngine {
         catalog: EngineCatalog,
         rules: WarbandRules = WarbandRules(),
     ): MaterialDefinition? {
-        val available = warband.reserveThreat *
+        val available = (warband.reserveThreat + warband.raidPool + warband.garrisonThreat) *
             (0.5 + warband.environment.mineralPotential + warband.environment.exoticPotential)
-        return catalog.materials.asSequence().filter { it.extractionCost <= available + EPSILON }
+        val accessible = catalog.materials.filter { it.extractionCost <= available + EPSILON }
+        val armamentRelevant = accessible.filter { armamentMaterialDemand(warband, it.id, catalog) > EPSILON }
+        return (armamentRelevant.ifEmpty { accessible }).asSequence()
             .maxWithOrNull(compareBy<MaterialDefinition> {
                 it.tier * (warband.environment.mineralPotential + warband.environment.exoticPotential * it.tier) +
-                    it.capabilities.dot(preferences(warband)) -
+                    rules.capabilityUtility(it.capabilities, rules.armamentPreferences(warband, null)) -
                     EcologyMath.repetitionPenalty(warband.selectionMemory.materials, it.id, rules.diversityWeight) +
-                    armamentMaterialDemand(warband, it.id, catalog) * 3.0
+                    armamentMaterialDemand(warband, it.id, catalog) * 0.10
             }.thenByDescending { deterministicTie(warband.id, it.id, state.sequence) })
     }
 
     /** Marginal progress one extracted unit makes toward functional armament. */
     fun armamentMaterialDemand(warband: WarbandState, materialId: String, catalog: EngineCatalog): Double =
-        catalog.equipment.sumOf { definition ->
-            val required = definition.cost[materialId]?.takeIf { it > EPSILON } ?: return@sumOf 0.0
+        catalog.equipment.mapNotNull { definition ->
+            val required = definition.cost[materialId]?.takeIf { it > EPSILON } ?: return@mapNotNull null
             val available = warband.materialLedger.getOrDefault(materialId, 0.0)
             val progress = ((available + 1.0) / required).coerceAtMost(1.0) - (available / required).coerceAtMost(1.0)
-            if (progress <= EPSILON) return@sumOf 0.0
+            if (progress <= EPSILON) return@mapNotNull null
             val otherCosts = definition.cost.filterKeys { it != materialId }
             val otherReadiness = if (otherCosts.isEmpty()) 1.0 else otherCosts.entries.map { (id, amount) ->
                 (warband.materialLedger.getOrDefault(id, 0.0) / amount.coerceAtLeast(EPSILON)).coerceIn(0.0, 1.0)
@@ -156,7 +158,7 @@ object WarbandEngine {
                 1.0 / (1.0 + warband.armory.count { action in it.supportedActions })
             }.average().takeIf(Double::isFinite) ?: 0.5
             progress * (0.5 + otherReadiness) * (1.0 + functionalNeed)
-        }
+        }.average().takeIf(Double::isFinite) ?: 0.0
 
     fun chooseEquipment(
         state: EngineState,
@@ -191,8 +193,8 @@ object WarbandEngine {
     ): MaterialDefinition? = materials.asSequence()
         .filter { it.id in compatibleIds && available.getOrDefault(it.id, 0.0) + EPSILON >= requiredUnits }
         .maxWithOrNull(compareBy<MaterialDefinition> { material ->
-            material.tier * (1.0 + warband.preferences.getOrDefault("exotic", 0.0) * warband.environment.exoticPotential) +
-                material.capabilities.dot(preferences(warband)) -
+            rules.capabilityUtility(material.capabilities, rules.armamentPreferences(warband, null)) +
+                material.tier * warband.environment.bounded().exoticPotential * 0.10 -
                 EcologyMath.repetitionPenalty(warband.selectionMemory.materials, material.id, rules.diversityWeight)
         }.thenByDescending { deterministicTie(warband.id, it.id, state.sequence + salt) })
 
@@ -262,7 +264,9 @@ object WarbandEngine {
                 warband.recruitTickDebt -= recruitTicks
                 warband.reserveThreat += 1.0
                 events += event(state, "recruited", warband.id, "threat=1")
-                manufacture(state, warband, catalog, events)
+                if (warband.armory.size < rules.desiredArmoryItems(warband, catalog.recruits)) {
+                    manufacture(state, warband, catalog, events)
+                }
             }
 
             warband.extractionTickDebt += elapsed

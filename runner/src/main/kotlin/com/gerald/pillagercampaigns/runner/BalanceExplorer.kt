@@ -173,13 +173,20 @@ class BalanceExplorer(private val json: Json = Json { prettyPrint = true; encode
         )
 
         val equipment = mature.minByOrNull(ExperimentSummary::equipmentCoverage)
-        if (equipment != null) findings += BalanceFinding(
+        if (equipment != null) {
+            val environmentFormulations = mature.groupBy { summary ->
+                Regex("^h30d-e([0-9]+)-").find(summary.name)?.groupValues?.get(1) ?: "unknown"
+            }.values.map { cells -> cells.flatMap { it.manufacturedEquipmentCounts.keys }.toSet() }
+            val union = environmentFormulations.flatten().toSet()
+            val shared = environmentFormulations.reduceOrNull(Set<String>::intersect).orEmpty()
+            findings += BalanceFinding(
             5, "Equipment expression",
-            "The weakest mature cell equips ${percent(equipment.equipmentCoverage)} of dispatched members while retaining ${equipment.armoryItems} armory items. Across mature cells the live functional mix is ${mature.flatMap { it.armamentActionCounts.entries }.groupingBy { it.key }.fold(0) { total, entry -> total + entry.value }.toSortedMap()}, and mean environment/recruit-weighted armament utility spans ${decimal(mature.minOf { it.meanArmamentUtility })}–${decimal(mature.maxOf { it.meanArmamentUtility })}.",
+            "The weakest mature cell equips ${percent(equipment.equipmentCoverage)} of dispatched members while retaining ${equipment.armoryItems} armory items. Mature environments manufacture ${environmentFormulations.minOf { it.size }}–${environmentFormulations.maxOf { it.size }} formulations each; ${union.size - shared.size} of ${union.size} formulations are environment-specific rather than universal. Across mature cells the live functional mix is ${mature.flatMap { it.armamentActionCounts.entries }.groupingBy { it.key }.fold(0) { total, entry -> total + entry.value }.toSortedMap()}, and mean environment/recruit-weighted armament utility spans ${decimal(mature.minOf { it.meanArmamentUtility })}–${decimal(mature.maxOf { it.meanArmamentUtility })}.",
             mature.sortedBy(ExperimentSummary::equipmentCoverage).take(3).map(ExperimentSummary::name),
             "Keep capability-gain and action-compatibility assignment; tune manufacturing throughput and wear before changing selection utility.",
             "Aggressive stock rotation can erase the identity created by material preferences.", "medium",
         )
+        }
 
         val idle = summaries.filter { it.name.startsWith("sensitivity-idle-") }
         if (idle.isNotEmpty()) findings += BalanceFinding(

@@ -1,6 +1,6 @@
 # Pillager Campaigns Programmatic Balance Notes
 
-Catalog: `forge-live-sha256:e5a8fd1cb3db0d3eef5eeeb72605161ce6fcdbf145c5f3d279917e8d1fbd385d`
+Catalog: `forge-live-sha256:e250feee8344c9a2d4c4f7959472544bf161f931162b33882c42974f40bf2540`
 
 The report covers 342 deterministic cells using the exact authoritative engine and a Forge-captured live catalog.
 
@@ -8,21 +8,21 @@ The report covers 342 deterministic cells using the exact authoritative engine a
 
 | Horizon | Cells | Raids/day | Distinct recruits | Dominant share | Equipment coverage |
 |---:|---:|---:|---:|---:|---:|
-| 1 days | 81 | 1.26 | 2.19 | 46.3% | 92.6% |
-| 3 days | 81 | 0.77 | 3.28 | 46.2% | 100.0% |
-| 10 days | 81 | 0.49 | 4.05 | 39.1% | 95.5% |
-| 30 days | 81 | 0.38 | 4.81 | 33.0% | 82.5% |
+| 1 days | 81 | 1.26 | 2.19 | 46.3% | 88.0% |
+| 3 days | 81 | 0.81 | 3.35 | 46.2% | 96.9% |
+| 10 days | 81 | 0.52 | 4.15 | 38.5% | 98.5% |
+| 30 days | 81 | 0.39 | 4.91 | 32.6% | 99.3% |
 
 ## One-factor sensitivity
 
 | Factor | Cells | Dispatch range | Dominant-share range | Peak-threat range |
 |---|---:|---:|---:|---:|
-| aggression | 3 | 2–5 | 25.0%–40.0% | 13.58–24.85 |
-| reserve | 3 | 5–8 | 31.3%–40.0% | 13.50–28.58 |
-| distance | 3 | 6–9 | 33.3%–50.0% | 13.18–13.66 |
-| idle | 3 | 8–8 | 35.0%–35.0% | 18.94–18.94 |
-| learning | 3 | 4–6 | 37.5%–50.0% | 13.18–13.98 |
-| supply | 3 | 5–6 | 33.3%–40.0% | 13.50–13.58 |
+| aggression | 3 | 2–6 | 25.0%–33.3% | 13.58–24.85 |
+| reserve | 3 | 5–8 | 31.3%–40.0% | 13.58–28.58 |
+| distance | 3 | 5–9 | 33.3%–50.0% | 13.18–13.66 |
+| idle | 3 | 8–9 | 34.8%–35.0% | 18.94–18.94 |
+| learning | 3 | 4–7 | 33.3%–50.0% | 13.18–13.98 |
+| supply | 3 | 6–6 | 33.3%–41.7% | 13.50–13.58 |
 
 ## Findings and candidate changes
 
@@ -38,7 +38,7 @@ Risk: Weakening readiness directly can reintroduce singleton raids; strengthenin
 
 ### 2. Low-level and mature roster variety
 
-The worst three-day cell assigns 50.0% of members to one recruit; the envelope mean is 46.2%. 6 of 6 live recruits appear across mature cells, with 3–6 distinct recruits per cell.
+The worst three-day cell assigns 50.0% of members to one recruit; the envelope mean is 46.2%. 6 of 6 live recruits appear across mature cells, with 4–6 distinct recruits per cell.
 
 Evidence: `h3d-e0-warband-favored-s11`, `h3d-e0-warband-favored-s29`, `h3d-e0-warband-favored-s47`.
 
@@ -48,9 +48,9 @@ Risk: Too much penalty can force weak recruits despite strong environmental pref
 
 ### 3. Material and equipment diversity
 
-At least one mature cell extracts only 1 material type(s) and manufactures 3 equipment formulation(s).
+At least one mature cell extracts only 4 material type(s) and manufactures 6 equipment formulation(s).
 
-Evidence: `h30d-e0-warband-favored-s11`, `h30d-e0-warband-favored-s29`, `h30d-e0-warband-favored-s47`.
+Evidence: `h30d-e6-player-favored-s11`, `h30d-e6-player-favored-s47`, `h30d-e2-player-favored-s29`.
 
 Candidate: Retain recent extraction frequency as a bounded utility term; compare the four observed materials against actual TCon compatibility before increasing diversity pressure.
 
@@ -58,9 +58,9 @@ Risk: Scarcity pressure must not select unaffordable or environmentally impossib
 
 ### 4. Pressure cadence
 
-Observed cadence ranges from 0.23 to 2.00 dispatches per day across the bounded envelope.
+Observed cadence ranges from 0.27 to 2.00 dispatches per day across the bounded envelope.
 
-Evidence: `h30d-e5-nominal-s11`, `h1d-e0-warband-favored-s11`.
+Evidence: `h30d-e2-nominal-s47`, `h1d-e0-warband-favored-s11`.
 
 Candidate: Make cooldown recovery a smooth function of aggression, surviving threat, and recent completed-cycle duration.
 
@@ -68,9 +68,9 @@ Risk: Faster recycling can become oppressive when several warbands target one tr
 
 ### 5. Equipment expression
 
-The weakest mature cell equips 27.3% of dispatched members while retaining 0 armory items. Across mature cells the live functional mix is {defense=1536, melee=45, ranged=444, utility=444}, and mean environment/recruit-weighted armament utility spans 0.30–1.86.
+The weakest mature cell equips 95.8% of dispatched members while retaining 2 armory items. Mature environments manufacture 5–9 formulations each; 12 of 14 formulations are environment-specific rather than universal. Across mature cells the live functional mix is {defense=1468, melee=459, ranged=429, utility=616}, and mean environment/recruit-weighted armament utility spans 0.21–2.30.
 
-Evidence: `h30d-e0-player-favored-s11`, `h30d-e0-player-favored-s29`, `h30d-e0-player-favored-s47`.
+Evidence: `h30d-e0-player-favored-s29`, `h30d-e4-player-favored-s29`, `h30d-e0-nominal-s29`.
 
 Candidate: Keep capability-gain and action-compatibility assignment; tune manufacturing throughput and wear before changing selection utility.
 
@@ -78,7 +78,7 @@ Risk: Aggressive stock rotation can erase the identity created by material prefe
 
 ### 6. Idle-return aggression feedback
 
-Idle-return sensitivity changes completed campaigns from 7 to 8 over ten days; final aggression spans 13–14.
+Idle-return sensitivity changes completed campaigns from 7 to 9 over ten days; final aggression spans 13–15.
 
 Evidence: `sensitivity-idle-6000`, `sensitivity-idle-12000`, `sensitivity-idle-24000`.
 
@@ -88,7 +88,7 @@ Risk: Scaling too softly makes kiting a permanent suppression strategy; scaling 
 
 ### 7. Logistics pressure and recoverability
 
-Across supply sensitivity, mean segment satisfaction spans 46.6%–58.6%. Nominal-aggression cells avoid lethal attrition, while the high-aggression sensitivity sustains 0 losses and retains 0 recoverable caches before withdrawing.
+Across supply sensitivity, mean segment satisfaction spans 61.8%–70.0%. Nominal-aggression cells avoid lethal attrition, while the high-aggression sensitivity sustains 0 losses and retains 0 recoverable caches before withdrawing.
 
 Evidence: `sensitivity-supply-0`, `sensitivity-supply-24`, `sensitivity-supply-96`, `sensitivity-aggression-18`.
 
@@ -108,9 +108,9 @@ Risk: Too much forage utility produces implausible detours; too little makes env
 
 ### 9. Unmaterialized warband power growth
 
-Mean peak deployed threat grows from 11.74 at three days to 19.34 at thirty days, while mature recruit diversity rises to 4.81 types per cell.
+Mean peak deployed threat grows from 11.99 at three days to 19.60 at thirty days, while mature recruit diversity rises to 4.91 types per cell.
 
-Evidence: `h3d-e3-nominal-s11`, `h30d-e7-nominal-s11`.
+Evidence: `h3d-e0-nominal-s11`, `h30d-e7-nominal-s29`.
 
 Candidate: Retain reserve growth, learned threat, manufacturing, and aggression feedback as independent continuous inputs; avoid a discrete late-game tier switch.
 

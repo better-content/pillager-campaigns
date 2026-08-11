@@ -72,7 +72,7 @@ object PillagerCampaignsGameTests {
         player.moveTo(playerPos.x + .5, playerPos.y.toDouble(), playerPos.z + .5)
         val minimum = PillagerRuntime.minimumRecruitThreat(level, warband)
         helper.assertTrue(minimum != null && minimum > 0.0, "live recruit catalogue should expose a minimum threat")
-        TinkersArmoryOptimizer.materialDefinitions(warband).forEach { warband.materialLedger[it.id] = 10_000.0 }
+        TinkersArmoryOptimizer.materialDefinitions().forEach { warband.materialLedger[it.id] = 10_000.0 }
         val liveArmament = TinkersArmoryOptimizer.liveEquipmentCandidates(warband, level.server)
             .firstOrNull { TinkersArmoryOptimizer.equipmentSlot(it.stack) != net.minecraft.world.entity.EquipmentSlot.MAINHAND }
             ?: TinkersArmoryOptimizer.liveEquipmentCandidates(warband, level.server).firstOrNull()
@@ -135,11 +135,27 @@ object PillagerCampaignsGameTests {
         )
         helper.assertTrue(PillagerWarbandDiscoveryService.registerDiscoveredWarband(level, data, candidate, level.gameTime), "warband should register")
         val warband = data.warbands.getValue(candidate.id)
-        val materials = TinkersArmoryOptimizer.materialDefinitions(warband)
+        val materials = TinkersArmoryOptimizer.materialDefinitions()
+        val environments = listOf(EnvironmentTraits()) + WarbandFormulaData.traitWeights.toSortedMap().values.map { delta ->
+            EnvironmentTraits(
+                .5 + delta.habitability, .5 + delta.biomass, .5 + delta.mineral,
+                .5 + delta.exotic, .5 + delta.friction,
+            ).bounded()
+        }
+        val originalReserve = warband.reserve
+        val originalEnvironment = warband.environment
+        warband.reserve = warband.capacity
         materials.forEach { warband.materialLedger[it.id] = 10_000.0 }
         val recruits = PillagerRuntime.recruitDefinitions(level, warband)
+        val equipmentByEnvironment = linkedMapOf<EnvironmentTraits, Set<String>>()
         val equipmentCandidates = buildList {
-            addAll(TinkersArmoryOptimizer.liveEquipmentCandidates(warband, level.server))
+            environments.forEach { environment ->
+                warband.environment = environment
+                val candidates = TinkersArmoryOptimizer.liveEquipmentCandidates(warband, level.server)
+                equipmentByEnvironment[environment] = candidates.mapTo(linkedSetOf()) { it.definition.id }
+                addAll(candidates)
+            }
+            warband.environment = originalEnvironment
             // The pure runner consumes a static registry boundary while live Forge
             // reformulates from its changing ledger. Sample every observed material
             // and natural three-material ledger window so the static boundary
@@ -150,22 +166,20 @@ object PillagerCampaignsGameTests {
                 addAll(TinkersArmoryOptimizer.liveEquipmentCandidates(warband, level.server))
             }
         }.distinctBy { it.definition.id }.sortedBy { it.definition.id }
+        warband.reserve = originalReserve
+        warband.environment = originalEnvironment
         warband.materialLedger.clear()
         materials.forEach { warband.materialLedger[it.id] = 10_000.0 }
         val equipment = equipmentCandidates.map { it.definition }
         val resources = WarbandResourceCatalog.definitions()
-        val environments = listOf(EnvironmentTraits()) + WarbandFormulaData.traitWeights.toSortedMap().values.map { delta ->
-            EnvironmentTraits(
-                .5 + delta.habitability, .5 + delta.biomass, .5 + delta.mineral,
-                .5 + delta.exotic, .5 + delta.friction,
-            ).bounded()
-        }
         val canonical = Json.encodeToString(EngineCatalog("unhashed", recruits, materials, equipment, environments, resources))
         val digest = MessageDigest.getInstance("SHA-256").digest(canonical.toByteArray()).joinToString("") { "%02x".format(it) }
         val catalog = EngineCatalog("forge-live-sha256:$digest", recruits, materials, equipment, environments, resources)
         helper.assertTrue(catalog.recruits.isNotEmpty(), "snapshot must contain the live recruit tag")
         helper.assertTrue(catalog.materials.isNotEmpty(), "snapshot must contain live TCon materials")
+        helper.assertTrue(catalog.materials.map { it.capabilities }.distinct().size >= 10, "live TCon material stats must project to a varied capability population")
         helper.assertTrue(catalog.equipment.isNotEmpty(), "snapshot must contain legal live TCon formulations")
+        helper.assertTrue(equipmentByEnvironment.values.distinct().size > 1, "environment samples must produce materially distinct live TCon candidate sets")
         val actions = catalog.equipment.flatMapTo(linkedSetOf()) { it.actions }
         helper.assertTrue(actions.containsAll(setOf("melee", "ranged", "defense", "utility")), "live TCon formulations must expose melee, ranged, defensive, and utility functions")
         helper.assertTrue(equipment.any { definition ->

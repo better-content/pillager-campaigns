@@ -74,7 +74,7 @@ object PillagerEngineBridge {
             val catalog = EngineCatalog(
                 revision = "forge-live",
                 recruits = recruits,
-                materials = TinkersArmoryOptimizer.materialDefinitions(warband),
+                materials = TinkersArmoryOptimizer.materialDefinitions(),
                 equipment = candidates.map { it.definition },
                 resources = WarbandResourceCatalog.definitions(),
             )

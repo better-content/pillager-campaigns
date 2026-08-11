@@ -188,10 +188,25 @@ class WarbandEngineTest {
         warband.materialLedger.clear()
         warband.environment = EnvironmentTraits(mineralPotential = 0.5, exoticPotential = 0.0)
         val logisticalCatalog = catalog.copy(
-            materials = listOf(MaterialDefinition("irrelevant", 2, 0.0), MaterialDefinition("needed", 1, 0.0)),
+            materials = listOf(MaterialDefinition("irrelevant", 1, 0.0), MaterialDefinition("needed", 1, 0.0)),
             equipment = listOf(EquipmentDefinition("shield", listOf("core"), CapabilityVector(durability = 2.0), mapOf("needed" to 1.0), setOf("defense"))),
         )
         assertEquals("needed", WarbandEngine.chooseMaterial(state, warband, logisticalCatalog, rules)?.id)
+    }
+
+    @Test fun `environment changes formulaic part material preference without material archetypes`() {
+        val state = state()
+        val warband = state.warbands.getValue("warband")
+        warband.preferences.clear()
+        val durable = MaterialDefinition("durable", 1, 0.0, CapabilityVector(durability = 4.0, mobility = 2.0))
+        val ranged = MaterialDefinition("ranged", 1, 0.0, CapabilityVector(range = 4.0, control = 1.0))
+        val materials = listOf(durable, ranged)
+        val available = mapOf("durable" to 10.0, "ranged" to 10.0)
+        warband.environment = EnvironmentTraits(habitability = 0.0, biomass = 1.0, travelFriction = 1.0)
+        assertEquals("durable", WarbandEngine.choosePartMaterial(state, warband, materials, materials.mapTo(linkedSetOf()) { it.id }, available, 1.0, 0, rules)?.id)
+        warband.environment = EnvironmentTraits(habitability = 1.0, biomass = 0.0, travelFriction = 0.0)
+        warband.aggression = rules.maximumAggression
+        assertEquals("ranged", WarbandEngine.choosePartMaterial(state, warband, materials, materials.mapTo(linkedSetOf()) { it.id }, available, 1.0, 0, rules)?.id)
     }
 
     @Test fun `catalog and frames fail closed`() {
