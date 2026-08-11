@@ -54,6 +54,7 @@ data class EquipmentManifest(
     val billOfMaterials: Map<String, Double>,
     val capabilities: CapabilityVector,
     val supportedActions: Set<String> = emptySet(),
+    var durabilityFraction: Double = 1.0,
 )
 
 @Serializable
@@ -64,6 +65,23 @@ data class MemberManifest(
     var healthFraction: Double = 1.0,
     var experience: Double = 0.0,
     var equipment: EquipmentManifest? = null,
+    val cargo: MutableMap<String, Int> = linkedMapOf(),
+)
+
+@Serializable
+data class SelectionMemory(
+    val recruits: MutableMap<String, Double> = linkedMapOf(),
+    val materials: MutableMap<String, Double> = linkedMapOf(),
+    val equipment: MutableMap<String, Double> = linkedMapOf(),
+    var lastDecayTick: Long = 0L,
+)
+
+@Serializable
+data class LostCache(
+    val id: String,
+    val position: ChunkPosition,
+    val cargo: MutableMap<String, Int> = linkedMapOf(),
+    val equipment: MutableList<EquipmentManifest> = mutableListOf(),
 )
 
 @Serializable
@@ -87,6 +105,8 @@ data class WarbandState(
     val materialLedger: MutableMap<String, Double> = linkedMapOf(),
     val armory: MutableList<EquipmentManifest> = mutableListOf(),
     val empiricalThreat: MutableMap<String, Double> = linkedMapOf(),
+    val stockpile: MutableMap<String, Int> = linkedMapOf(),
+    val selectionMemory: SelectionMemory = SelectionMemory(),
     var recruitTickDebt: Double = 0.0,
     var mobilizationTickDebt: Double = 0.0,
     var extractionTickDebt: Double = 0.0,
@@ -124,6 +144,12 @@ data class CampaignState(
     var lastCombatTick: Long = 0L,
     var returnReason: String? = null,
     var returnAggressionDelta: Int = 0,
+    val route: MutableList<ChunkPosition> = mutableListOf(),
+    var routeIndex: Int = 0,
+    var supplySatisfaction: Double = 1.0,
+    var deficitExposure: Double = 0.0,
+    var forageDebt: Double = 0.0,
+    val lostCaches: MutableList<LostCache> = mutableListOf(),
 )
 
 @Serializable
@@ -138,4 +164,5 @@ data class EngineState(
     val officers: MutableMap<String, OfficerState> = linkedMapOf(),
     val campaigns: MutableMap<String, CampaignState> = linkedMapOf(),
     val protectedPlayersUntilTick: MutableMap<String, Long> = linkedMapOf(),
+    val terrain: MutableMap<String, TerrainObservation> = linkedMapOf(),
 )

@@ -187,4 +187,90 @@ class WarbandEngineTest {
         assertFailsWith<IllegalArgumentException> { WarbandEngine.transition(state(), EngineFrame(0L), catalog.copy(revision = ""), rules) }
         assertNotNull(WarbandEngine.chooseRecruit(state(), state().warbands.getValue("warband"), null, catalog, 6.0))
     }
+
+    @Test fun `selection history changes formulaic recruit choice without fixed rosters`() {
+        val state = state()
+        val warband = state.warbands.getValue("warband")
+        val equalCatalog = catalog.copy(recruits = listOf(
+            RecruitDefinition("first", 5.0, CapabilityVector(damage = 1.0)),
+            RecruitDefinition("second", 5.0, CapabilityVector(damage = 1.0)),
+        ))
+        warband.selectionMemory.recruits["first"] = 100.0
+        warband.selectionMemory.recruits["second"] = 0.0
+        assertEquals("second", WarbandEngine.chooseRecruit(state, warband, null, equalCatalog, 5.0, rules = rules)?.id)
+    }
+
+    @Test fun `equipment assignment maximizes member utility instead of armory order`() {
+        val state = state()
+        val warband = state.warbands.getValue("warband")
+        warband.preferences["damage"] = 4.0
+        warband.armory += EquipmentManifest("weak", "blade", emptyList(), emptyMap(), CapabilityVector(damage = 0.1), setOf("melee"))
+        warband.armory += EquipmentManifest("strong", "blade", emptyList(), emptyMap(), CapabilityVector(damage = 3.0), setOf("melee"))
+        val meleeOnly = catalog.copy(recruits = listOf(catalog.recruits.first()))
+        val plan = WarbandEngine.planSquad(state, warband, null, meleeOnly, 5.0, rules)
+        assertEquals("strong", plan.members.single().equipment?.id)
+        assertEquals(listOf("weak"), warband.armory.map { it.id })
+    }
+
+    @Test fun `dispatch provisions exact items and returning refunds only unconsumed cargo`() {
+        val resources = listOf(
+            ResourceDefinition("ration", ResourceVector(sustenance = 1.0)),
+            ResourceDefinition("arrow", ResourceVector(munitions = 1.0)),
+            ResourceDefinition("oil", ResourceVector(maintenance = 1.0)),
+        )
+        val suppliedCatalog = catalog.copy(resources = resources)
+        val state = state(pool = 20.0)
+        val warband = state.warbands.getValue("warband")
+        resources.forEach { warband.stockpile[it.itemId] = 50 }
+        val player = PlayerFact("player", ChunkPosition("overworld", 12, 0), setOf("warband"))
+        WarbandEngine.transition(state, EngineFrame(0L, listOf(player)), suppliedCatalog, rules)
+        val campaign = state.campaigns.values.single()
+        resources.forEach { resource ->
+            assertEquals(50, warband.stockpile.getOrDefault(resource.itemId, 0) + campaign.members.sumOf { it.cargo.getOrDefault(resource.itemId, 0) })
+        }
+        val afterProvision = resources.associate { resource -> resource.itemId to campaign.members.sumOf { it.cargo.getOrDefault(resource.itemId, 0) } }
+        val outbound = WarbandEngine.transition(state, EngineFrame(rules.travelTicksPerChunk, listOf(player)), suppliedCatalog, rules)
+        assertTrue(resources.any { resource -> campaign.members.sumOf { it.cargo.getOrDefault(resource.itemId, 0) } < afterProvision.getValue(resource.itemId) })
+        WarbandEngine.transition(state, EngineFrame(0L, commands = listOf(EngineCommand.BeginReturn(campaign.id, "test"))), suppliedCatalog, rules)
+        val returning = WarbandEngine.transition(state, EngineFrame(2L * rules.travelTicksPerChunk), suppliedCatalog, rules)
+        assertEquals(CampaignPhase.RESOLVED, campaign.phase)
+        val consumed = (outbound.events + returning.events).filter { it.type == "resource_consumed" }
+            .map { it.detail.split("=") }.groupingBy { it[0] }.fold(0) { total, value -> total + value[1].toInt() }
+        assertTrue((outbound.events + returning.events).none { it.type == "resource_acquired" })
+        resources.forEach { resource ->
+            assertEquals(50 - consumed.getOrDefault(resource.itemId, 0), warband.stockpile.getOrDefault(resource.itemId, 0))
+        }
+    }
+
+    @Test fun `severe sustained deficit causes attrition and preserves exact recoverable assets`() {
+        val state = state(reserve = 0.0, pool = 0.0)
+        val equipment = EquipmentManifest("tool", "blade", listOf("iron"), mapOf("iron" to 1.0), CapabilityVector(damage = 1.0))
+        val member = MemberManifest("member", "quick", 5.0, healthFraction = 0.2, equipment = equipment)
+        val campaign = CampaignState(
+            "campaign", "warband", "captain", "player", ChunkPosition("overworld", 0, 0),
+            ChunkPosition("overworld", 20, 0), mutableListOf(member), route = mutableListOf(ChunkPosition("overworld", 1, 0)),
+        )
+        state.campaigns[campaign.id] = campaign
+        val harshRules = rules.copy(travelTicksPerChunk = 1L, deficitGraceChunks = 0.0, attritionPerDeficitChunk = 1.0)
+        val resourceCatalog = catalog.copy(resources = listOf(ResourceDefinition("ration", ResourceVector(sustenance = 1.0))))
+        val result = WarbandEngine.transition(state, EngineFrame(1L), resourceCatalog, harshRules)
+        assertTrue(result.events.any { it.type == "member_lost_to_attrition" })
+        assertTrue(result.events.any { it.type == "campaign_lost_to_attrition" })
+        val cache = campaign.lostCaches.single()
+        assertEquals(ChunkPosition("overworld", 1, 0), cache.position)
+        assertEquals(listOf("tool"), cache.equipment.map { it.id })
+        assertEquals(CampaignPhase.RESOLVED, campaign.phase)
+    }
+
+    @Test fun `invalid logistics manifests fail closed`() {
+        val state = state()
+        state.warbands.getValue("warband").stockpile["ration"] = -1
+        assertFailsWith<IllegalArgumentException> { WarbandEngine.validate(state, catalog, rules) }
+        state.warbands.getValue("warband").stockpile.clear()
+        state.campaigns["bad"] = CampaignState(
+            "bad", "warband", "captain", "player", ChunkPosition("overworld", 0, 0), ChunkPosition("overworld", 1, 0),
+            mutableListOf(MemberManifest("bad-member", "quick", 5.0, equipment = EquipmentManifest("bad-tool", "blade", emptyList(), emptyMap(), CapabilityVector(), durabilityFraction = 1.1))),
+        )
+        assertFailsWith<IllegalArgumentException> { WarbandEngine.validate(state, catalog, rules) }
+    }
 }

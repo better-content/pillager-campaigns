@@ -15,6 +15,15 @@ data class WarbandRules(
     val warbandLearningRate: Double = 0.05,
     val captainLearningRate: Double = 0.10,
     val threatLearningRate: Double = 0.10,
+    val selectionMemoryHalfLifeTicks: Long = 240_000L,
+    val diversityWeight: Double = 0.35,
+    val sustenancePerThreatChunk: Double = 0.018,
+    val munitionsPerRangedThreatChunk: Double = 0.012,
+    val maintenancePerEquipmentChunk: Double = 0.025,
+    val deficitGraceChunks: Double = 3.0,
+    val attritionPerDeficitChunk: Double = 0.035,
+    val equipmentWearPerFrictionChunk: Double = 0.004,
+    val forageUnitsPerDeficitChunk: Double = 0.75,
 ) {
     fun capacity(environment: EnvironmentTraits): Int =
         ((96.0 + 120.0 * environment.bounded().habitability) / 6.0).roundToInt() * 6

@@ -15,6 +15,7 @@ object WarbandEngine {
         val effects = mutableListOf<EngineEffect>()
         state.tick += frame.elapsedTicks
 
+        frame.terrain.forEach { observation -> state.terrain[terrainKey(observation.position)] = observation }
         applyMaterializations(state, frame.materializations, events)
         applyPositions(state, frame.physicalPositions)
         frame.combat.forEach { observeCombat(state, catalog, rules, it, events, effects) }
@@ -31,7 +32,7 @@ object WarbandEngine {
 
         advanceEconomies(state, catalog, rules, frame.elapsedTicks, events)
         automaticDispatch(state, catalog, rules, frame.players, events)
-        advanceCampaigns(state, rules, frame.players, frame.elapsedTicks, events, effects)
+        advanceCampaigns(state, catalog, rules, frame.players, frame.elapsedTicks, events, effects)
         validate(state, catalog, rules)
         return TransitionResult(state, events, effects)
     }
@@ -49,7 +50,8 @@ object WarbandEngine {
         return catalog.recruits.asSequence()
             .filter { observedThreat(warband, it) <= budget + EPSILON }
             .maxWithOrNull(compareBy<RecruitDefinition> {
-                marginalRecruitScore(recruitScore(warband, it, preferences), members.count { member -> member.recruitId == it.id })
+                marginalRecruitScore(recruitScore(warband, it, preferences), members.count { member -> member.recruitId == it.id }) -
+                    EcologyMath.repetitionPenalty(warband.selectionMemory.recruits, it.id, rules.diversityWeight)
             }
                 .thenByDescending { deterministicTie(warband.id, it.id, state.sequence + members.size) })
     }
@@ -100,36 +102,59 @@ object WarbandEngine {
     ): SquadPlan {
         val members = mutableListOf<MemberManifest>()
         var remaining = budget.coerceAtLeast(0.0)
+        val preferences = rules.effectivePreferences(warband, officer)
         while (members.size < rules.maximumSquadMembers) {
             val recruit = chooseRecruit(state, warband, officer, catalog, remaining, members, rules) ?: break
             val threat = observedThreat(warband, recruit)
-            val equipment = warband.armory.indexOfFirst { item ->
-                item.supportedActions.isEmpty() || recruit.supportedEquipmentActions.isEmpty() ||
-                    item.supportedActions.any(recruit.supportedEquipmentActions::contains)
-            }.takeIf { it >= 0 }?.let(warband.armory::removeAt)
+            val equipmentIndex = warband.armory.withIndex().asSequence()
+                .filter { (_, item) ->
+                    item.supportedActions.isEmpty() || recruit.supportedEquipmentActions.isEmpty() ||
+                        item.supportedActions.any(recruit.supportedEquipmentActions::contains)
+                }
+                .maxWithOrNull(compareBy<IndexedValue<EquipmentManifest>> { (_, item) ->
+                    item.capabilities.dot(preferences) + item.capabilities.dot(recruit.capabilities) * 0.25 +
+                        item.durabilityFraction * (0.1 + preferences.durability.coerceAtLeast(0.0))
+                }.thenByDescending { it.value.id })?.index
+            val equipment = equipmentIndex?.let(warband.armory::removeAt)
             members += MemberManifest(nextId(state, "member"), recruit.id, threat, equipment = equipment)
+            warband.selectionMemory.recruits[recruit.id] = warband.selectionMemory.recruits.getOrDefault(recruit.id, 0.0) + 1.0
             remaining -= threat
         }
         return SquadPlan(members, members.sumOf(MemberManifest::threat))
     }
 
-    fun chooseMaterial(state: EngineState, warband: WarbandState, catalog: EngineCatalog): MaterialDefinition? {
+    fun chooseMaterial(
+        state: EngineState,
+        warband: WarbandState,
+        catalog: EngineCatalog,
+        rules: WarbandRules = WarbandRules(),
+    ): MaterialDefinition? {
         val available = warband.reserveThreat *
             (0.5 + warband.environment.mineralPotential + warband.environment.exoticPotential)
         return catalog.materials.asSequence().filter { it.extractionCost <= available + EPSILON }
             .maxWithOrNull(compareBy<MaterialDefinition> {
                 it.tier * (warband.environment.mineralPotential + warband.environment.exoticPotential * it.tier) +
-                    it.capabilities.dot(preferences(warband))
+                    it.capabilities.dot(preferences(warband)) -
+                    EcologyMath.repetitionPenalty(warband.selectionMemory.materials, it.id, rules.diversityWeight)
             }.thenByDescending { deterministicTie(warband.id, it.id, state.sequence) })
     }
 
-    fun chooseEquipment(state: EngineState, warband: WarbandState, catalog: EngineCatalog): EquipmentDefinition? =
+    fun chooseEquipment(
+        state: EngineState,
+        warband: WarbandState,
+        catalog: EngineCatalog,
+        rules: WarbandRules = WarbandRules(),
+    ): EquipmentDefinition? =
         catalog.equipment.asSequence()
             .filter { definition -> definition.cost.all { (id, amount) -> warband.materialLedger.getOrDefault(id, 0.0) + EPSILON >= amount } }
             .maxWithOrNull(compareBy<EquipmentDefinition> { definition ->
                 // Preserve live baseline semantics: affordability is exact, then the
                 // functional maximum wins without an invented cost-efficiency curve.
-                definition.capabilities.dot(preferences(warband))
+                val stockCoverage = warband.armory.count { it.definitionId == definition.id }.toDouble() /
+                    warband.armory.size.coerceAtLeast(1)
+                definition.capabilities.dot(preferences(warband)) -
+                    EcologyMath.repetitionPenalty(warband.selectionMemory.equipment, definition.id, rules.diversityWeight) -
+                    stockCoverage * rules.diversityWeight
             }.thenByDescending { deterministicTie(warband.id, it.id, state.sequence) })
 
     fun choosePartMaterial(
@@ -153,6 +178,7 @@ object WarbandEngine {
             require(warband.reserveThreat >= -EPSILON && warband.raidPool >= -EPSILON && warband.garrisonThreat >= -EPSILON)
             require(warband.capacity > 0.0 && warband.aggression in rules.minimumAggression..rules.maximumAggression)
             require(warband.materialLedger.values.all { it.isFinite() && it >= -EPSILON })
+            require(warband.stockpile.values.all { it >= 0 })
             require(warband.preferences.values.all(Double::isFinite))
         }
         val memberIds = state.campaigns.values.flatMap { it.members }.map { it.id }
@@ -166,6 +192,12 @@ object WarbandEngine {
         state.campaigns.values.flatMap { it.members }.forEach { member ->
             require(catalog.recruits.any { it.id == member.recruitId }) { "unknown recruit ${member.recruitId}" }
             require(member.threat > 0.0 && member.healthFraction in 0.0..1.0)
+            require(member.cargo.values.all { it >= 0 })
+            require(member.equipment?.durabilityFraction?.let { it in 0.0..1.0 } != false)
+        }
+        state.campaigns.values.flatMap { it.lostCaches }.forEach { cache ->
+            require(cache.cargo.values.all { it >= 0 })
+            require(cache.equipment.all { it.durabilityFraction in 0.0..1.0 })
         }
     }
 
@@ -177,8 +209,13 @@ object WarbandEngine {
         events: MutableList<EngineEvent>,
     ) {
         var remaining = elapsed
+        var simulationTick = state.tick - elapsed
         while (remaining > 0L) {
             val slice = minOf(20L, remaining)
+            simulationTick += slice
+            state.warbands.values.forEach {
+                EcologyMath.decay(it.selectionMemory, simulationTick, rules.selectionMemoryHalfLifeTicks)
+            }
             advanceEconomySlice(state, catalog, rules, slice, events)
             remaining -= slice
         }
@@ -225,7 +262,9 @@ object WarbandEngine {
     private fun extract(state: EngineState, warband: WarbandState, catalog: EngineCatalog, events: MutableList<EngineEvent>) {
         val selected = chooseMaterial(state, warband, catalog) ?: return
         warband.materialLedger[selected.id] = warband.materialLedger.getOrDefault(selected.id, 0.0) + 1.0
+        warband.selectionMemory.materials[selected.id] = warband.selectionMemory.materials.getOrDefault(selected.id, 0.0) + 1.0
         events += event(state, "extracted", warband.id, selected.id)
+        acquireEnvironmentalResource(state, warband, catalog, warband.environment, warband.stockpile, events)
     }
 
     private fun manufacture(
@@ -238,6 +277,7 @@ object WarbandEngine {
         selected.cost.forEach { (id, amount) -> warband.materialLedger[id] = (warband.materialLedger.getOrDefault(id, 0.0) - amount).coerceAtLeast(0.0) }
         val manifest = EquipmentManifest(nextId(state, "equipment"), selected.id, selected.formulation, selected.cost, selected.capabilities, selected.actions)
         warband.armory += manifest
+        warband.selectionMemory.equipment[selected.id] = warband.selectionMemory.equipment.getOrDefault(selected.id, 0.0) + 1.0
         events += event(state, "manufactured", manifest.id, selected.id)
     }
 
@@ -278,11 +318,14 @@ object WarbandEngine {
         if (plan.members.isEmpty()) return false
         val members = plan.members.toMutableList()
         val committed = plan.committedThreat
+        val destination = target ?: warband.rally
+        val route = planRoute(state, warband, destination, rules).toMutableList()
+        provisionCampaign(members, warband, catalog, rules, route.size.coerceAtLeast(1), events, state)
         warband.raidPool -= committed
         val campaignId = nextId(state, "campaign")
         state.campaigns[campaignId] = CampaignState(
             campaignId, warband.id, officer?.id ?: "", playerId, warband.rally,
-            target ?: warband.rally, members, lastCombatTick = state.tick,
+            destination, members, lastCombatTick = state.tick, route = route,
         )
         warband.nextRaidTick = state.tick + rules.raidCooldownTicks
         events += event(state, "dispatched", campaignId, "target=$playerId threat=$committed")
@@ -291,6 +334,7 @@ object WarbandEngine {
 
     private fun advanceCampaigns(
         state: EngineState,
+        catalog: EngineCatalog,
         rules: WarbandRules,
         players: List<PlayerFact>,
         elapsed: Long,
@@ -319,10 +363,18 @@ object WarbandEngine {
             if (campaign.phase == CampaignPhase.ACTIVE || campaign.phase == CampaignPhase.MATERIALIZING || campaign.physical) return@forEach
 
             campaign.travelTickDebt += elapsed
-            while (campaign.travelTickDebt >= rules.travelTicksPerChunk) {
-                campaign.travelTickDebt -= rules.travelTicksPerChunk
+            while (campaign.travelTickDebt >= segmentTravelTicks(campaign, rules)) {
+                campaign.travelTickDebt -= segmentTravelTicks(campaign, rules)
                 val destination = if (campaign.phase == CampaignPhase.RETURNING) warband.rally else campaign.target
-                campaign.position = stepToward(campaign.position, destination)
+                campaign.position = if (campaign.phase != CampaignPhase.RETURNING && campaign.routeIndex < campaign.route.size) {
+                    campaign.route[campaign.routeIndex++]
+                } else stepToward(campaign.position, destination)
+                applySegmentLogistics(state, campaign, warband, catalog, rules, events)
+                if (campaign.members.isEmpty()) {
+                    campaign.phase = CampaignPhase.RESOLVED
+                    events += event(state, "campaign_lost_to_attrition", campaign.id)
+                    break
+                }
                 if (campaign.phase == CampaignPhase.RETURNING && campaign.position == warband.rally) {
                     resolved += campaign
                     break
@@ -351,9 +403,16 @@ object WarbandEngine {
         val warband = state.warbands[campaign.warbandId] ?: return
         campaign.lastCombatTick = state.tick
         val dead = campaign.members.filter { it.id in observation.casualties }
-        dead.forEach { campaign.members.remove(it); events += event(state, "member_lost", it.id, campaign.id) }
+        dead.forEach {
+            cacheMember(state, campaign, it)
+            campaign.members.remove(it)
+            events += event(state, "member_lost", it.id, campaign.id)
+        }
         val damageRatio = observation.playerDamage / (observation.playerDamage + observation.campaignDamage + 1.0)
         campaign.members.forEach { member -> member.healthFraction = (member.healthFraction - damageRatio / campaign.members.size.coerceAtLeast(1)).coerceIn(0.0, 1.0) }
+        campaign.members.mapNotNull(MemberManifest::equipment).forEach { equipment ->
+            equipment.durabilityFraction = (equipment.durabilityFraction - damageRatio * 0.08).coerceAtLeast(0.0)
+        }
         val contribution = mapOf(
             "durability" to if (observation.playerDamage > observation.campaignDamage) 1.0 else -0.4,
             "damage" to if (observation.campaignDamage <= observation.playerDamage) 1.0 else -0.3,
@@ -427,7 +486,11 @@ object WarbandEngine {
         val warband = state.warbands[campaign.warbandId] ?: return
         val returned = campaign.members.sumOf { it.threat * it.healthFraction }
         warband.raidPool = (warband.raidPool + returned).coerceAtMost(warband.capacity)
-        campaign.members.mapNotNull(MemberManifest::equipment).forEach(warband.armory::add)
+        campaign.members.forEach { member ->
+            member.cargo.forEach { (id, count) -> warband.stockpile[id] = warband.stockpile.getOrDefault(id, 0) + count }
+            member.cargo.clear()
+            member.equipment?.takeIf { it.durabilityFraction > EPSILON }?.let(warband.armory::add)
+        }
         warband.aggression = (warband.aggression + campaign.returnAggressionDelta).coerceIn(6, 18)
         campaign.phase = CampaignPhase.RESOLVED
         state.officers[campaign.officerId]?.availableAtTick = state.tick
@@ -441,7 +504,186 @@ object WarbandEngine {
         require(catalog.materials.all { it.id.isNotBlank() && it.tier > 0 && it.extractionCost >= 0.0 })
         require(catalog.equipment.all { it.id.isNotBlank() && it.cost.values.all { value -> value >= 0.0 } })
         require(catalog.environmentSamples.all { it == it.bounded() })
+        require(catalog.resources.map { it.itemId }.distinct().size == catalog.resources.size)
+        require(catalog.resources.all {
+            it.itemId.isNotBlank() && it.mass > 0.0 && it.maximumStackSize > 0 && it.unitsPerItem.finite() &&
+                listOf(it.unitsPerItem.sustenance, it.unitsPerItem.munitions, it.unitsPerItem.maintenance, it.unitsPerItem.recovery).all { value -> value >= 0.0 }
+        })
     }
+
+    private fun segmentTravelTicks(campaign: CampaignState, rules: WarbandRules): Long =
+        (rules.travelTicksPerChunk * (2.0 - campaign.supplySatisfaction.coerceIn(0.0, 1.0))).toLong().coerceAtLeast(1L)
+
+    private fun applySegmentLogistics(
+        state: EngineState,
+        campaign: CampaignState,
+        warband: WarbandState,
+        catalog: EngineCatalog,
+        rules: WarbandRules,
+        events: MutableList<EngineEvent>,
+    ) {
+        if (campaign.members.isEmpty() || catalog.resources.isEmpty()) return
+        val environment = state.terrain[terrainKey(campaign.position)]?.traits ?: warband.environment
+        if (campaign.deficitExposure > 0.0) {
+            campaign.forageDebt += rules.forageUnitsPerDeficitChunk * campaign.deficitExposure.coerceAtMost(1.0) *
+                (1.0 - normalizedAggression(warband, rules) * 0.5)
+            while (campaign.forageDebt >= 1.0) {
+                campaign.forageDebt -= 1.0
+                val cargo = campaign.members.minByOrNull { it.cargo.values.sum() }?.cargo ?: break
+                acquireEnvironmentalResource(state, warband, catalog, environment, cargo, events, campaign.id)
+            }
+        }
+        val livingThreat = campaign.members.sumOf { it.threat * it.healthFraction }
+        val rangedThreat = campaign.members.filter { member ->
+            member.equipment?.supportedActions?.contains("ranged") == true ||
+                catalog.recruits.firstOrNull { it.id == member.recruitId }?.supportedEquipmentActions?.contains("ranged") == true
+        }.sumOf { it.threat * it.healthFraction }
+        val equipped = campaign.members.count { it.equipment != null }
+        val demand = ResourceVector(
+            sustenance = livingThreat * rules.sustenancePerThreatChunk,
+            munitions = rangedThreat * rules.munitionsPerRangedThreatChunk,
+            maintenance = equipped * rules.maintenancePerEquipmentChunk * (0.5 + environment.travelFriction),
+            recovery = campaign.members.sumOf { 1.0 - it.healthFraction } * 0.05,
+        )
+        val consumption = consumeCargo(campaign.members, catalog.resources.associateBy(ResourceDefinition::itemId), demand)
+        consumption.items.forEach { (id, count) ->
+            events += event(state, "resource_consumed", campaign.id, "$id=$count")
+        }
+        val remaining = consumption.remaining
+        campaign.supplySatisfaction = if (demand.sum() <= EPSILON) 1.0 else (1.0 - remaining.sum() / demand.sum()).coerceIn(0.0, 1.0)
+        campaign.deficitExposure = (campaign.deficitExposure + 1.0 - campaign.supplySatisfaction).coerceAtLeast(0.0)
+        campaign.members.mapNotNull(MemberManifest::equipment).forEach { equipment ->
+            equipment.durabilityFraction = (equipment.durabilityFraction -
+                rules.equipmentWearPerFrictionChunk * environment.travelFriction * (2.0 - campaign.supplySatisfaction)).coerceAtLeast(0.0)
+        }
+        if (campaign.deficitExposure > rules.deficitGraceChunks) {
+            val loss = rules.attritionPerDeficitChunk * (1.0 - campaign.supplySatisfaction) * (0.5 + environment.travelFriction)
+            val dead = campaign.members.onEach { it.healthFraction = (it.healthFraction - loss).coerceAtLeast(0.0) }
+                .filter { it.healthFraction <= EPSILON }
+            dead.forEach { member ->
+                cacheMember(state, campaign, member)
+                campaign.members.remove(member)
+                events += event(state, "member_lost_to_attrition", member.id, campaign.id)
+            }
+        }
+        events += event(state, "logistics_segment", campaign.id, "satisfaction=${campaign.supplySatisfaction}")
+    }
+
+    private data class CargoConsumption(val remaining: ResourceVector, val items: Map<String, Int>)
+
+    private fun consumeCargo(
+        members: List<MemberManifest>,
+        resources: Map<String, ResourceDefinition>,
+        demand: ResourceVector,
+    ): CargoConsumption {
+        var remaining = demand.positive()
+        val consumed = linkedMapOf<String, Int>()
+        while (remaining.sum() > EPSILON) {
+            val choice = members.asSequence().flatMap { member -> member.cargo.asSequence().filter { it.value > 0 }.map { Triple(member, it.key, it.value) } }
+                .mapNotNull { (member, id, _) -> resources[id]?.let { Triple(member, id, it) } }
+                .maxWithOrNull(compareBy<Triple<MemberManifest, String, ResourceDefinition>> {
+                    it.third.unitsPerItem.dot(remaining) / it.third.mass
+                }.thenByDescending { it.second }) ?: break
+            if (choice.third.unitsPerItem.dot(remaining) <= EPSILON) break
+            choice.first.cargo[choice.second] = choice.first.cargo.getValue(choice.second) - 1
+            if (choice.first.cargo.getValue(choice.second) == 0) choice.first.cargo.remove(choice.second)
+            consumed[choice.second] = consumed.getOrDefault(choice.second, 0) + 1
+            remaining = (remaining - choice.third.unitsPerItem).positive()
+        }
+        return CargoConsumption(remaining, consumed)
+    }
+
+    private fun acquireEnvironmentalResource(
+        state: EngineState,
+        warband: WarbandState,
+        catalog: EngineCatalog,
+        environment: EnvironmentTraits,
+        destination: MutableMap<String, Int>,
+        events: MutableList<EngineEvent>,
+        subject: String = warband.id,
+    ) {
+        val selected = catalog.resources.maxWithOrNull(compareBy<ResourceDefinition> {
+            EcologyMath.environmentalYield(it, environment) /
+                (1.0 + destination.getOrDefault(it.itemId, 0))
+        }.thenByDescending { deterministicTie(warband.id, it.itemId, state.sequence) }) ?: return
+        if (EcologyMath.environmentalYield(selected, environment) <= EPSILON) return
+        destination[selected.itemId] = destination.getOrDefault(selected.itemId, 0) + 1
+        events += event(state, "resource_acquired", subject, selected.itemId)
+    }
+
+    private fun provisionCampaign(
+        members: List<MemberManifest>,
+        warband: WarbandState,
+        catalog: EngineCatalog,
+        rules: WarbandRules,
+        routeChunks: Int,
+        events: MutableList<EngineEvent>,
+        state: EngineState,
+    ) {
+        if (members.isEmpty() || catalog.resources.isEmpty()) return
+        val totalThreat = members.sumOf(MemberManifest::threat)
+        val rangedThreat = members.filter { member ->
+            member.equipment?.supportedActions?.contains("ranged") == true ||
+                catalog.recruits.firstOrNull { it.id == member.recruitId }?.supportedEquipmentActions?.contains("ranged") == true
+        }.sumOf(MemberManifest::threat)
+        val desired = ResourceVector(
+            sustenance = totalThreat * routeChunks * rules.sustenancePerThreatChunk,
+            munitions = rangedThreat * routeChunks * rules.munitionsPerRangedThreatChunk,
+            maintenance = members.count { it.equipment != null } * routeChunks * rules.maintenancePerEquipmentChunk,
+        )
+        var remaining = desired
+        val definitions = catalog.resources.associateBy(ResourceDefinition::itemId)
+        while (remaining.sum() > EPSILON) {
+            val selected = warband.stockpile.asSequence().filter { it.value > 0 }.mapNotNull { definitions[it.key] }
+                .maxWithOrNull(compareBy<ResourceDefinition> { it.unitsPerItem.dot(remaining) / it.mass }.thenByDescending { it.itemId }) ?: break
+            if (selected.unitsPerItem.dot(remaining) <= EPSILON) break
+            warband.stockpile[selected.itemId] = warband.stockpile.getValue(selected.itemId) - 1
+            if (warband.stockpile.getValue(selected.itemId) == 0) warband.stockpile.remove(selected.itemId)
+            val carrier = members.minByOrNull { member -> member.cargo.entries.sumOf { (id, count) -> (definitions[id]?.mass ?: 1.0) * count } } ?: break
+            carrier.cargo[selected.itemId] = carrier.cargo.getOrDefault(selected.itemId, 0) + 1
+            remaining = (remaining - selected.unitsPerItem).positive()
+        }
+        events += event(state, "campaign_provisioned", warband.id, "satisfaction=${if (desired.sum() <= EPSILON) 1.0 else 1.0 - remaining.sum() / desired.sum()}")
+    }
+
+    private fun cacheMember(state: EngineState, campaign: CampaignState, member: MemberManifest) {
+        if (member.cargo.isEmpty() && member.equipment == null) return
+        campaign.lostCaches += LostCache(
+            nextId(state, "cache"), campaign.position, member.cargo.toMutableMap(),
+            member.equipment?.takeIf { it.durabilityFraction > EPSILON }?.let { mutableListOf(it) } ?: mutableListOf(),
+        )
+        member.cargo.clear()
+        member.equipment = null
+    }
+
+    private fun planRoute(state: EngineState, warband: WarbandState, target: ChunkPosition, rules: WarbandRules): List<ChunkPosition> {
+        if (target.dimension != warband.rally.dimension) return emptyList()
+        fun observations(points: List<ChunkPosition>) = points.map { point ->
+            state.terrain[terrainKey(point)] ?: TerrainObservation(point, warband.environment)
+        }
+        val direct = mutableListOf<ChunkPosition>()
+        var cursor = warband.rally
+        while (cursor != target) { cursor = stepToward(cursor, target); direct += cursor }
+        val xFirst = mutableListOf<ChunkPosition>().also { values ->
+            var x = warband.rally.x
+            while (x != target.x) { x += if (target.x > x) 1 else -1; values += ChunkPosition(target.dimension, x, warband.rally.z) }
+            var z = warband.rally.z
+            while (z != target.z) { z += if (target.z > z) 1 else -1; values += ChunkPosition(target.dimension, target.x, z) }
+        }
+        val zFirst = mutableListOf<ChunkPosition>().also { values ->
+            var z = warband.rally.z
+            while (z != target.z) { z += if (target.z > z) 1 else -1; values += ChunkPosition(target.dimension, warband.rally.x, z) }
+            var x = warband.rally.x
+            while (x != target.x) { x += if (target.x > x) 1 else -1; values += ChunkPosition(target.dimension, x, target.z) }
+        }
+        return EcologyMath.chooseRoute(listOf(observations(direct), observations(xFirst), observations(zFirst)), preferences(warband), warband.aggression, rules)
+    }
+
+    private fun normalizedAggression(warband: WarbandState, rules: WarbandRules): Double =
+        ((warband.aggression - rules.minimumAggression).toDouble() /
+            (rules.maximumAggression - rules.minimumAggression).coerceAtLeast(1)).coerceIn(0.0, 1.0)
+
+    private fun terrainKey(position: ChunkPosition) = "${position.dimension}:${position.x}:${position.z}"
 
     private fun observedThreat(warband: WarbandState, recruit: RecruitDefinition) =
         warband.empiricalThreat[recruit.id]?.coerceAtLeast(1.0) ?: recruit.baseThreat.coerceAtLeast(1.0)
