@@ -339,19 +339,6 @@ object PillagerCampaignEngine {
         val environment = com.gerald.pillagercampaigns.engine.EnvironmentTraits(
             local.habitability, local.biomass, local.mineralPotential, local.exoticPotential, local.travelFriction,
         )
-        if (campaign.deficitExposure > 0.0) {
-            val aggression = ((warband.aggression - rules.minimumAggression).toDouble() /
-                (rules.maximumAggression - rules.minimumAggression).coerceAtLeast(1)).coerceIn(0.0, 1.0)
-            campaign.forageDebt += rules.forageUnitsPerDeficitChunk * campaign.deficitExposure.coerceAtMost(1.0) * (1.0 - aggression * 0.5)
-            while (campaign.forageDebt >= 1.0) {
-                campaign.forageDebt -= 1.0
-                val carrier = campaign.plannedMembers.minByOrNull { it.cargo.values.sum() } ?: break
-                val selected = EcologyMath.chooseEnvironmentalResource(resources, environment, carrier.cargo) { id ->
-                    (campaign.id.toString() + id).fold(0L) { hash, character -> hash * 31L + character.code }
-                } ?: break
-                carrier.cargo[selected.itemId] = carrier.cargo.getOrDefault(selected.itemId, 0) + 1
-            }
-        }
         val recruitActions = PillagerRuntime.recruitDefinitions(level, warband).associate { it.id to it.supportedEquipmentActions }
         val livingThreat = campaign.plannedMembers.sumOf { it.threat * it.healthFraction }
         val rangedThreat = campaign.plannedMembers.filter { member ->
@@ -362,6 +349,19 @@ object PillagerCampaignEngine {
             livingThreat, rangedThreat, campaign.plannedMembers.count { it.equipment != null },
             campaign.plannedMembers.sumOf { 1.0 - it.healthFraction }, environment, rules,
         )
+        if (campaign.deficitExposure > 0.0) {
+            val aggression = ((warband.aggression - rules.minimumAggression).toDouble() /
+                (rules.maximumAggression - rules.minimumAggression).coerceAtLeast(1)).coerceIn(0.0, 1.0)
+            campaign.forageDebt += rules.forageUnitsPerDeficitChunk * campaign.deficitExposure.coerceAtMost(1.0) * (1.0 - aggression * 0.5)
+            while (campaign.forageDebt >= 1.0) {
+                campaign.forageDebt -= 1.0
+                val carrier = campaign.plannedMembers.minByOrNull { it.cargo.values.sum() } ?: break
+                val selected = EcologyMath.chooseEnvironmentalResource(resources, environment, carrier.cargo, demand) { id ->
+                    (campaign.id.toString() + id).fold(0L) { hash, character -> hash * 31L + character.code }
+                } ?: break
+                carrier.cargo[selected.itemId] = carrier.cargo.getOrDefault(selected.itemId, 0) + 1
+            }
+        }
         val consumption = EcologyMath.consumeCargo(
             campaign.plannedMembers.map { it.cargo }, resources.associateBy(ResourceDefinition::itemId), demand,
         )

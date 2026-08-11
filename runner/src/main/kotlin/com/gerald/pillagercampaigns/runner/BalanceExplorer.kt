@@ -149,7 +149,7 @@ class BalanceExplorer(private val json: Json = Json { prettyPrint = true; encode
             2, "Low-level and mature roster variety",
             "The worst three-day cell assigns ${percent(dominant.dominantRecruitShare)} of members to one recruit; the envelope mean is ${percent(early.map { it.dominantRecruitShare }.averageOrZero())}. ${mature.flatMap { it.recruitCounts.keys }.distinct().size} of ${catalog.recruits.size} live recruits appear across mature cells, with ${mature.minOfOrNull(ExperimentSummary::distinctRecruits) ?: 0}–${mature.maxOfOrNull(ExperimentSummary::distinctRecruits) ?: 0} distinct recruits per cell.",
             early.sortedByDescending(ExperimentSummary::dominantRecruitShare).take(3).map(ExperimentSummary::name),
-            "Keep the within-squad diminishing marginal utility. Add a bounded, decaying recent-deployment share only if longer-term repetition remains visible in playtests.",
+            "Retain the current combination of within-squad marginal utility and bounded, decaying deployment memory.",
             "Too much penalty can force weak recruits despite strong environmental preferences.", "high",
         )
 
@@ -158,7 +158,7 @@ class BalanceExplorer(private val json: Json = Json { prettyPrint = true; encode
             3, "Material and equipment diversity",
             "At least one mature cell extracts only ${leastMaterialVariety.extractedMaterialCounts.size} material type(s) and manufactures ${leastMaterialVariety.manufacturedEquipmentCounts.size} equipment formulation(s).",
             mature.sortedBy { it.extractedMaterialCounts.size }.take(3).map(ExperimentSummary::name),
-            "Include current ledger abundance and recent extraction frequency as bounded scarcity terms in material utility.",
+            "Retain recent extraction frequency as a bounded utility term; compare the four observed materials against actual TCon compatibility before increasing diversity pressure.",
             "Scarcity pressure must not select unaffordable or environmentally impossible materials.", "high",
         )
 
@@ -177,7 +177,7 @@ class BalanceExplorer(private val json: Json = Json { prettyPrint = true; encode
             5, "Equipment expression",
             "The weakest mature cell equips ${percent(equipment.equipmentCoverage)} of dispatched members while retaining ${equipment.armoryItems} armory items.",
             mature.sortedBy(ExperimentSummary::equipmentCoverage).take(3).map(ExperimentSummary::name),
-            "Score equipment assignment by capability gain and action compatibility, with a bounded penalty for long-idle armory stock.",
+            "Keep capability-gain and action-compatibility assignment; tune manufacturing throughput and wear before changing selection utility.",
             "Aggressive stock rotation can erase the identity created by material preferences.", "medium",
         )
 
@@ -192,8 +192,8 @@ class BalanceExplorer(private val json: Json = Json { prettyPrint = true; encode
         val supply = summaries.filter { it.name.startsWith("sensitivity-supply-") }
         if (supply.isNotEmpty()) findings += BalanceFinding(
             7, "Logistics pressure and recoverability",
-            "Across supply sensitivity, mean segment satisfaction spans ${percent(supply.minOf { it.meanSupplySatisfaction })}–${percent(supply.maxOf { it.meanSupplySatisfaction })}; shortage returns span ${supply.minOf { it.shortageReturns }}–${supply.maxOf { it.shortageReturns }}, attrition losses ${supply.minOf { it.attritionLosses }}–${supply.maxOf { it.attritionLosses }}, with ${supply.maxOf { it.recoverableCaches }} recoverable caches retained.",
-            supply.map(ExperimentSummary::name),
+            "Across supply sensitivity, mean segment satisfaction spans ${percent(supply.minOf { it.meanSupplySatisfaction })}–${percent(supply.maxOf { it.meanSupplySatisfaction })}. Nominal-aggression cells avoid lethal attrition, while the high-aggression sensitivity sustains ${summaries.filter { it.name == "sensitivity-aggression-18" }.maxOfOrNull { it.attritionLosses } ?: 0} losses and retains ${summaries.filter { it.name == "sensitivity-aggression-18" }.maxOfOrNull { it.recoverableCaches } ?: 0} recoverable caches before withdrawing.",
+            supply.map(ExperimentSummary::name) + listOf("sensitivity-aggression-18"),
             "Tune provisioning demand and forage debt together; preserve the grace interval and aggression-scaled retreat threshold.",
             "Over-supplying erases interception and preparation; under-supplying turns distant campaigns into automatic retreats.", "high",
         )
@@ -204,6 +204,13 @@ class BalanceExplorer(private val json: Json = Json { prettyPrint = true; encode
             routed.sortedByDescending { it.meanRouteChunks }.take(3).map(ExperimentSummary::name),
             "Keep noise-biome corridor sampling unloaded-safe and tune forage value against friction rather than adding preferred biome categories.",
             "Too much forage utility produces implausible detours; too little makes environment cosmetic.", "medium",
+        )
+        if (early.isNotEmpty() && mature.isNotEmpty()) findings += BalanceFinding(
+            9, "Unmaterialized warband power growth",
+            "Mean peak deployed threat grows from ${decimal(early.map { it.peakCampaignThreat }.averageOrZero())} at three days to ${decimal(mature.map { it.peakCampaignThreat }.averageOrZero())} at thirty days, while mature recruit diversity rises to ${decimal(mature.map { it.distinctRecruits.toDouble() }.averageOrZero())} types per cell.",
+            listOfNotNull(early.maxByOrNull { it.peakCampaignThreat }?.name, mature.maxByOrNull { it.peakCampaignThreat }?.name),
+            "Retain reserve growth, learned threat, manufacturing, and aggression feedback as independent continuous inputs; avoid a discrete late-game tier switch.",
+            "Peak power can grow while cadence falls, so both dimensions must remain visible in balance reports.", "high",
         )
         return findings.sortedBy(BalanceFinding::priority)
     }

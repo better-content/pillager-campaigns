@@ -24,6 +24,8 @@ data class WarbandRules(
     val attritionPerDeficitChunk: Double = 0.035,
     val equipmentWearPerFrictionChunk: Double = 0.004,
     val forageUnitsPerDeficitChunk: Double = 0.75,
+    val shortageRetreatBaseChunks: Double = 6.0,
+    val shortageAggressionRunwayChunks: Double = 18.0,
 ) {
     fun capacity(environment: EnvironmentTraits): Int =
         ((96.0 + 120.0 * environment.bounded().habitability) / 6.0).roundToInt() * 6

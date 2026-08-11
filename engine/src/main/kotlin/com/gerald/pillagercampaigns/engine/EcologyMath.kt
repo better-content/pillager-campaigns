@@ -18,10 +18,12 @@ object EcologyMath {
         resources: Collection<ResourceDefinition>,
         environment: EnvironmentTraits,
         carried: Map<String, Int>,
+        need: ResourceVector = ResourceVector(1.0, 1.0, 1.0, 1.0),
         tieBreaker: (String) -> Long = { 0L },
     ): ResourceDefinition? = resources.asSequence().filter { environmentalYield(it, environment) > 1.0e-9 }
         .maxWithOrNull(compareBy<ResourceDefinition> {
-            environmentalYield(it, environment) / (1.0 + carried.getOrDefault(it.itemId, 0))
+            environmentalYield(it, environment) * (0.1 + it.unitsPerItem.dot(need.positive())) /
+                (it.mass * (1.0 + carried.getOrDefault(it.itemId, 0)))
         }.thenByDescending { tieBreaker(it.itemId) })
 
     fun decay(memory: SelectionMemory, now: Long, halfLifeTicks: Long) {
@@ -144,6 +146,7 @@ object EcologyMath {
     fun shouldRetreatFromShortage(deficitExposure: Double, aggression: Int, rules: WarbandRules = WarbandRules()): Boolean {
         val aggressionNormalized = (aggression - rules.minimumAggression).toDouble() /
             (rules.maximumAggression - rules.minimumAggression).coerceAtLeast(1)
-        return deficitExposure > rules.deficitGraceChunks + 1.0 + aggressionNormalized.coerceIn(0.0, 1.0) * 3.0
+        return deficitExposure > rules.deficitGraceChunks + rules.shortageRetreatBaseChunks +
+            aggressionNormalized.coerceIn(0.0, 1.0) * rules.shortageAggressionRunwayChunks
     }
 }

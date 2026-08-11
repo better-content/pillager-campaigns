@@ -527,15 +527,6 @@ object WarbandEngine {
     ) {
         if (campaign.members.isEmpty() || catalog.resources.isEmpty()) return
         val environment = state.terrain[terrainKey(campaign.position)]?.traits ?: warband.environment
-        if (campaign.deficitExposure > 0.0) {
-            campaign.forageDebt += rules.forageUnitsPerDeficitChunk * campaign.deficitExposure.coerceAtMost(1.0) *
-                (1.0 - normalizedAggression(warband, rules) * 0.5)
-            while (campaign.forageDebt >= 1.0) {
-                campaign.forageDebt -= 1.0
-                val cargo = campaign.members.minByOrNull { it.cargo.values.sum() }?.cargo ?: break
-                acquireEnvironmentalResource(state, warband, catalog, environment, cargo, events, campaign.id)
-            }
-        }
         val livingThreat = campaign.members.sumOf { it.threat * it.healthFraction }
         val rangedThreat = campaign.members.filter { member ->
             member.equipment?.supportedActions?.contains("ranged") == true ||
@@ -545,6 +536,15 @@ object WarbandEngine {
         val demand = EcologyMath.segmentDemand(
             livingThreat, rangedThreat, equipped, campaign.members.sumOf { 1.0 - it.healthFraction }, environment, rules,
         )
+        if (campaign.deficitExposure > 0.0) {
+            campaign.forageDebt += rules.forageUnitsPerDeficitChunk * campaign.deficitExposure.coerceAtMost(1.0) *
+                (1.0 - normalizedAggression(warband, rules) * 0.5)
+            while (campaign.forageDebt >= 1.0) {
+                campaign.forageDebt -= 1.0
+                val cargo = campaign.members.minByOrNull { it.cargo.values.sum() }?.cargo ?: break
+                acquireEnvironmentalResource(state, warband, catalog, environment, cargo, events, campaign.id, demand)
+            }
+        }
         val consumption = EcologyMath.consumeCargo(campaign.members.map(MemberManifest::cargo), catalog.resources.associateBy(ResourceDefinition::itemId), demand)
         consumption.items.forEach { (id, count) ->
             events += event(state, "resource_consumed", campaign.id, "$id=$count")
@@ -581,8 +581,9 @@ object WarbandEngine {
         destination: MutableMap<String, Int>,
         events: MutableList<EngineEvent>,
         subject: String = warband.id,
+        need: ResourceVector = ResourceVector(1.0, 1.0, 1.0, 1.0),
     ) {
-        val selected = EcologyMath.chooseEnvironmentalResource(catalog.resources, environment, destination) {
+        val selected = EcologyMath.chooseEnvironmentalResource(catalog.resources, environment, destination, need) {
             deterministicTie(warband.id, it, state.sequence)
         } ?: return
         destination[selected.itemId] = destination.getOrDefault(selected.itemId, 0) + 1
@@ -604,24 +605,30 @@ object WarbandEngine {
             member.equipment?.supportedActions?.contains("ranged") == true ||
                 catalog.recruits.firstOrNull { it.id == member.recruitId }?.supportedEquipmentActions?.contains("ranged") == true
         }.sumOf(MemberManifest::threat)
-        val desired = ResourceVector(
-            sustenance = totalThreat * routeChunks * rules.sustenancePerThreatChunk,
-            munitions = rangedThreat * routeChunks * rules.munitionsPerRangedThreatChunk,
-            maintenance = members.count { it.equipment != null } * routeChunks * rules.maintenancePerEquipmentChunk,
+        val perSegment = EcologyMath.segmentDemand(
+            totalThreat, rangedThreat, members.count { it.equipment != null }, 0.0, warband.environment, rules,
         )
-        var remaining = desired
+        val segments = routeChunks.coerceAtLeast(1) * 2
+        var totalRemaining = ResourceVector()
         val definitions = catalog.resources.associateBy(ResourceDefinition::itemId)
-        while (remaining.sum() > EPSILON) {
-            val selected = warband.stockpile.asSequence().filter { it.value > 0 }.mapNotNull { definitions[it.key] }
-                .maxWithOrNull(compareBy<ResourceDefinition> { it.unitsPerItem.dot(remaining) / it.mass }.thenByDescending { it.itemId }) ?: break
-            if (selected.unitsPerItem.dot(remaining) <= EPSILON) break
-            warband.stockpile[selected.itemId] = warband.stockpile.getValue(selected.itemId) - 1
-            if (warband.stockpile.getValue(selected.itemId) == 0) warband.stockpile.remove(selected.itemId)
-            val carrier = members.minByOrNull { member -> member.cargo.entries.sumOf { (id, count) -> (definitions[id]?.mass ?: 1.0) * count } } ?: break
-            carrier.cargo[selected.itemId] = carrier.cargo.getOrDefault(selected.itemId, 0) + 1
-            remaining = (remaining - selected.unitsPerItem).positive()
+        repeat(segments) {
+            var remaining = perSegment
+            while (remaining.sum() > EPSILON) {
+                val selected = warband.stockpile.asSequence().filter { it.value > 0 }.mapNotNull { definitions[it.key] }
+                    .filter { definition -> members.any { it.cargo.getOrDefault(definition.itemId, 0) < definition.maximumStackSize } }
+                    .maxWithOrNull(compareBy<ResourceDefinition> { it.unitsPerItem.dot(remaining) / it.mass }.thenByDescending { it.itemId }) ?: break
+                if (selected.unitsPerItem.dot(remaining) <= EPSILON) break
+                val carrier = members.filter { it.cargo.getOrDefault(selected.itemId, 0) < selected.maximumStackSize }
+                    .minByOrNull { member -> member.cargo.entries.sumOf { (id, count) -> (definitions[id]?.mass ?: 1.0) * count } } ?: break
+                warband.stockpile[selected.itemId] = warband.stockpile.getValue(selected.itemId) - 1
+                if (warband.stockpile.getValue(selected.itemId) == 0) warband.stockpile.remove(selected.itemId)
+                carrier.cargo[selected.itemId] = carrier.cargo.getOrDefault(selected.itemId, 0) + 1
+                remaining = (remaining - selected.unitsPerItem).positive()
+            }
+            totalRemaining += remaining
         }
-        events += event(state, "campaign_provisioned", warband.id, "satisfaction=${if (desired.sum() <= EPSILON) 1.0 else 1.0 - remaining.sum() / desired.sum()}")
+        val desired = perSegment * segments.toDouble()
+        events += event(state, "campaign_provisioned", warband.id, "satisfaction=${EcologyMath.supplySatisfaction(desired, totalRemaining)}")
     }
 
     private fun cacheMember(state: EngineState, campaign: CampaignState, member: MemberManifest) {

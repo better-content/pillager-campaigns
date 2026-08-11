@@ -31,6 +31,7 @@ import net.minecraft.world.level.ChunkPos
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
+import net.minecraft.world.entity.item.ItemEntity
 import net.minecraftforge.gametest.GameTestHolder
 import net.minecraftforge.gametest.PrefixGameTestTemplate
 import net.minecraftforge.common.util.FakePlayerFactory
@@ -73,6 +74,7 @@ object PillagerCampaignsGameTests {
         warband.armory += ItemStack(Items.CROSSBOW).save(net.minecraft.nbt.CompoundTag())
         val planned = PillagerRuntime.planCampaignSquad(level, warband, officer, minimum!!, 42L)
         helper.assertTrue(planned.isNotEmpty(), "authoritative engine should persist an affordable squad manifest")
+        planned.first().cargo["minecraft:bread"] = 3
         val campaign = PillagerCampaign(
             id = UUID.nameUUIDFromBytes("gametest:minimum-campaign".toByteArray()), factionId = warband.factionId,
             originWarbandId = warband.id, officerId = officer.id, targetPlayerId = player.uuid,
@@ -102,6 +104,13 @@ object PillagerCampaignsGameTests {
         helper.assertTrue(campaign.memberSnapshots.size == originalIds.size, "every member should have an exact serialized snapshot")
         val restored = PillagerRuntime.restoreSnapshots(level, campaign, playerPos)
         helper.assertTrue(restored.toSet() == originalIds, "rematerialization should preserve member identities")
+        val cargoMob = level.getEntity(restored.first()) as net.minecraft.world.entity.Mob
+        helper.assertTrue(cargoMob.persistentData.getCompound(PillagerRuntime.CARGO_TAG).getInt("minecraft:bread") == 3, "materialization must attach the exact abstract cargo manifest")
+        PillagerRuntime.dropCampaignCargo(cargoMob, campaign)
+        helper.assertTrue(planned.first().cargo.isEmpty(), "intercepted cargo must leave the abstract manifest exactly once")
+        val breadDrops = level.getEntitiesOfClass(ItemEntity::class.java, cargoMob.boundingBox.inflate(8.0))
+            .filter { it.item.`is`(Items.BREAD) }.sumOf { it.item.count }
+        helper.assertTrue(breadDrops == 3, "interception must drop the exact remaining cargo count")
         helper.succeed()
     }
 

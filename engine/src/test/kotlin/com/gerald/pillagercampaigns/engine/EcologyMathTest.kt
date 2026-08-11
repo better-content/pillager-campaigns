@@ -61,8 +61,8 @@ class EcologyMathTest {
         assertEquals(0.1, EcologyMath.attritionLoss(environment, 0.0, 3.0, rules), 1.0e-9)
         assertEquals(1.0, EcologyMath.supplySatisfaction(ResourceVector(), ResourceVector()))
         assertTrue(!EcologyMath.shouldRetreatFromShortage(3.0, rules.minimumAggression, rules))
-        assertTrue(EcologyMath.shouldRetreatFromShortage(4.1, rules.minimumAggression, rules))
-        assertTrue(!EcologyMath.shouldRetreatFromShortage(5.9, rules.maximumAggression, rules))
+        assertTrue(EcologyMath.shouldRetreatFromShortage(8.1, rules.minimumAggression, rules))
+        assertTrue(!EcologyMath.shouldRetreatFromShortage(25.9, rules.maximumAggression, rules))
     }
 
     @Test fun `selection memory decays continuously and remains bounded`() {
