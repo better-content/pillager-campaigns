@@ -113,6 +113,11 @@ data class PillagerWarband(
     val garrisonThreat: MutableMap<UUID, Double> = mutableMapOf(),
     val materialLedger: MutableMap<String, Double> = mutableMapOf(),
     val empiricalThreat: MutableMap<String, Double> = mutableMapOf(),
+    val stockpile: MutableMap<String, Int> = mutableMapOf(),
+    val recruitSelectionMemory: MutableMap<String, Double> = mutableMapOf(),
+    val materialSelectionMemory: MutableMap<String, Double> = mutableMapOf(),
+    val equipmentSelectionMemory: MutableMap<String, Double> = mutableMapOf(),
+    var selectionMemoryLastTick: Long = 0L,
     var lastEconomyTick: Long = 0L,
     var recruitTickDebt: Double = 0.0,
     var mobilizationTickDebt: Double = 0.0,
@@ -156,6 +161,11 @@ data class PillagerWarband(
         it.put("garrisonThreat", CompoundTag().also { values -> garrisonThreat.forEach { (id, threat) -> values.putDouble(id.toString(), threat) } })
         it.put("materialLedger", CompoundTag().also { values -> materialLedger.forEach(values::putDouble) })
         it.put("empiricalThreat", CompoundTag().also { values -> empiricalThreat.forEach(values::putDouble) })
+        it.put("stockpile", CompoundTag().also { values -> stockpile.forEach(values::putInt) })
+        it.put("recruitSelectionMemory", CompoundTag().also { values -> recruitSelectionMemory.forEach(values::putDouble) })
+        it.put("materialSelectionMemory", CompoundTag().also { values -> materialSelectionMemory.forEach(values::putDouble) })
+        it.put("equipmentSelectionMemory", CompoundTag().also { values -> equipmentSelectionMemory.forEach(values::putDouble) })
+        it.putLong("selectionMemoryLastTick", selectionMemoryLastTick)
         it.putBoolean("defeated", defeated)
         it.putUUID("warlordOfficerId", warlordOfficerId)
         warlordEntityId?.let { entity -> it.putUUID("warlordEntityId", entity) }
@@ -195,6 +205,11 @@ data class PillagerWarband(
             garrisonThreat = mutableMapOf<UUID, Double>().also { values -> if (tag.contains("garrisonThreat", Tag.TAG_COMPOUND.toInt())) tag.getCompound("garrisonThreat").allKeys.forEach { key -> runCatching { UUID.fromString(key) }.getOrNull()?.let { values[it] = tag.getCompound("garrisonThreat").getDouble(key) } } },
             materialLedger = mutableMapOf<String, Double>().also { values -> if (tag.contains("materialLedger", Tag.TAG_COMPOUND.toInt())) tag.getCompound("materialLedger").allKeys.forEach { key -> values[key] = tag.getCompound("materialLedger").getDouble(key).coerceAtLeast(0.0) } },
             empiricalThreat = mutableMapOf<String, Double>().also { values -> if (tag.contains("empiricalThreat", Tag.TAG_COMPOUND.toInt())) tag.getCompound("empiricalThreat").allKeys.forEach { key -> values[key] = tag.getCompound("empiricalThreat").getDouble(key).coerceAtLeast(1.0) } },
+            stockpile = loadNonnegativeIntMap(tag, "stockpile"),
+            recruitSelectionMemory = loadNonnegativeDoubleMap(tag, "recruitSelectionMemory"),
+            materialSelectionMemory = loadNonnegativeDoubleMap(tag, "materialSelectionMemory"),
+            equipmentSelectionMemory = loadNonnegativeDoubleMap(tag, "equipmentSelectionMemory"),
+            selectionMemoryLastTick = if (tag.contains("selectionMemoryLastTick")) tag.getLong("selectionMemoryLastTick").coerceAtLeast(0L) else 0L,
             lastEconomyTick = if (tag.contains("lastEconomyTick")) tag.getLong("lastEconomyTick") else 0L,
             recruitTickDebt = if (tag.contains("recruitTickDebt")) tag.getDouble("recruitTickDebt") else 0.0,
             mobilizationTickDebt = if (tag.contains("mobilizationTickDebt")) tag.getDouble("mobilizationTickDebt") else 0.0,
@@ -453,6 +468,18 @@ data class PillagerCampaign(
 }
 
 fun saveRecordList(tags: Collection<CompoundTag>): ListTag = ListTag().also { list -> tags.forEach { list.add(it) } }
+
+private fun loadNonnegativeIntMap(root: CompoundTag, key: String): MutableMap<String, Int> = mutableMapOf<String, Int>().also { values ->
+    if (root.contains(key, Tag.TAG_COMPOUND.toInt())) root.getCompound(key).allKeys.forEach { id ->
+        root.getCompound(key).getInt(id).takeIf { it > 0 }?.let { values[id] = it }
+    }
+}
+
+private fun loadNonnegativeDoubleMap(root: CompoundTag, key: String): MutableMap<String, Double> = mutableMapOf<String, Double>().also { values ->
+    if (root.contains(key, Tag.TAG_COMPOUND.toInt())) root.getCompound(key).allKeys.forEach { id ->
+        root.getCompound(key).getDouble(id).takeIf { it.isFinite() && it > 0.0 }?.let { values[id] = it }
+    }
+}
 
 inline fun loadRecordList(root: CompoundTag, key: String, crossinline loader: (CompoundTag) -> Unit) {
     root.getList(key, Tag.TAG_COMPOUND.toInt()).forEach { raw -> loader(raw as CompoundTag) }

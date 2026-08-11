@@ -11,6 +11,7 @@ import com.gerald.pillagercampaigns.engine.EngineFrame
 import com.gerald.pillagercampaigns.engine.EngineState
 import com.gerald.pillagercampaigns.engine.OfficerState
 import com.gerald.pillagercampaigns.engine.RecruitDefinition
+import com.gerald.pillagercampaigns.engine.SelectionMemory
 import com.gerald.pillagercampaigns.engine.WarbandEngine
 import com.gerald.pillagercampaigns.engine.WarbandRules
 import com.gerald.pillagercampaigns.engine.WarbandState
@@ -61,6 +62,7 @@ object PillagerEngineBridge {
                 recruits = emptyList(),
                 materials = TinkersArmoryOptimizer.materialDefinitions(warband),
                 equipment = candidates.map { it.definition },
+                resources = WarbandResourceCatalog.definitions(),
             )
             val result = WarbandEngine.transition(state, EngineFrame(elapsed), catalog, rules())
             warband.reserve = core.reserveThreat.roundToInt().coerceAtLeast(0)
@@ -70,6 +72,9 @@ object PillagerEngineBridge {
             warband.extractionTickDebt = core.extractionTickDebt
             warband.materialLedger.clear()
             warband.materialLedger.putAll(core.materialLedger)
+            warband.stockpile.clear()
+            warband.stockpile.putAll(core.stockpile)
+            syncSelectionMemory(warband, core)
             result.events.asSequence().filter { it.type == "manufactured" }.forEach manufactured@{ event ->
                 if (warband.armory.size >= warband.capacity) return@manufactured
                 candidates.firstOrNull { it.definition.id == event.detail }?.let { candidate ->
@@ -115,7 +120,7 @@ object PillagerEngineBridge {
         val state = EngineState(sequence = sequence.and(Long.MAX_VALUE), warbands = linkedMapOf(core.id to core), officers = linkedMapOf(officer.id to officer))
         return WarbandEngine.planSquad(state, core, officer, EngineCatalog("forge-live", recruits), budget, rules()).members.map { member ->
             PlannedLiveMember(member.recruitId, member.threat, member.equipment?.id?.substringAfter("forge-armory:")?.toIntOrNull())
-        }
+        }.also { syncSelectionMemory(warband, core) }
     }
 
     fun raidBudget(
@@ -149,6 +154,13 @@ object PillagerEngineBridge {
         preferences = warband.preferences.toMutableMap(),
         materialLedger = warband.materialLedger.toMutableMap(),
         empiricalThreat = warband.empiricalThreat.toMutableMap(),
+        stockpile = warband.stockpile.toMutableMap(),
+        selectionMemory = SelectionMemory(
+            warband.recruitSelectionMemory.toMutableMap(),
+            warband.materialSelectionMemory.toMutableMap(),
+            warband.equipmentSelectionMemory.toMutableMap(),
+            warband.selectionMemoryLastTick,
+        ),
         recruitTickDebt = warband.recruitTickDebt,
         mobilizationTickDebt = warband.mobilizationTickDebt,
         extractionTickDebt = warband.extractionTickDebt,
@@ -156,6 +168,16 @@ object PillagerEngineBridge {
         defeated = warband.defeated,
         activeCampaignLimit = warband.activeCampaignLimit,
     )
+
+    private fun syncSelectionMemory(warband: PillagerWarband, core: WarbandState) {
+        warband.recruitSelectionMemory.clear()
+        warband.recruitSelectionMemory.putAll(core.selectionMemory.recruits)
+        warband.materialSelectionMemory.clear()
+        warband.materialSelectionMemory.putAll(core.selectionMemory.materials)
+        warband.equipmentSelectionMemory.clear()
+        warband.equipmentSelectionMemory.putAll(core.selectionMemory.equipment)
+        warband.selectionMemoryLastTick = core.selectionMemory.lastDecayTick
+    }
 
     fun recruitDefinition(id: String, threat: Double, mob: Mob): RecruitDefinition = RecruitDefinition(
         id,

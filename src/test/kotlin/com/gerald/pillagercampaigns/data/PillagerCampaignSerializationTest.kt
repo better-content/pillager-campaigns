@@ -15,7 +15,11 @@ class PillagerCampaignSerializationTest {
             reserve = 42, capacity = 180, raidPool = 3.5, aggression = 11,
             environment = EnvironmentTraits(.7, .6, .4, .2, .8), preferences = mutableMapOf("range" to 1.25),
             playerRelations = mutableMapOf(UUID(1, 2) to "HOSTILE"), materialLedger = mutableMapOf("tconstruct:flint" to 8.0),
-            empiricalThreat = mutableMapOf("minecraft:pillager" to 9.5), extractionTickDebt = 44.0, defeated = false,
+            empiricalThreat = mutableMapOf("minecraft:pillager" to 9.5), stockpile = mutableMapOf("minecraft:bread" to 12),
+            recruitSelectionMemory = mutableMapOf("minecraft:pillager" to 3.5),
+            materialSelectionMemory = mutableMapOf("tconstruct:flint" to 2.5),
+            equipmentSelectionMemory = mutableMapOf("tconstruct:crossbow" to 1.5), selectionMemoryLastTick = 1234L,
+            extractionTickDebt = 44.0, defeated = false,
             warlordOfficerId = UUID.randomUUID(), warlordEntityId = null, nextRaidTick = 10,
             cooldownUntilTick = 20, lastIntelTick = 30, lastPresenceFailure = PresenceMaterializationResult.SUCCESS,
         )
@@ -29,6 +33,11 @@ class PillagerCampaignSerializationTest {
         assertEquals(1.25, loaded.preferences["range"])
         assertEquals(8.0, loaded.materialLedger["tconstruct:flint"])
         assertEquals(9.5, loaded.empiricalThreat["minecraft:pillager"])
+        assertEquals(12, loaded.stockpile["minecraft:bread"])
+        assertEquals(3.5, loaded.recruitSelectionMemory["minecraft:pillager"])
+        assertEquals(2.5, loaded.materialSelectionMemory["tconstruct:flint"])
+        assertEquals(1.5, loaded.equipmentSelectionMemory["tconstruct:crossbow"])
+        assertEquals(1234L, loaded.selectionMemoryLastTick)
         assertEquals(44.0, loaded.extractionTickDebt)
         assertFalse(saved.contains("structureId"))
         assertFalse(saved.contains("archetype"))
