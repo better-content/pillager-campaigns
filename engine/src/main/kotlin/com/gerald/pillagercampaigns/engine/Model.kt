@@ -67,6 +67,12 @@ data class MemberManifest(
 )
 
 @Serializable
+data class SquadPlan(
+    val members: List<MemberManifest>,
+    val committedThreat: Double,
+)
+
+@Serializable
 data class WarbandState(
     val id: String,
     val factionId: String,

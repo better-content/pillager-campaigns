@@ -61,6 +61,22 @@ class WarbandEngineTest {
         }
     }
 
+    @Test fun `public squad plan is the exact dispatch composition primitive`() {
+        fun planned(): Pair<SquadPlan, EngineState> {
+            val state = state()
+            WarbandEngine.transition(state, EngineFrame(0L, commands = listOf(EngineCommand.Manufacture("warband", 2))), catalog, rules)
+            val warband = state.warbands.getValue("warband")
+            val plan = WarbandEngine.planSquad(state, warband, state.officers.getValue("captain"), catalog, 12.0, rules)
+            return plan to state
+        }
+        val (first, firstState) = planned()
+        val (second, _) = planned()
+        assertEquals(Json.encodeToString(first), Json.encodeToString(second))
+        assertTrue(first.members.isNotEmpty())
+        assertEquals(first.members.sumOf(MemberManifest::threat), first.committedThreat)
+        assertEquals(2 - first.members.count { it.equipment != null }, firstState.warbands.getValue("warband").armory.size)
+    }
+
     @Test fun `automatic dispatch travels materializes fights and returns conservatively`() {
         val state = state(pool = 12.0)
         state.warbands.getValue("warband").aggression = 12

@@ -59,6 +59,34 @@ object WarbandEngine {
         rules: WarbandRules = WarbandRules(),
     ): Double = recruitScore(warband, recruit, rules.effectivePreferences(warband, officer))
 
+    /**
+     * Builds the exact member/equipment manifest used by campaign dispatch.
+     * Adapters may persist this plan and materialize it later without making a
+     * second composition decision.
+     */
+    fun planSquad(
+        state: EngineState,
+        warband: WarbandState,
+        officer: OfficerState?,
+        catalog: EngineCatalog,
+        budget: Double,
+        rules: WarbandRules = WarbandRules(),
+    ): SquadPlan {
+        val members = mutableListOf<MemberManifest>()
+        var remaining = budget.coerceAtLeast(0.0)
+        while (members.size < rules.maximumSquadMembers) {
+            val recruit = chooseRecruit(state, warband, officer, catalog, remaining, members, rules) ?: break
+            val threat = observedThreat(warband, recruit)
+            val equipment = warband.armory.indexOfFirst { item ->
+                item.supportedActions.isEmpty() || recruit.supportedEquipmentActions.isEmpty() ||
+                    item.supportedActions.any(recruit.supportedEquipmentActions::contains)
+            }.takeIf { it >= 0 }?.let(warband.armory::removeAt)
+            members += MemberManifest(nextId(state, "member"), recruit.id, threat, equipment = equipment)
+            remaining -= threat
+        }
+        return SquadPlan(members, members.sumOf(MemberManifest::threat))
+    }
+
     fun chooseMaterial(state: EngineState, warband: WarbandState, catalog: EngineCatalog): MaterialDefinition? {
         val available = warband.reserveThreat *
             (0.5 + warband.environment.mineralPotential + warband.environment.exoticPotential)
@@ -221,20 +249,10 @@ object WarbandEngine {
         if (budget + EPSILON < minimum) return false
         val officer = state.officers.values.filter { it.homeWarbandId == warband.id && it.availableAtTick <= state.tick }
             .minByOrNull { it.id }
-        val members = mutableListOf<MemberManifest>()
-        var remaining = budget
-        while (members.size < rules.maximumSquadMembers) {
-            val recruit = chooseRecruit(state, warband, officer, catalog, remaining, members, rules) ?: break
-            val threat = observedThreat(warband, recruit)
-            val equipment = warband.armory.indexOfFirst { item ->
-                item.supportedActions.isEmpty() || recruit.supportedEquipmentActions.isEmpty() ||
-                    item.supportedActions.any(recruit.supportedEquipmentActions::contains)
-            }.takeIf { it >= 0 }?.let(warband.armory::removeAt)
-            members += MemberManifest(nextId(state, "member"), recruit.id, threat, equipment = equipment)
-            remaining -= threat
-        }
-        if (members.isEmpty()) return false
-        val committed = members.sumOf(MemberManifest::threat)
+        val plan = planSquad(state, warband, officer, catalog, budget, rules)
+        if (plan.members.isEmpty()) return false
+        val members = plan.members.toMutableList()
+        val committed = plan.committedThreat
         warband.raidPool -= committed
         val campaignId = nextId(state, "campaign")
         state.campaigns[campaignId] = CampaignState(
