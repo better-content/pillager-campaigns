@@ -9,7 +9,7 @@ data class FormulaCandidate(
     val resourceCost: Map<String, Double> = emptyMap(),
 )
 
-object FormulaMath {
+internal object FormulaMath {
     fun extractionThreshold(tier: Int, additionalIngredientGroups: Int): Double =
         12.0 * tier.coerceAtLeast(1) * tier.coerceAtLeast(1) * (1.0 + 0.25 * additionalIngredientGroups.coerceAtLeast(0))
 

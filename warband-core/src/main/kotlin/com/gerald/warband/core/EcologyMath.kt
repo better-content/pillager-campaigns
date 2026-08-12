@@ -2,7 +2,7 @@ package com.gerald.warband.core
 
 import kotlin.math.exp
 
-object EcologyMath {
+internal object EcologyMath {
     data class ResourceConsumption(val remaining: ResourceVector, val items: Map<String, Int>)
 
     fun environmentalYield(resource: ResourceDefinition, environment: EnvironmentTraits): Double {
@@ -87,7 +87,7 @@ object EcologyMath {
             candidate.pathCost * (0.1 + (1.0 - preferences.mobility.coerceIn(0.0, 1.0)) * 0.1) - separation * 0.35
     }
 
-    fun chooseTacticalPosition(
+    internal fun chooseTacticalPosition(
         candidates: Collection<TacticalPosition>,
         capabilities: CapabilityVector,
         preferences: CapabilityVector,

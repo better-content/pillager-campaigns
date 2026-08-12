@@ -45,6 +45,7 @@ data class EnvironmentTraits(
 }
 
 @Serializable data class ChunkPosition(val dimension: String, val x: Int, val z: Int)
+@Serializable data class BlockPosition(val dimension: String, val x: Int, val y: Int, val z: Int)
 
 @Serializable
 data class EquipmentManifest(
@@ -113,6 +114,7 @@ data class WarbandState(
     var nextRaidTick: Long = 0L,
     var defeated: Boolean = false,
     var activeCampaignLimit: Int = 1,
+    var warlord: MemberManifest? = null,
 )
 
 @Serializable
@@ -155,6 +157,8 @@ data class CampaignState(
     var forageDebt: Double = 0.0,
     val lostCaches: MutableList<LostCache> = mutableListOf(),
     val physicalMemberIds: MutableSet<String> = linkedSetOf(),
+    var leaderMemberId: String? = null,
+    var resolvedAtTick: Long = 0L,
 )
 
 @Serializable
@@ -189,8 +193,11 @@ data class GarrisonState(
 data class CoreSnapshot(
     var tick: Long = 0L,
     var sequence: Long = 0L,
+    var effectSequence: Long = 0L,
     var lastDiscoveryTick: Long = 0L,
     var lastCampaignTick: Long = 0L,
+    var dispatchCursor: Int = 0,
+    var discoveryCursor: Int = 0,
     val factions: MutableMap<String, FactionState> = linkedMapOf(),
     val warbands: MutableMap<String, WarbandState> = linkedMapOf(),
     val officers: MutableMap<String, OfficerState> = linkedMapOf(),
@@ -204,4 +211,5 @@ data class CoreSnapshot(
     val pendingEffects: MutableMap<String, CoreEffect> = linkedMapOf(),
     val acknowledgedEffectIds: MutableSet<String> = linkedSetOf(),
     val rewardedDefeatIds: MutableSet<String> = linkedSetOf(),
+    val defeatedWarlordIds: MutableSet<String> = linkedSetOf(),
 )

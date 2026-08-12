@@ -36,20 +36,42 @@ class WarbandCoreTest {
         )
     }
 
+    private fun makeHostile(state: CoreSnapshot, playerId: String) {
+        state.territoryRelations["warband|$playerId"] =
+            TerritoryRelationState("warband", playerId, TerritoryStatus.HOSTILE)
+    }
+
+    private fun dispatch(
+        state: CoreSnapshot,
+        selectedCatalog: CoreCatalog = catalog,
+        selectedRules: CoreRules = rules,
+    ) {
+        makeHostile(state, "player")
+        WarbandCore.transition(
+            state,
+            CoreFrame(0L, players = listOf(PlayerFact("player", ChunkPosition("overworld", 12, 0)))),
+            selectedCatalog,
+            selectedRules,
+        )
+    }
+
     @Test fun `time partition produces identical economy state`() {
         val one = state(reserve = 18.0, pool = 0.0)
         val many = state(reserve = 18.0, pool = 0.0)
         WarbandCore.transition(one, CoreFrame(72_000L), catalog, rules)
         repeat(3_600) { WarbandCore.transition(many, CoreFrame(20L), catalog, rules) }
-        assertEquals(Json.encodeToString(one), Json.encodeToString(many))
+        val oneJson = Json.encodeToString(one)
+        val manyJson = Json.encodeToString(many)
+        val mismatch = oneJson.indices.firstOrNull { it >= manyJson.length || oneJson[it] != manyJson[it] } ?: -1
+        assertEquals(oneJson, manyJson, "first mismatch at $mismatch: ${oneJson.drop(mismatch.coerceAtLeast(0)).take(120)} / ${manyJson.drop(mismatch.coerceAtLeast(0)).take(120)}")
     }
 
     @Test fun `dispatch is deterministic globally exclusive and equipment compatible`() {
         fun play(): CoreSnapshot {
             val state = state()
             WarbandCore.transition(state, CoreFrame(0L, commands = listOf(CoreCommand.Manufacture("warband", 4))), catalog, rules)
-            WarbandCore.transition(state, CoreFrame(0L, commands = listOf(CoreCommand.Dispatch("warband", "player"))), catalog, rules)
-            WarbandCore.transition(state, CoreFrame(0L, commands = listOf(CoreCommand.Dispatch("warband", "player"))), catalog, rules)
+            dispatch(state)
+            dispatch(state)
             return state
         }
         assertEquals(Json.encodeToString(play()), Json.encodeToString(play()))
@@ -80,7 +102,8 @@ class WarbandCoreTest {
 
     @Test fun `dispatch waits for formulaic readiness instead of minimum affordability`() {
         val state = state(reserve = 0.0, pool = 10.9)
-        val player = PlayerFact("player", ChunkPosition("overworld", 12, 0), setOf("warband"))
+        val player = PlayerFact("player", ChunkPosition("overworld", 12, 0))
+        makeHostile(state, player.id)
         val waiting = WarbandCore.transition(state, CoreFrame(0L, listOf(player)), catalog, rules)
         assertTrue(waiting.events.none { it.type == "dispatched" })
         state.warbands.getValue("warband").raidPool = 11.0
@@ -94,8 +117,10 @@ class WarbandCoreTest {
         state.officers["rival"] = OfficerState(
             "rival", "faction", "warband", lastTargetPlayerId = "far",
         )
-        val near = PlayerFact("near", ChunkPosition("overworld", 4, 0), setOf("warband"))
-        val far = PlayerFact("far", ChunkPosition("overworld", 8, 0), setOf("warband"))
+        val near = PlayerFact("near", ChunkPosition("overworld", 4, 0))
+        val far = PlayerFact("far", ChunkPosition("overworld", 8, 0))
+        makeHostile(state, near.id)
+        makeHostile(state, far.id)
         val assignment = WarbandCore.chooseAssignment(state, state.warbands.getValue("warband"), listOf(near, far))
         assertEquals("rival", assignment?.officerId)
         assertEquals("far", assignment?.playerId)
@@ -121,15 +146,26 @@ class WarbandCoreTest {
     @Test fun `automatic dispatch travels materializes fights and returns conservatively`() {
         val state = state(pool = 20.0)
         state.warbands.getValue("warband").aggression = 12
-        val player = PlayerFact("player", ChunkPosition("overworld", 12, 0), setOf("warband"))
+        val player = PlayerFact("player", ChunkPosition("overworld", 12, 0))
+        makeHostile(state, player.id)
         val dispatched = WarbandCore.transition(state, CoreFrame(0L, listOf(player)), catalog, rules)
         assertTrue(dispatched.events.any { it.type == "dispatched" })
         val campaign = state.campaigns.values.single()
         val committed = campaign.members.sumOf { it.threat }
         val afterDispatch = state.warbands.getValue("warband").raidPool
         val travel = WarbandCore.transition(state, CoreFrame(6 * rules.travelTicksPerChunk, listOf(player)), catalog, rules)
-        assertTrue(travel.effects.any { it.kind == EffectKind.MATERIALIZE })
-        WarbandCore.transition(state, CoreFrame(0L, listOf(player), materializations = listOf(MaterializationResult(campaign.id, true))), catalog, rules)
+        assertTrue(travel.events.any { it.type == "materialization_site_requested" })
+        val materialize = WarbandCore.transition(
+            state,
+            CoreFrame(0L, listOf(player), materializationSites = listOf(MaterializationSiteObservation(
+                campaign.id, listOf(BlockPosition("overworld", 192, 64, 0)),
+            ))),
+            catalog,
+            rules,
+        ).effects.single { it.kind == EffectKind.MATERIALIZE }
+        WarbandCore.transition(state, CoreFrame(0L, listOf(player), materializations = listOf(
+            MaterializationResult(campaign.id, true, effectId = materialize.effectId),
+        )), catalog, rules)
         assertEquals(CampaignPhase.ACTIVE, campaign.phase)
         val victim = campaign.members.first().id
         WarbandCore.transition(
@@ -139,8 +175,8 @@ class WarbandCoreTest {
             rules,
         )
         assertTrue(campaign.members.none { it.id == victim })
-        WarbandCore.transition(state, CoreFrame(0L, commands = listOf(CoreCommand.BeginReturn(campaign.id, "idle", 1))), catalog, rules)
-        WarbandCore.transition(state, CoreFrame(0L, commands = listOf(CoreCommand.Dematerialize(campaign.id))), catalog, rules)
+        WarbandCore.transition(state, CoreFrame(0L, commands = listOf(BeginReturnCommand(campaign.id, "idle", 1))), catalog, rules)
+        WarbandCore.transition(state, CoreFrame(0L, commands = listOf(DematerializeCommand(campaign.id))), catalog, rules)
         val returned = WarbandCore.transition(state, CoreFrame(12 * rules.travelTicksPerChunk), catalog, rules)
         assertEquals(CampaignPhase.RESOLVED, campaign.phase)
         assertTrue(returned.events.any { it.type == "returned" })
@@ -150,7 +186,7 @@ class WarbandCoreTest {
 
     @Test fun `idle active campaign requests snapshot return`() {
         val state = state(pool = 12.0)
-        WarbandCore.transition(state, CoreFrame(0L, commands = listOf(CoreCommand.Dispatch("warband", "player"))), catalog, rules)
+        dispatch(state)
         val campaign = state.campaigns.values.single()
         campaign.phase = CampaignPhase.ACTIVE
         campaign.physical = true
@@ -162,7 +198,7 @@ class WarbandCoreTest {
 
     @Test fun `physical outcomes and captured snapshots reconcile through Core only`() {
         val state = state(pool = 12.0)
-        WarbandCore.transition(state, CoreFrame(0L, commands = listOf(CoreCommand.Dispatch("warband", "player"))), catalog, rules)
+        dispatch(state)
         val campaign = state.campaigns.values.single().also { it.phase = CampaignPhase.ACTIVE; it.physical = true }
         val survivor = campaign.members.first()
         val outcome = WarbandCore.transition(
@@ -193,7 +229,7 @@ class WarbandCoreTest {
 
     @Test fun `explicit outcome and combat facts in one frame count defeat once`() {
         val state = state(pool = 12.0)
-        WarbandCore.transition(state, CoreFrame(0L, commands = listOf(CoreCommand.Dispatch("warband", "player"))), catalog, rules)
+        dispatch(state)
         val campaign = state.campaigns.values.single().also { it.phase = CampaignPhase.ACTIVE; it.physical = true }
         val victim = campaign.members.first().id
         val result = WarbandCore.transition(
@@ -218,7 +254,7 @@ class WarbandCoreTest {
         val boundedRules = rules.copy(minimumAggression = 20, maximumAggression = 30)
         val state = state(pool = 100.0)
         state.warbands.getValue("warband").aggression = 20
-        WarbandCore.transition(state, CoreFrame(0L, commands = listOf(CoreCommand.Dispatch("warband", "player"))), catalog, boundedRules)
+        dispatch(state, catalog, boundedRules)
         val campaign = state.campaigns.values.single().also {
             it.phase = CampaignPhase.RETURNING
             it.position = state.warbands.getValue("warband").rally
@@ -244,7 +280,7 @@ class WarbandCoreTest {
 
     @Test fun `combat updates warband captain and empirical threat`() {
         val state = state(pool = 12.0)
-        WarbandCore.transition(state, CoreFrame(0L, commands = listOf(CoreCommand.Dispatch("warband", "player"))), catalog, rules)
+        dispatch(state)
         val campaign = state.campaigns.values.single().also { it.phase = CampaignPhase.ACTIVE; it.physical = true }
         val beforeWarband = state.warbands.getValue("warband").preferences.getValue("range")
         val result = WarbandCore.transition(
@@ -367,7 +403,8 @@ class WarbandCoreTest {
         val state = state(pool = 20.0)
         val warband = state.warbands.getValue("warband")
         resources.forEach { warband.stockpile[it.itemId] = 50 }
-        val player = PlayerFact("player", ChunkPosition("overworld", 12, 0), setOf("warband"))
+        val player = PlayerFact("player", ChunkPosition("overworld", 12, 0))
+        makeHostile(state, player.id)
         WarbandCore.transition(state, CoreFrame(0L, listOf(player)), suppliedCatalog, rules)
         val campaign = state.campaigns.values.single()
         resources.forEach { resource ->
@@ -376,7 +413,7 @@ class WarbandCoreTest {
         val afterProvision = resources.associate { resource -> resource.itemId to campaign.members.sumOf { it.cargo.getOrDefault(resource.itemId, 0) } }
         val outbound = WarbandCore.transition(state, CoreFrame(rules.travelTicksPerChunk, listOf(player)), suppliedCatalog, rules)
         assertTrue(resources.any { resource -> campaign.members.sumOf { it.cargo.getOrDefault(resource.itemId, 0) } < afterProvision.getValue(resource.itemId) })
-        WarbandCore.transition(state, CoreFrame(0L, commands = listOf(CoreCommand.BeginReturn(campaign.id, "test"))), suppliedCatalog, rules)
+        WarbandCore.transition(state, CoreFrame(0L, commands = listOf(BeginReturnCommand(campaign.id, "test"))), suppliedCatalog, rules)
         val returning = WarbandCore.transition(state, CoreFrame(2L * rules.travelTicksPerChunk), suppliedCatalog, rules)
         assertEquals(CampaignPhase.RESOLVED, campaign.phase)
         val consumed = (outbound.events + returning.events).filter { it.type == "resource_consumed" }
@@ -389,6 +426,7 @@ class WarbandCoreTest {
 
     @Test fun `severe sustained deficit causes attrition and preserves exact recoverable assets`() {
         val state = state(reserve = 0.0, pool = 0.0)
+        makeHostile(state, "player")
         val equipment = EquipmentManifest("tool", "blade", listOf("iron"), mapOf("iron" to 1.0), CapabilityVector(damage = 1.0))
         val member = MemberManifest("member", "quick", 5.0, healthFraction = 0.2, equipment = equipment)
         val campaign = CampaignState(
@@ -396,6 +434,7 @@ class WarbandCoreTest {
             ChunkPosition("overworld", 20, 0), mutableListOf(member), route = mutableListOf(ChunkPosition("overworld", 1, 0)),
         )
         state.campaigns[campaign.id] = campaign
+        state.officers.getValue("captain").deployedCampaignId = campaign.id
         val harshRules = rules.copy(travelTicksPerChunk = 1L, deficitGraceChunks = 0.0, attritionPerDeficitChunk = 1.0)
         val resourceCatalog = catalog.copy(resources = listOf(ResourceDefinition("ration", ResourceVector(sustenance = 1.0))))
         val result = WarbandCore.transition(state, CoreFrame(1L), resourceCatalog, harshRules)
@@ -405,6 +444,17 @@ class WarbandCoreTest {
         assertEquals(ChunkPosition("overworld", 1, 0), cache.position)
         assertEquals(listOf("tool"), cache.equipment.map { it.id })
         assertEquals(CampaignPhase.RESOLVED, campaign.phase)
+        assertEquals(null, state.officers.getValue("captain").deployedCampaignId)
+
+        state.warbands.getValue("warband").raidPool = 20.0
+        val redispatch = WarbandCore.transition(
+            state,
+            CoreFrame(harshRules.captainRecoveryTicks, players = listOf(PlayerFact("player", ChunkPosition("overworld", 12, 0)))),
+            resourceCatalog,
+            harshRules,
+        )
+        assertTrue(redispatch.events.any { it.type == "dispatched" && it.subjectId != campaign.id })
+        assertEquals(null, state.officers.getValue("captain").deployedCampaignId)
     }
 
     @Test fun `invalid logistics manifests fail closed`() {
@@ -421,7 +471,7 @@ class WarbandCoreTest {
 
     @Test fun `partial materialization restores each failed manifest exactly once`() {
         val state = state(pool = 12.0)
-        WarbandCore.transition(state, CoreFrame(0L, commands = listOf(CoreCommand.Dispatch("warband", "player"))), catalog, rules)
+        dispatch(state)
         val campaign = state.campaigns.values.single().also { it.phase = CampaignPhase.READY_TO_MATERIALIZE }
         val successful = campaign.members.first()
         val failed = campaign.members.last()
@@ -451,32 +501,40 @@ class WarbandCoreTest {
     @Test fun `discovery territory and garrison reservations are core owned`() {
         val state = CoreSnapshot()
         val discovery = WarbandDiscoveryObservation(
-            "site", ChunkPosition("overworld", 4, 6), EnvironmentTraits(habitability = 0.8), "Foundry", 42,
+            "site", ChunkPosition("overworld", 4, 6), EnvironmentTraits(habitability = 0.8),
+            siteCandidates = listOf(BlockPosition("overworld", 72, 64, 104)),
         )
         WarbandCore.transition(state, CoreFrame(0L, discoveries = listOf(discovery)), catalog, rules)
         WarbandCore.transition(state, CoreFrame(0L, discoveries = listOf(discovery)), catalog, rules)
         val warband = state.warbands.values.single()
         assertEquals(1, state.factions.size)
         assertEquals(1, state.officers.size)
-        assertEquals(rules.discoveryInitialThreat(discovery.environment), warband.reserveThreat)
+        assertEquals(
+            rules.discoveryInitialThreat(discovery.environment),
+            warband.reserveThreat + warband.garrisonThreat + (warband.warlord?.threat ?: 0.0),
+        )
 
         WarbandCore.transition(
             state,
-            CoreFrame(0L, territory = listOf(TerritoryObservation(warband.id, "player", true, 200L))),
+            CoreFrame(
+                0L,
+                territoryContacts = listOf(TerritoryContactObservation(warband.id, "player", 0.0, attacked = true)),
+            ),
             catalog,
             rules,
         )
         assertTrue("player" in state.initializedPlayerIds)
         assertTrue(state.territoryRelations.getValue("${warband.id}|player").hostile)
 
+        val discoveryGarrisonThreat = warband.garrisonThreat
         val reserved = WarbandCore.transition(
             state,
-            CoreFrame(0L, commands = listOf(CoreCommand.ReserveGarrison(warband.id, warband.rally, 6.0))),
+            CoreFrame(0L, commands = listOf(ReserveGarrisonCommand(warband.id, warband.rally, 6.0))),
             catalog,
             rules,
         )
-        val garrison = state.garrisons.values.single()
-        val effect = reserved.effects.single { it.kind == EffectKind.MATERIALIZE_GARRISON }
+        val garrison = state.garrisons.values.last()
+        val effect = reserved.effects.single { it.kind == EffectKind.MATERIALIZE_GARRISON && it.garrisonId == garrison.id }
         val committed = garrison.members.sumOf(MemberManifest::threat)
         WarbandCore.transition(
             state,
@@ -485,15 +543,18 @@ class WarbandCoreTest {
             rules,
         )
         assertEquals(GarrisonPhase.RESOLVED, garrison.phase)
-        assertEquals(0.0, warband.garrisonThreat)
-        assertEquals(rules.discoveryInitialThreat(discovery.environment), warband.reserveThreat)
+        assertEquals(discoveryGarrisonThreat, warband.garrisonThreat)
+        assertEquals(
+            rules.discoveryInitialThreat(discovery.environment),
+            warband.reserveThreat + warband.garrisonThreat + (warband.warlord?.threat ?: 0.0),
+        )
         assertTrue(effect.effectId in state.acknowledgedEffectIds)
         assertTrue(committed > 0.0)
     }
 
     @Test fun `tactical intent and successor selection are deterministic core effects`() {
         val state = state(pool = 12.0)
-        WarbandCore.transition(state, CoreFrame(0L, commands = listOf(CoreCommand.Dispatch("warband", "player"))), catalog, rules)
+        dispatch(state)
         val campaign = state.campaigns.values.single().also {
             it.phase = CampaignPhase.ACTIVE
             it.physical = true
@@ -504,12 +565,14 @@ class WarbandCoreTest {
         val result = WarbandCore.transition(
             state, CoreFrame(0L, tactical = listOf(TacticalObservation(campaign.id, listOf(exposed, covered)))), catalog, rules,
         )
-        assertEquals("covered", result.effects.single { it.kind == EffectKind.NAVIGATE }.tacticalPositionId)
+        val navigation = result.effects.filter { it.kind == EffectKind.NAVIGATE }
+        assertEquals(campaign.members.size, navigation.size)
+        assertTrue(navigation.all { it.tacticalPositionId == "covered" && it.memberIds.size == 1 })
 
         state.officers["veteran"] = OfficerState("veteran", "faction", "warband", victories = 3)
         WarbandCore.transition(
             state,
-            CoreFrame(0L, commands = listOf(CoreCommand.PromoteSuccessor("warband", "captain"))),
+            CoreFrame(0L, commands = listOf(PromoteSuccessorCommand("warband", "captain"))),
             catalog,
             rules,
         )
@@ -530,7 +593,7 @@ class WarbandCoreTest {
         val warband = state.warbands.getValue("warband")
         val reserved = WarbandCore.transition(
             state,
-            CoreFrame(0L, commands = listOf(CoreCommand.ReserveGarrison("warband", warband.rally, 12.0))),
+            CoreFrame(0L, commands = listOf(ReserveGarrisonCommand("warband", warband.rally, 12.0))),
             catalog,
             rules,
         )
@@ -558,7 +621,7 @@ class WarbandCoreTest {
         assertEquals(0.5, garrison.members.single().healthFraction)
         WarbandCore.transition(
             state,
-            CoreFrame(0L, commands = listOf(CoreCommand.ResolveGarrison(garrison.id, setOf(survivor.id)))),
+            CoreFrame(0L, commands = listOf(ResolveGarrisonCommand(garrison.id, setOf(survivor.id)))),
             catalog,
             rules,
         )
@@ -573,7 +636,7 @@ class WarbandCoreTest {
             RewardDefinition("coin:copper", 1.0),
             RewardDefinition("coin:gold", 5.0),
         ))
-        WarbandCore.transition(state, CoreFrame(0L, commands = listOf(CoreCommand.Dispatch("warband", "player"))), rewardCatalog, rules)
+        dispatch(state, rewardCatalog)
         val campaign = state.campaigns.values.single()
         val member = campaign.members.first()
         val observation = DefeatObservation(campaign.id, member.id, "player", authority = 1.0)
@@ -632,7 +695,7 @@ class WarbandCoreTest {
 
     @Test fun `all attempted materialization failures restore exact manifests and resolve`() {
         val state = state(pool = 12.0)
-        WarbandCore.transition(state, CoreFrame(0L, commands = listOf(CoreCommand.Dispatch("warband", "player"))), catalog, rules)
+        dispatch(state)
         val campaign = state.campaigns.values.single().also { it.phase = CampaignPhase.READY_TO_MATERIALIZE }
         val committed = campaign.members.sumOf(MemberManifest::threat)
         val beforePool = state.warbands.getValue("warband").raidPool
@@ -664,7 +727,7 @@ class WarbandCoreTest {
             CoreFrame(0L, commands = listOf(
                 CoreCommand.RegisterPlayer("player"),
                 CoreCommand.ProtectPlayer("player", 40L),
-                CoreCommand.RecordSchedulerProgress(discoveryTick = 7L, campaignTick = 9L),
+                RecordSchedulerProgressCommand(discoveryTick = 7L, campaignTick = 9L),
             )),
             catalog,
             rules,

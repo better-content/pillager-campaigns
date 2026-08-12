@@ -27,20 +27,19 @@ class FormulaicArchitectureTest {
         assertTrue(violations.isEmpty(), "Minecraft dependency leaked into Warband Core: $violations")
     }
 
-    @Test fun `Forge submits observations and commands through the canonical Core adapter`() {
-        val formulaSource = Files.readString(Path("src/main/kotlin/com/gerald/pillagercampaigns/system/FormulaicWarbandRules.kt"))
+    @Test fun `Forge submits raw observations through the state owning engine adapter`() {
         val geometrySource = Files.readString(Path("src/main/kotlin/com/gerald/pillagercampaigns/system/CampaignMath.kt"))
         val runtimeSource = Files.readString(Path("src/main/kotlin/com/gerald/pillagercampaigns/system/PillagerRuntime.kt"))
         val campaignSource = Files.readString(Path("src/main/kotlin/com/gerald/pillagercampaigns/system/PillagerCampaignCoordinator.kt"))
-        assertTrue("FormulaMath" in formulaSource && "CoreRules" in formulaSource)
         assertTrue("CampaignGeometry" in geometrySource)
-        assertTrue("CoreCommand.ReserveGarrison" in runtimeSource && "WarbandCoreAdapter.transition" in runtimeSource)
-        assertTrue("WarbandCoreAdapter.advanceCanonical" in campaignSource && "CoreCommand.Dispatch" in campaignSource)
+        assertTrue("chooseFormulaMob" !in runtimeSource && "planCampaignSquad" !in runtimeSource)
+        assertTrue("WarbandCoreAdapter.advanceCanonical" in campaignSource && "CoreCommand.Dispatch" !in campaignSource)
         assertTrue("transitionCampaign" !in campaignSource)
         assertTrue("EcologyMath.consumeCargo" !in campaignSource && "CampaignDecisions" !in campaignSource)
-        assertTrue("WarbandCore.chooseTacticalPosition" in Files.readString(Path("src/main/kotlin/com/gerald/pillagercampaigns/system/SquadRoutePlanner.kt")))
+        val routeSource = Files.readString(Path("src/main/kotlin/com/gerald/pillagercampaigns/system/SquadRoutePlanner.kt"))
+        assertTrue("TacticalObservation" in routeSource && "WarbandCore.chooseTacticalPosition" !in routeSource)
         val eventSource = Files.readString(Path("src/main/kotlin/com/gerald/pillagercampaigns/PillagerCampaignsEvents.kt"))
-        assertTrue("DefeatObservation" in eventSource && "SelectCampaignSuccessor" in eventSource)
+        assertTrue("DefeatObservation" in eventSource && "SelectCampaignSuccessor" !in eventSource)
         assertTrue("recordCombatObservation" !in eventSource && "recordThreatObservation" !in eventSource)
         val directTransitionCallers = Files.walk(Path("src/main/kotlin")).use { paths ->
             paths.filter { it.extension == "kt" && it.fileName.toString() != "WarbandCoreAdapter.kt" }
@@ -50,10 +49,38 @@ class FormulaicArchitectureTest {
         assertTrue(directTransitionCallers.isEmpty(), "Forge bypassed the canonical Core adapter: $directTransitionCallers")
 
         val tconSource = Files.readString(Path("src/main/kotlin/com/gerald/pillagercampaigns/system/TinkersArmoryOptimizer.kt"))
-        assertTrue("seedLedger" !in tconSource && "consume =" !in tconSource && "fun create(" !in tconSource)
+        assertTrue("liveEquipmentCandidates" !in tconSource && "choosePartMaterial" !in tconSource)
+        assertTrue("equipmentPlatforms" in tconSource && "fun realize(manifest: EquipmentManifest)" in tconSource)
         val worldDataSource = Files.readString(Path("src/main/kotlin/com/gerald/pillagercampaigns/data/PillagerWorldData.kt"))
         assertTrue("fun protectPlayerUntil" !in worldDataSource && "fun markPlayerInitialized" !in worldDataSource)
         val adapterSource = Files.readString(Path("src/main/kotlin/com/gerald/pillagercampaigns/system/WarbandCoreAdapter.kt"))
         assertTrue("fun transitionCampaign" !in adapterSource, "Forge retained a shadow campaign transition")
+        assertTrue("WarbandRuntimeSpec.create" in adapterSource && "WarbandCore." !in adapterSource)
+    }
+
+    @Test fun `production has one strategic transition boundary and no preselected gameplay commands`() {
+        val forgeFiles = Files.walk(Path("src/main/kotlin")).use { paths ->
+            paths.filter { it.extension == "kt" }.toList()
+        }
+        val runnerFiles = Files.walk(Path("runner/src/main/kotlin")).use { paths ->
+            paths.filter { it.extension == "kt" }.toList()
+        }
+        val forbiddenCommands = Regex(
+            "CoreCommand\\.(Dispatch|ReserveGarrison|ResolveGarrison|SelectCampaignSuccessor|" +
+                "PromoteSuccessor|BeginReturn|Dematerialize|DelayWarband|ResolveCampaign|RecordSchedulerProgress)",
+        )
+        val commandLeaks = forgeFiles.flatMap { path ->
+            Files.readAllLines(path).mapIndexedNotNull { index, line ->
+                if (forbiddenCommands.containsMatchIn(line)) "$path:${index + 1}" else null
+            }
+        }
+        assertTrue(commandLeaks.isEmpty(), "Forge preselected a strategic outcome: $commandLeaks")
+
+        val engineCallers = forgeFiles.filter { path ->
+            "requireEngine().transition" in Files.readString(path) && path.fileName.toString() != "WarbandCoreAdapter.kt"
+        }
+        assertTrue(engineCallers.isEmpty(), "Forge bypassed WarbandCoreAdapter: $engineCallers")
+        assertTrue(forgeFiles.none { "coreState" in Files.readString(it) }, "mutable canonical state escaped the engine")
+        assertTrue(runnerFiles.none { "WarbandCore.transition" in Files.readString(it) }, "runner bypassed WarbandEngine")
     }
 }

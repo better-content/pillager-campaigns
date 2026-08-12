@@ -2,6 +2,7 @@ package com.gerald.pillagercampaigns.runner
 
 import com.gerald.warband.core.*
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
 import kotlin.math.abs
@@ -9,15 +10,24 @@ import kotlin.math.abs
 class ExperimentRunner(private val json: Json = Json { prettyPrint = false; encodeDefaults = true }) {
     data class RunResult(
         val summary: ExperimentSummary,
-        val trace: List<CoreTransition>,
+        val trace: List<RunnerTransition>,
         val deterministicTrace: WarbandTrace? = null,
+    )
+
+    @Serializable
+    data class RunnerTransition(
+        val events: List<WarbandEvent>,
+        val effects: List<WarbandEffect>,
+        val state: WarbandSnapshot,
     )
 
     fun run(scenario: ExperimentScenario, retainTrace: Boolean = true): RunResult {
         scenario.validate()
+        val engine = WarbandEngine.restore(scenario.initialSnapshot, scenario.runtimeSpec)
+        var current = engine.snapshot()
         val traceCodec = WarbandTraceCodec(json)
-        val initialState = if (retainTrace) traceCodec.cloneState(scenario.state) else null
-        val trace = mutableListOf<CoreTransition>()
+        val initialState = if (retainTrace) traceCodec.cloneState(current) else null
+        val trace = mutableListOf<RunnerTransition>()
         val deterministicSteps = mutableListOf<WarbandTraceStep>()
         val eventCounts = linkedMapOf<String, Int>()
         val recruitCounts = linkedMapOf<String, Int>()
@@ -27,8 +37,10 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
         val seenMembers = mutableSetOf<String>()
         val seenCampaigns = mutableSetOf<String>()
         val squadSizes = mutableListOf<Int>()
+        val routeLengths = mutableListOf<Int>()
         val recruitSequence = mutableListOf<String>()
         val dispatchTicks = mutableMapOf<String, Long>()
+        val allDispatchTicks = mutableListOf<Long>()
         val cycleTicks = mutableListOf<Long>()
         val returnReasons = linkedMapOf<String, Int>()
         val extractedMaterials = linkedMapOf<String, Int>()
@@ -38,17 +50,18 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
         val supplySatisfaction = mutableListOf<Double>()
         var resourcesAcquired = 0
         var resourcesConsumed = 0
-        val initialPreferences = scenario.state.warbands.mapValues { (_, warband) -> warband.preferences.toMap() }
+        val initialPreferences = current.warbands.mapValues { (_, warband) -> warband.preferences.toMap() }
         var equippedMembers = 0
         var totalMembers = 0
         var firstDispatchTick: Long? = null
         var elapsed = 0L
         var engagementDebt = 0L
         val engagementCounts = mutableMapOf<String, Int>()
-        fun record(frame: CoreFrame, result: CoreTransition) {
+        fun record(frame: WarbandFrame, result: WarbandTransition) {
+            current = engine.snapshot()
             if (retainTrace) {
-                val capturedState = traceCodec.cloneState(result.state)
-                trace += result.copy(state = capturedState)
+                val capturedState = traceCodec.cloneState(current)
+                trace += RunnerTransition(result.events.toList(), result.effects.toList(), capturedState)
                 deterministicSteps += WarbandTraceStep(
                     deterministicSteps.size,
                     traceCodec.cloneFrame(frame),
@@ -62,12 +75,13 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
                 if (event.type == "dispatched") {
                     dispatched++
                     dispatchTicks[event.subjectId] = event.tick
+                    allDispatchTicks += event.tick
                     if (firstDispatchTick == null) firstDispatchTick = event.tick
                 }
                 if (event.type == "returned") {
                     returned++
                     dispatchTicks[event.subjectId]?.let { cycleTicks += event.tick - it }
-                    scenario.state.campaigns[event.subjectId]?.returnReason?.let { reason ->
+                    current.campaigns[event.subjectId]?.returnReason?.let { reason ->
                         returnReasons[reason] = returnReasons.getOrDefault(reason, 0) + 1
                     }
                 }
@@ -84,7 +98,7 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
             val combat = mutableListOf<CombatObservation>()
             if (engagementDebt >= scenario.assumptions.engagementEveryTicks) {
                 engagementDebt %= scenario.assumptions.engagementEveryTicks
-                scenario.state.campaigns.values.filter { it.phase == CampaignPhase.ACTIVE }
+                current.campaigns.values.filter { it.phase == CampaignPhase.ACTIVE }
                     .filter { campaign -> scenario.assumptions.engagementsBeforeDisengage?.let { engagementCounts.getOrDefault(campaign.id, 0) < it } != false }
                     .forEach { campaign ->
                     combat += CombatObservation(
@@ -98,28 +112,44 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
                     engagementCounts[campaign.id] = engagementCounts.getOrDefault(campaign.id, 0) + 1
                 }
             }
-            val readyBefore = scenario.state.campaigns.values.filter { it.phase == CampaignPhase.READY_TO_MATERIALIZE }.map { it.id }
-            val materializations = readyBefore.map { campaignId ->
+            val readyBefore = current.campaigns.values.filter { it.phase == CampaignPhase.READY_TO_MATERIALIZE }.map { it.id }
+            val materializations = readyBefore.mapNotNull { campaignId ->
+                val effectId = current.pendingEffects.values.firstOrNull {
+                    it.kind == EffectKind.MATERIALIZE && it.campaignId == campaignId
+                }?.effectId ?: return@mapNotNull null
                 MaterializationResult(
                     campaignId,
                     true,
-                    effectId = scenario.state.pendingEffects.values.firstOrNull {
-                        it.kind == EffectKind.MATERIALIZE && it.campaignId == campaignId
-                    }?.effectId,
+                    effectId = effectId,
                 )
             }
-            val frame = CoreFrame(step, scenario.players, combat, materializations, terrain = scenario.terrain)
-            val recordedFrame = if (retainTrace) traceCodec.cloneFrame(frame) else frame
-            val result = WarbandCore.transition(
-                scenario.state,
-                frame,
-                scenario.catalog,
-                scenario.rules,
+            val frame = CoreFrame(
+                elapsedTicks = step,
+                players = scenario.players,
+                combat = combat,
+                materializations = materializations,
+                materializationSites = readyBefore.map { campaignId ->
+                    val campaign = current.campaigns.getValue(campaignId)
+                    MaterializationSiteObservation(
+                        campaignId,
+                        listOf(BlockPosition(campaign.position.dimension, campaign.position.x shl 4, 64, campaign.position.z shl 4)),
+                    )
+                },
+                terrain = scenario.terrain,
             )
+            val recordedFrame = if (retainTrace) traceCodec.cloneFrame(frame) else frame
+            val result = engine.transition(frame)
             record(recordedFrame, result)
-            val snapshots = result.effects.filter { it.kind == EffectKind.CAPTURE_SNAPSHOTS }
+            val immediateMaterializations = current.pendingEffects.values.filter { it.kind == EffectKind.MATERIALIZE }
+                .mapNotNull { effect -> effect.campaignId?.let { MaterializationResult(it, true, effectId = effect.effectId) } }
+            if (immediateMaterializations.isNotEmpty()) {
+                val realizationFrame = CoreFrame(0L, scenario.players, materializations = immediateMaterializations)
+                val recordedRealizationFrame = if (retainTrace) traceCodec.cloneFrame(realizationFrame) else realizationFrame
+                record(recordedRealizationFrame, engine.transition(realizationFrame))
+            }
+            val snapshots = current.pendingEffects.values.filter { it.kind == EffectKind.CAPTURE_SNAPSHOTS }
                 .mapNotNull { effect ->
-                    val campaign = effect.campaignId?.let(scenario.state.campaigns::get) ?: return@mapNotNull null
+                    val campaign = effect.campaignId?.let(current.campaigns::get) ?: return@mapNotNull null
                     CampaignSnapshotResult(
                         campaign.id,
                         campaign.position,
@@ -133,30 +163,31 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
                     )
                 }
             if (snapshots.isNotEmpty()) {
-                // The runner's bounded physical adapter treats the emitted member list as
-                // the captured snapshot and acknowledges removal immediately through the
-                // same adapter fact consumed by Forge.
+                // Synthetic harness behavior: assume every emitted member remains in the
+                // supplied snapshot. This exercises Core's protocol; it does not model a
+                // Minecraft entity capture, removal, or rematerialization.
                 val snapshotFrame = CoreFrame(0L, scenario.players, snapshots = snapshots)
                 val recordedSnapshotFrame = if (retainTrace) traceCodec.cloneFrame(snapshotFrame) else snapshotFrame
                 record(
                     recordedSnapshotFrame,
-                    WarbandCore.transition(scenario.state, snapshotFrame, scenario.catalog, scenario.rules),
+                    engine.transition(snapshotFrame),
                 )
             }
-            scenario.state.campaigns.values.forEach { campaign ->
+            current.campaigns.values.forEach { campaign ->
                 val threat = campaign.members.sumOf { it.threat }
                 peakThreat = maxOf(peakThreat, threat)
                 if (seenCampaigns.add(campaign.id)) {
                     squadSizes += campaign.members.size
+                    routeLengths += campaign.route.size
                     totalMembers += campaign.members.size
                     equippedMembers += campaign.members.count { it.equipment != null }
                     recruitSequence += campaign.members.map(MemberManifest::recruitId)
-                    val warband = scenario.state.warbands[campaign.warbandId]
-                    val officer = scenario.state.officers[campaign.officerId]
+                    val warband = current.warbands[campaign.warbandId]
+                    val officer = current.officers[campaign.officerId]
                     if (warband != null) campaign.members.mapNotNull(MemberManifest::equipment).forEach { equipment ->
                         equipment.supportedActions.forEach { action -> armamentActions[action] = armamentActions.getOrDefault(action, 0) + 1 }
-                        armamentUtilities += scenario.rules.capabilityUtility(
-                            equipment.capabilities, scenario.rules.armamentPreferences(warband, officer),
+                        armamentUtilities += scenario.runtimeSpec.rules.capabilityUtility(
+                            equipment.capabilities, scenario.runtimeSpec.rules.armamentPreferences(warband, officer),
                         )
                     }
                 }
@@ -166,10 +197,10 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
             }
             elapsed += step
         }
-        val warbands = scenario.state.warbands.values
+        val warbands = current.warbands.values
         val recruitTotal = recruitCounts.values.sum().coerceAtLeast(1)
         val dominantShare = recruitCounts.values.maxOrNull()?.toDouble()?.div(recruitTotal) ?: 0.0
-        val preferenceDrift = scenario.state.warbands.values.sumOf { warband ->
+        val preferenceDrift = current.warbands.values.sumOf { warband ->
             val initial = initialPreferences[warband.id].orEmpty()
             (initial.keys + warband.preferences.keys).sumOf { key -> abs(warband.preferences.getOrDefault(key, 0.0) - initial.getOrDefault(key, 0.0)) }
         }
@@ -187,8 +218,10 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
                 recruitCounts,
                 eventCounts,
                 firstDispatchTick,
-                scenario.state.campaigns.values.count { it.phase != CampaignPhase.RESOLVED },
-                scenario.state.campaigns.values.count { it.phase == CampaignPhase.RESOLVED },
+                current.campaigns.values.count { it.phase != CampaignPhase.RESOLVED },
+                seenCampaigns.count { campaignId ->
+                    current.campaigns[campaignId]?.phase == CampaignPhase.RESOLVED || campaignId !in current.campaigns
+                },
                 squadSizes.averageIntsOrZero(),
                 recruitCounts.size,
                 dominantShare,
@@ -196,32 +229,36 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
                 if (totalMembers == 0) 0.0 else equippedMembers.toDouble() / totalMembers,
                 cycleTicks.map(Long::toDouble).averageDoublesOrZero(),
                 returnReasons,
-                scenario.state.warbands.mapValues { it.value.aggression },
+                current.warbands.mapValues { it.value.aggression },
                 preferenceDrift,
-                scenario.state.warbands.values.sumOf { it.empiricalThreat.size },
+                current.warbands.values.sumOf { it.empiricalThreat.size },
                 extractedMaterials,
                 manufacturedEquipment,
                 warbands.sumOf { it.stockpile.values.sum() },
                 resourcesAcquired,
                 resourcesConsumed,
-                supplySatisfaction.averageDoublesOrOne(),
+                supplySatisfaction.takeIf(List<Double>::isNotEmpty)?.average(),
+                supplySatisfaction.size,
                 returnReasons.getOrDefault("supply_shortage", 0),
                 eventCounts.getOrDefault("member_lost_to_attrition", 0),
-                scenario.state.campaigns.values.sumOf { it.lostCaches.size },
-                scenario.state.campaigns.values.map { it.route.size.toDouble() }.averageDoublesOrZero(),
-                (warbands.flatMap { it.armory } + scenario.state.campaigns.values.flatMap { it.members }.mapNotNull { it.equipment })
+                current.campaigns.values.sumOf { it.lostCaches.size },
+                routeLengths.averageIntsOrZero(),
+                (warbands.flatMap { it.armory } + current.campaigns.values.flatMap { it.members }.mapNotNull { it.equipment })
                     .map { it.durabilityFraction }.averageDoublesOrOne(),
                 armamentActions,
                 armamentUtilities.averageDoublesOrZero(),
+                dispatchTicks = allDispatchTicks.toList(),
+                interDispatchTicks = allDispatchTicks.zipWithNext { earlier, later -> later - earlier },
+                minimumSquadSize = squadSizes.minOrNull() ?: 0,
+                maximumSquadSize = squadSizes.maxOrNull() ?: 0,
             ),
             trace,
             initialState?.let {
                 WarbandTrace(
-                    catalogRevision = scenario.catalog.revision,
+                    runtimeSpecRevision = scenario.runtimeSpec.revision,
                     initialState = it,
                     initialStateHash = traceCodec.stateHash(it),
-                    catalog = scenario.catalog,
-                    rules = scenario.rules,
+                    runtimeSpec = scenario.runtimeSpec,
                     steps = deterministicSteps,
                 )
             },
@@ -230,12 +267,19 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
 
     fun write(result: RunResult, outputDirectory: File) {
         outputDirectory.mkdirs()
-        File(outputDirectory, "trace.jsonl").bufferedWriter().use { writer ->
-            result.trace.forEach { writer.appendLine(json.encodeToString(it)) }
+        val lineJson = Json { encodeDefaults = true }
+        val traceFile = File(outputDirectory, "trace.jsonl")
+        if (result.trace.isEmpty()) {
+            traceFile.delete()
+        } else {
+            traceFile.bufferedWriter().use { writer ->
+                result.trace.forEach { writer.appendLine(lineJson.encodeToString(it)) }
+            }
         }
         File(outputDirectory, "summary.json").writeText(json.encodeToString(result.summary))
+        File(outputDirectory, "scope.json").writeText(json.encodeToString(result.summary.boundary))
         File(outputDirectory, "summary.csv").writeText(
-            "name,ticks,reserve_threat,raid_pool,material_units,armory_items,dispatched,returned,peak_campaign_threat,distinct_recruits,dominant_recruit_share,longest_recruit_streak,equipment_coverage,mean_cycle_ticks\n" +
+            "name,ticks,reserve_threat,raid_pool,material_units,armory_items,dispatched,returned,peak_campaign_threat,distinct_recruits,dominant_recruit_share,longest_recruit_streak,equipment_coverage,mean_cycle_ticks,supply_satisfaction,supply_observations,model,minecraft_simulation,synthetic_external_observations\n" +
                 listOf(
                     result.summary.name,
                     result.summary.ticks,
@@ -251,6 +295,11 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
                     result.summary.longestRecruitStreak,
                     result.summary.equipmentCoverage,
                     result.summary.meanCampaignCycleTicks,
+                    result.summary.meanSupplySatisfaction ?: "",
+                    result.summary.supplyObservationCount,
+                    result.summary.boundary.model,
+                    result.summary.boundary.minecraftSimulation,
+                    result.summary.boundary.externalObservationsAreSynthetic,
                 ).joinToString(",") + "\n",
         )
     }
@@ -269,7 +318,6 @@ class ExperimentRunner(private val json: Json = Json { prettyPrint = false; enco
     private fun Collection<Int>.averageIntsOrZero() = if (isEmpty()) 0.0 else average()
     private fun Collection<Double>.averageDoublesOrZero() = if (isEmpty()) 0.0 else average()
     private fun Collection<Double>.averageDoublesOrOne() = if (isEmpty()) 1.0 else average()
-
     private fun longestStreak(values: List<String>): Int {
         var longest = 0
         var current = 0

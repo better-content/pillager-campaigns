@@ -4,7 +4,6 @@ import net.minecraft.resources.ResourceLocation
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class PillagerWarbandDiscoveryRulesTest {
@@ -34,8 +33,8 @@ class PillagerWarbandDiscoveryRulesTest {
     }
 
     @Test
-    fun `spawn distance gate can block origin-adjacent warband`() {
-        val blocked = PillagerWarbandDiscoveryRules.candidateForCell(
+    fun `raw candidate generation does not apply strategic distance gates`() {
+        val observed = PillagerWarbandDiscoveryRules.candidateForCell(
             seed = 9L,
             dimension = ResourceLocation("minecraft", "overworld"),
             cellX = 0,
@@ -43,7 +42,8 @@ class PillagerWarbandDiscoveryRulesTest {
             settings = settings.copy(minSpawnDistanceChunks = 256),
         )
 
-        assertNull(blocked)
+        assertEquals(0, observed?.chunkX)
+        assertEquals(0, observed?.chunkZ)
     }
 
     @Test

@@ -18,28 +18,32 @@ import com.gerald.pillagercampaigns.data.RallyPresenceRecord
 import com.gerald.pillagercampaigns.data.RallyPresenceState
 import com.gerald.warband.core.CapabilityVector
 import com.gerald.warband.core.ChunkPosition
-import com.gerald.warband.core.CoreCatalog
 import com.gerald.warband.core.CampaignSnapshotResult
 import com.gerald.warband.core.CampaignState as CoreCampaignState
 import com.gerald.warband.core.CampaignPhase as CoreCampaignPhase
 import com.gerald.warband.core.CoreFrame
 import com.gerald.warband.core.CoreCommand
-import com.gerald.warband.core.CoreSnapshot
 import com.gerald.warband.core.MemberManifest
 import com.gerald.warband.core.MemberSnapshot
+import com.gerald.warband.core.PlayerLifecycleKind
+import com.gerald.warband.core.PlayerLifecycleObservation
 import com.gerald.warband.core.OfficerState
 import com.gerald.warband.core.RecruitDefinition
 import com.gerald.warband.core.SelectionMemory
-import com.gerald.warband.core.CoreTransition
-import com.gerald.warband.core.WarbandCore
 import com.gerald.warband.core.CoreRules
+import com.gerald.warband.core.EnvironmentModelDefinition
+import com.gerald.warband.core.EquipmentRealizationResult
+import com.gerald.warband.core.EffectKind
+import com.gerald.warband.core.WarbandRuntimeSpec
+import com.gerald.warband.core.WarbandTransition
 import com.gerald.warband.core.WarbandState
 import com.gerald.warband.core.RewardDefinition
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.core.registries.Registries
-import net.minecraft.resources.ResourceKey
+import net.minecraft.resources.ResourceLocation
 import net.minecraft.server.MinecraftServer
-import net.minecraft.server.level.ServerLevel
+import net.minecraft.tags.TagKey
+import net.minecraft.world.entity.EntityType
 import net.minecraft.world.entity.Mob
 import net.minecraft.world.item.ItemStack
 import java.util.UUID
@@ -50,28 +54,104 @@ import kotlin.math.roundToInt
  * ItemStack construction stay here; economy and selection transitions do not.
  */
 object WarbandCoreAdapter {
-    const val LIVE_CATALOG_REVISION = "pillager-campaigns-live-v1"
     private const val CORE_EQUIPMENT_ID_TAG = "PillagerCoreEquipmentId"
-    internal data class LiveRecruit(val mob: Mob, val definition: RecruitDefinition)
-    internal data class PlannedLiveMember(
-        val manifestId: String,
-        val recruitId: String,
-        val threat: Double,
-        val equipmentIndex: Int?,
-        val cargo: Map<String, Int>,
-        val healthFraction: Double,
-    )
+    private val recruitTag = TagKey.create(Registries.ENTITY_TYPE, ResourceLocation("pillagercampaigns", "recruits"))
 
     internal fun rules() = CoreRules(
         minimumAggression = PillagerCampaignsConfig.minimumAggression.get(),
         maximumAggression = PillagerCampaignsConfig.maximumAggression.get(),
         initialAggression = PillagerCampaignsConfig.initialAggression.get(),
+        idleReturnAggressionGrowth = PillagerCampaignsConfig.idleReturnAggressionGrowth.get(),
+        defeatAggressionGrowth = PillagerCampaignsConfig.defeatAggressionGrowth.get(),
+        victoryAggressionGrowth = PillagerCampaignsConfig.victoryAggressionGrowth.get(),
         idleReturnTicks = PillagerCampaignsConfig.idleReturnTicks.get().toLong(),
+        respawnProtectionTicks = PillagerCampaignsConfig.respawnProtectionTicks.get().toLong(),
+        deathProtectionTicks = PillagerCampaignsConfig.deathProtectionTicks.get().toLong(),
+        resolvedRetentionTicks = PillagerCampaignsConfig.resolvedRetentionTicks.get().toLong(),
         materializeDistanceChunks = PillagerCampaignsConfig.materializeDistanceChunks.get(),
+        travelTicksPerChunk = PillagerCampaignsConfig.travelTicksPerChunk.get().toLong(),
+        raidCooldownTicks = PillagerCampaignsConfig.raidCooldownTicks.get().toLong(),
+        captainRecoveryTicks = PillagerCampaignsConfig.captainRecoveryTicks.get().toLong(),
+        captainSuccessRecoveryTicks = PillagerCampaignsConfig.captainSuccessRecoveryTicks.get().toLong(),
+        dispatchIntervalTicks = PillagerCampaignsConfig.schedulerIntervalTicks.get().toLong(),
+        dispatchWorkBudget = PillagerCampaignsConfig.workBudgetPerTick.get(),
+        maximumDispatchDistanceChunks = PillagerCampaignsConfig.territoryRadiusChunks.get(),
+        discoveryIntervalTicks = PillagerCampaignsConfig.schedulerIntervalTicks.get().toLong() * 10L,
+        discoveryWorkBudget = PillagerCampaignsConfig.workBudgetPerTick.get(),
+        discoveryGridSpacingChunks = PillagerCampaignsConfig.gridSpacingChunks.get(),
+        discoveryMinimumSpacingChunks = PillagerCampaignsConfig.gridSpacingChunks.get(),
+        discoveryGridJitterChunks = PillagerCampaignsConfig.gridJitterChunks.get(),
+        discoveryMinimumPlayerDistanceChunks = PillagerCampaignsConfig.minSpawnDistanceChunks.get(),
+        discoveryMaximumDistanceChunks = PillagerCampaignsConfig.minSpawnDistanceChunks.get().coerceAtLeast(1) * 4,
+        discoveryChance = PillagerCampaignsConfig.spawnChancePercent.get() / 100.0,
+        discoveryInitialReserveThreat = PillagerCampaignsConfig.initialReserve.get().toDouble(),
+        territoryRadiusChunks = PillagerCampaignsConfig.territoryRadiusChunks.get(),
+        territoryWarningBandChunks = PillagerCampaignsConfig.warningBandChunks.get(),
+        maximumSquadMembers = PillagerCampaignsConfig.maximumSquadMembers.get(),
+        recruitBaseTicksPerThreat = PillagerCampaignsConfig.recruitBaseTicksPerThreat.get(),
+        recruitHabitabilityPenaltyTicksPerThreat = PillagerCampaignsConfig.recruitHabitabilityPenaltyTicksPerThreat.get(),
+        mobilizationBaseTicksPerThreat = PillagerCampaignsConfig.mobilizationBaseTicksPerThreat.get(),
+        mobilizationFrictionTicksPerThreat = PillagerCampaignsConfig.mobilizationFrictionTicksPerThreat.get(),
+        extractionTicksMultiplier = PillagerCampaignsConfig.extractionTicksMultiplier.get(),
+        sustenancePerThreatChunk = PillagerCampaignsConfig.sustenancePerThreatChunk.get(),
+        munitionsPerRangedThreatChunk = PillagerCampaignsConfig.munitionsPerRangedThreatChunk.get(),
+        maintenancePerEquipmentChunk = PillagerCampaignsConfig.maintenancePerEquipmentChunk.get(),
+        deficitGraceChunks = PillagerCampaignsConfig.deficitGraceChunks.get(),
+        attritionPerDeficitChunk = PillagerCampaignsConfig.attritionPerDeficitChunk.get(),
+        equipmentWearPerFrictionChunk = PillagerCampaignsConfig.equipmentWearPerFrictionChunk.get(),
+        forageUnitsPerDeficitChunk = PillagerCampaignsConfig.forageUnitsPerDeficitChunk.get(),
+        shortageRetreatBaseChunks = PillagerCampaignsConfig.shortageRetreatBaseChunks.get(),
+        shortageAggressionRunwayChunks = PillagerCampaignsConfig.shortageAggressionRunwayChunks.get(),
         warbandLearningRate = PillagerCampaignsConfig.warbandLearningRate.get(),
         captainLearningRate = PillagerCampaignsConfig.captainLearningRate.get(),
         threatLearningRate = PillagerCampaignsConfig.threatLearningRate.get(),
     )
+
+    fun runtimeSpec(server: MinecraftServer): WarbandRuntimeSpec = WarbandRuntimeSpec.create(
+        rules = rules(),
+        recruits = captureRecruitDefinitions(server),
+        resources = WarbandResourceCatalog.definitions(),
+        equipmentPlatforms = TinkersArmoryOptimizer.equipmentPlatforms(server),
+        materials = TinkersArmoryOptimizer.materialDefinitions(),
+        environmentModel = EnvironmentModelDefinition(
+            traitWeights = WarbandFormulaData.traitWeights.toSortedMap().mapValues { (_, delta) ->
+                com.gerald.warband.core.EnvironmentTraits(
+                    delta.habitability, delta.biomass, delta.mineral, delta.exotic, delta.friction,
+                )
+            },
+        ),
+        rewards = rewardDefinitions(),
+    )
+
+    private fun captureRecruitDefinitions(server: MinecraftServer): List<RecruitDefinition> {
+        val level = server.overworld()
+        return net.minecraftforge.registries.ForgeRegistries.ENTITY_TYPES.tags()?.getTag(recruitTag)?.toList().orEmpty()
+            .mapNotNull { type ->
+                val mob = type.create(level) as? Mob ?: return@mapNotNull null
+                try {
+                    val id = net.minecraftforge.registries.ForgeRegistries.ENTITY_TYPES.getKey(type)?.toString()
+                        ?: return@mapNotNull null
+                    val threat = (
+                        mob.getAttributeValue(net.minecraft.world.entity.ai.attributes.Attributes.MAX_HEALTH) / 10.0 +
+                            mob.getAttributeValue(net.minecraft.world.entity.ai.attributes.Attributes.ATTACK_DAMAGE) +
+                            mob.getAttributeValue(net.minecraft.world.entity.ai.attributes.Attributes.ARMOR) / 4.0 +
+                            mob.getAttributeValue(net.minecraft.world.entity.ai.attributes.Attributes.FOLLOW_RANGE) / 32.0
+                        ) * WarbandFormulaData.threatCorrections.getOrDefault(id, 1.0)
+                    recruitDefinition(id, threat.coerceAtLeast(1.0), mob)
+                } finally {
+                    mob.discard()
+                }
+            }.sortedBy(RecruitDefinition::id)
+    }
+
+    private fun rewardDefinitions(): List<RewardDefinition> = listOf(
+        "createdeco:copper_coin", "createdeco:zinc_coin", "createdeco:iron_coin",
+        "createdeco:industrial_iron_coin", "createdeco:brass_coin", "createdeco:gold_coin", "createdeco:netherite_coin",
+    ).mapIndexedNotNull { index, id ->
+        val item = ResourceLocation.tryParse(id)?.let(net.minecraftforge.registries.ForgeRegistries.ITEMS::getValue)
+            ?: return@mapIndexedNotNull null
+        RewardDefinition(id, (1 shl index).toDouble(), ItemStack(item).maxStackSize)
+    }
 
     /**
      * The only Forge entry point allowed to advance the persisted strategic
@@ -81,53 +161,52 @@ object WarbandCoreAdapter {
     fun transition(
         data: PillagerWorldData,
         frame: CoreFrame,
-        catalog: CoreCatalog,
-        coreRules: CoreRules = rules(),
-    ): CoreTransition {
-        require(catalog.revision.isNotBlank()) { "Warband Core catalog revision must not be blank" }
-        if (data.coreCatalogRevision == PillagerWorldData.UNRESOLVED_CATALOG_REVISION) {
-            data.coreCatalogRevision = catalog.revision
-        } else {
-            require(data.coreCatalogRevision == catalog.revision) {
-                "Warband Core catalog mismatch: save=${data.coreCatalogRevision}, runtime=${catalog.revision}"
-            }
-        }
-        val result = WarbandCore.transition(data.coreState, frame, catalog, coreRules)
+    ): WarbandTransition {
+        val initial = data.requireEngine().transition(frame)
+        val result = realizeEquipmentEffects(data, initial)
         if (frame.elapsedTicks > 0L || result.events.isNotEmpty() || result.effects.isNotEmpty()) data.markChanged()
         return result
     }
 
+    fun transition(data: PillagerWorldData, frame: CoreFrame, server: MinecraftServer): WarbandTransition {
+        ensureEngine(data, server)
+        return transition(data, frame)
+    }
+
+    private fun ensureEngine(data: PillagerWorldData, server: MinecraftServer) =
+        runCatching(data::requireEngine).getOrElse { data.attachRuntimeSpec(runtimeSpec(server)) }
+
     fun registerPlayer(data: PillagerWorldData, playerId: UUID): Boolean {
+        return observePlayerLifecycle(data, playerId, PlayerLifecycleKind.JOINED)
+    }
+
+    fun observePlayerLifecycle(data: PillagerWorldData, playerId: UUID, kind: PlayerLifecycleKind): Boolean {
         val id = playerId.toString()
-        if (id in data.coreState.initializedPlayerIds) return false
-        transition(data, CoreFrame(0L, commands = listOf(CoreCommand.RegisterPlayer(id))), snapshotCatalog(data))
-        return true
+        val wasInitialized = id in data.snapshot().initializedPlayerIds
+        transition(data, CoreFrame(0L, playerLifecycle = listOf(PlayerLifecycleObservation(id, kind))))
+        return !wasInitialized
     }
 
     fun protectPlayer(data: PillagerWorldData, playerId: UUID, untilTick: Long) {
         transition(
             data,
             CoreFrame(0L, commands = listOf(CoreCommand.ProtectPlayer(playerId.toString(), untilTick))),
-            snapshotCatalog(data),
-        )
-    }
-
-    fun recordSchedulerProgress(data: PillagerWorldData, discoveryTick: Long? = null, campaignTick: Long? = null) {
-        transition(
-            data,
-            CoreFrame(0L, commands = listOf(CoreCommand.RecordSchedulerProgress(discoveryTick, campaignTick))),
-            snapshotCatalog(data),
         )
     }
 
     fun resetWorld(data: PillagerWorldData) {
-        transition(data, CoreFrame(0L, commands = listOf(CoreCommand.ResetWorld)), snapshotCatalog(data))
+        transition(data, CoreFrame(0L, commands = listOf(CoreCommand.ResetWorld)))
         synchronizeNativeViews(data)
     }
 
     /** Rebuilds Minecraft-only views from the persisted canonical snapshot. */
     fun synchronizeNativeViews(data: PillagerWorldData) {
-        data.coreState.factions.values.forEach { core ->
+        val snapshot = data.snapshot()
+        data.factions.keys.retainAll(snapshot.factions.keys.mapNotNullTo(hashSetOf()) { it.asUuidOrNull() })
+        data.warbands.keys.retainAll(snapshot.warbands.keys.mapNotNullTo(hashSetOf()) { it.asUuidOrNull() })
+        data.officers.keys.retainAll(snapshot.officers.keys.mapNotNullTo(hashSetOf()) { it.asUuidOrNull() })
+        data.campaigns.keys.retainAll(snapshot.campaigns.keys.mapNotNullTo(hashSetOf()) { it.asUuidOrNull() })
+        snapshot.factions.values.forEach { core ->
             val id = core.id.asUuidOrNull() ?: return@forEach
             val cosmetic = data.minecraftSidecar.cosmetics[core.id]
             val existing = data.factions[id]
@@ -138,7 +217,7 @@ object WarbandCoreAdapter {
                 existing.bannerSeed = core.bannerSeed
             }
         }
-        data.coreState.officers.values.forEach { core ->
+        snapshot.officers.values.forEach { core ->
             val id = core.id.asUuidOrNull() ?: return@forEach
             val factionId = core.factionId.asUuidOrNull() ?: return@forEach
             val warbandId = core.homeWarbandId.asUuidOrNull() ?: return@forEach
@@ -154,7 +233,7 @@ object WarbandCoreAdapter {
                     state = when {
                         core.availableAtTick == Long.MAX_VALUE -> LiveOfficerState.DEAD
                         core.deployedCampaignId != null -> LiveOfficerState.DEPLOYED
-                        core.availableAtTick > data.coreState.tick -> LiveOfficerState.RECOVERING
+                        core.availableAtTick > snapshot.tick -> LiveOfficerState.RECOVERING
                         else -> LiveOfficerState.IDLE
                     },
                     preferenceGraph = core.preferences.toMutableMap(),
@@ -176,22 +255,22 @@ object WarbandCoreAdapter {
                 existing.state = when {
                     core.availableAtTick == Long.MAX_VALUE -> LiveOfficerState.DEAD
                     core.deployedCampaignId != null -> LiveOfficerState.DEPLOYED
-                    core.availableAtTick > data.coreState.tick -> LiveOfficerState.RECOVERING
+                    core.availableAtTick > snapshot.tick -> LiveOfficerState.RECOVERING
                     else -> LiveOfficerState.IDLE
                 }
             }
         }
-        data.coreState.warbands.values.forEach { core ->
+        snapshot.warbands.values.forEach { core ->
             val id = core.id.asUuidOrNull() ?: return@forEach
             val factionId = core.factionId.asUuidOrNull() ?: return@forEach
             val dimension = net.minecraft.resources.ResourceLocation.tryParse(core.rally.dimension) ?: return@forEach
-            val officerId = data.coreState.officers.values.firstOrNull { it.homeWarbandId == core.id }?.id?.asUuidOrNull() ?: return@forEach
+            val officerId = snapshot.officers.values.firstOrNull { it.homeWarbandId == core.id }?.id?.asUuidOrNull() ?: return@forEach
             val existing = data.warbands[id]
             val live = existing ?: PillagerWarband(
-                id, factionId, dimension, data.coreState.factions[core.factionId]?.bannerSeed ?: id.hashCode(),
+                id, factionId, dimension, snapshot.factions[core.factionId]?.bannerSeed ?: id.hashCode(),
                 core.rally.x, core.rally.z, core.reserveThreat.roundToInt(), core.capacity.roundToInt(),
                 defeated = core.defeated, warlordOfficerId = officerId, warlordEntityId = null,
-                nextRaidTick = core.nextRaidTick, cooldownUntilTick = 0L, lastIntelTick = data.coreState.tick,
+                nextRaidTick = core.nextRaidTick, cooldownUntilTick = 0L, lastIntelTick = snapshot.tick,
                 lastPresenceFailure = PresenceMaterializationResult.SUCCESS,
                 rallyPresence = RallyPresenceRecord(RallyPresenceState.DORMANT, officerId),
             ).also { data.warbands[id] = it }
@@ -203,7 +282,7 @@ object WarbandCoreAdapter {
             live.empiricalThreat.clear(); live.empiricalThreat.putAll(core.empiricalThreat)
             live.stockpile.clear(); live.stockpile.putAll(core.stockpile)
             live.playerRelations.clear()
-            data.coreState.territoryRelations.values.filter { it.warbandId == core.id }.forEach { relation ->
+            snapshot.territoryRelations.values.filter { it.warbandId == core.id }.forEach { relation ->
                 relation.playerId.asUuidOrNull()?.let { live.playerRelations[it] = relation.status.name }
             }
             live.recruitTickDebt = core.recruitTickDebt; live.mobilizationTickDebt = core.mobilizationTickDebt
@@ -217,132 +296,60 @@ object WarbandCoreAdapter {
                 }
             }.forEach(live.armory::add)
             live.garrisonThreat.clear()
-            data.coreState.garrisons.values.asSequence()
+            snapshot.garrisons.values.asSequence()
                 .filter { it.warbandId == core.id && it.phase == com.gerald.warband.core.GarrisonPhase.ACTIVE }
                 .flatMap { it.members.asSequence() }
                 .forEach { member -> data.minecraftSidecar.entityIds[member.id]?.let { live.garrisonThreat[it] = member.threat } }
         }
-        data.coreState.campaigns.values.forEach { core -> synchronizeCampaignView(data, core) }
-        val canonicalCampaignIds = data.coreState.campaigns.keys.mapNotNullTo(hashSetOf()) { it.asUuidOrNull() }
-        data.campaigns.keys.retainAll(canonicalCampaignIds)
+        snapshot.campaigns.values.forEach { core -> synchronizeCampaignView(data, core) }
     }
 
-    fun liveCatalog(server: MinecraftServer, data: PillagerWorldData): CoreCatalog {
-        synchronizeNativeViews(data)
-        val recruits = data.warbands.values.flatMap { warband ->
-            server.getLevel(ResourceKey.create(Registries.DIMENSION, warband.dimension))
-                ?.let { PillagerRuntime.recruitDefinitions(it, warband) }.orEmpty()
-        }.distinctBy(RecruitDefinition::id)
-        val equipment = data.warbands.values.flatMap { TinkersArmoryOptimizer.liveEquipmentCandidates(it, server) }
-            .map { it.definition }.distinctBy { it.id }
-        val rewardIds = listOf(
-            "createdeco:copper_coin", "createdeco:zinc_coin", "createdeco:iron_coin",
-            "createdeco:industrial_iron_coin", "createdeco:brass_coin", "createdeco:gold_coin", "createdeco:netherite_coin",
-        )
-        val rewards = rewardIds.mapIndexedNotNull { index, id ->
-            val location = net.minecraft.resources.ResourceLocation.tryParse(id) ?: return@mapIndexedNotNull null
-            val item = net.minecraftforge.registries.ForgeRegistries.ITEMS.getValue(location) ?: return@mapIndexedNotNull null
-            RewardDefinition(id, (1 shl index).toDouble(), ItemStack(item).maxStackSize)
-        }
-        return CoreCatalog(
-            LIVE_CATALOG_REVISION,
-            recruits,
-            TinkersArmoryOptimizer.materialDefinitions(),
-            equipment,
-            resources = WarbandResourceCatalog.definitions(),
-            rewards = rewards,
-        )
-    }
-
-    fun snapshotCatalog(data: PillagerWorldData): CoreCatalog {
-        val recruits = (data.coreState.campaigns.values.flatMap { it.members } +
-            data.coreState.garrisons.values.flatMap { it.members })
-            .distinctBy(MemberManifest::recruitId)
-            .map { RecruitDefinition(it.recruitId, it.threat.coerceAtLeast(1.0), CapabilityVector()) }
-        return CoreCatalog(LIVE_CATALOG_REVISION, recruits)
-    }
-
-    fun advanceCanonical(server: MinecraftServer, data: PillagerWorldData, now: Long, observations: CoreFrame): CoreTransition {
-        val elapsed = (now - data.coreState.tick).coerceAtLeast(0L)
-        val catalog = liveCatalog(server, data)
+    fun advanceCanonical(server: MinecraftServer, data: PillagerWorldData, now: Long, observations: CoreFrame): WarbandTransition {
+        ensureEngine(data, server)
+        val elapsed = (now - data.snapshot().tick).coerceAtLeast(0L)
         val result = transition(
             data,
-            observations.copy(elapsedTicks = elapsed, advanceEconomy = true, allowAutomaticDispatch = false),
-            catalog,
+            observations.copy(elapsedTicks = elapsed),
         )
-        result.events.filter { it.type == "manufactured" }.forEach { event ->
-            val owner = data.coreState.warbands.values.firstOrNull { warband -> warband.armory.any { it.id == event.subjectId } }
-                ?: return@forEach
-            val native = owner.id.asUuidOrNull()?.let(data.warbands::get) ?: return@forEach
-            val candidate = TinkersArmoryOptimizer.liveEquipmentCandidates(native, server)
-                .firstOrNull { it.definition.id == event.detail } ?: return@forEach
-            val stack = TinkersArmoryOptimizer.realize(candidate)
-            data.minecraftSidecar.itemSnapshots[event.subjectId] = mutableListOf(
-                stack.save(CompoundTag()).also { it.putString(CORE_EQUIPMENT_ID_TAG, event.subjectId) },
-            )
-        }
         synchronizeNativeViews(data)
         return result
     }
 
-    fun manufacture(server: MinecraftServer, data: PillagerWorldData, warbandId: UUID, count: Int = 1): CoreTransition {
-        val catalog = liveCatalog(server, data)
+    fun manufacture(server: MinecraftServer, data: PillagerWorldData, warbandId: UUID, count: Int = 1): WarbandTransition {
+        ensureEngine(data, server)
         val result = transition(
             data,
             CoreFrame(0L, commands = listOf(CoreCommand.Manufacture(warbandId.toString(), count))),
-            catalog,
         )
-        result.events.filter { it.type == "manufactured" }.forEach { event ->
-            val native = data.warbands[warbandId] ?: return@forEach
-            val candidate = TinkersArmoryOptimizer.liveEquipmentCandidates(native, server)
-                .firstOrNull { it.definition.id == event.detail } ?: return@forEach
-            val stack = TinkersArmoryOptimizer.realize(candidate)
-            data.minecraftSidecar.itemSnapshots[event.subjectId] = mutableListOf(
-                stack.save(CompoundTag()).also { it.putString(CORE_EQUIPMENT_ID_TAG, event.subjectId) },
-            )
-        }
         synchronizeNativeViews(data)
         return result
     }
 
-    internal fun chooseRecruit(
-        warband: PillagerWarband,
-        officerPreferences: Map<String, Double>,
-        budget: Double,
-        options: List<LiveRecruit>,
-        sequence: Long,
-    ): LiveRecruit? {
-        if (options.isEmpty()) return null
-        val core = coreWarband(warband)
-        val officer = OfficerState("live-officer", core.factionId, core.id, officerPreferences.toMutableMap())
-        val state = CoreSnapshot(sequence = sequence.and(Long.MAX_VALUE), warbands = linkedMapOf(core.id to core), officers = linkedMapOf(officer.id to officer))
-        val selected = WarbandCore.chooseRecruit(
-            state, core, officer, CoreCatalog("forge-live", options.map { it.definition }), budget, rules = rules(),
-        ) ?: return null
-        return options.firstOrNull { it.definition.id == selected.id }
-    }
-
-    internal fun planSquad(
-        warband: PillagerWarband,
-        officerPreferences: Map<String, Double>,
-        budget: Double,
-        recruits: List<RecruitDefinition>,
-        armory: List<CompoundTag>,
-        sequence: Long,
-    ): List<PlannedLiveMember> {
-        val core = coreWarband(warband).copy(
-            armory = armory.mapIndexedTo(mutableListOf()) { index, tag ->
-                TinkersArmoryOptimizer.manifest("forge-armory:$index", ItemStack.of(tag))
-            },
-        )
-        val officer = OfficerState("live-officer", core.factionId, core.id, officerPreferences.toMutableMap())
-        val state = CoreSnapshot(sequence = sequence.and(Long.MAX_VALUE), warbands = linkedMapOf(core.id to core), officers = linkedMapOf(officer.id to officer))
-        return WarbandCore.planSquad(state, core, officer, CoreCatalog("forge-live", recruits), budget, rules()).members.map { member ->
-            PlannedLiveMember(
-                member.id, member.recruitId, member.threat,
-                member.equipment?.id?.substringAfter("forge-armory:")?.toIntOrNull(), member.cargo.toMap(), member.healthFraction,
-            )
-        }.also { syncSelectionMemory(warband, core) }
+    private fun realizeEquipmentEffects(data: PillagerWorldData, transition: WarbandTransition): WarbandTransition {
+        val results = transition.effects.asSequence()
+            .filter { it.kind == EffectKind.REALIZE_EQUIPMENT }
+            .mapNotNull { effect ->
+                val manifest = effect.equipmentManifest ?: return@mapNotNull null
+                val existing = data.minecraftSidecar.itemSnapshots[manifest.id]?.firstOrNull()?.let(ItemStack::of)
+                val stack = existing ?: TinkersArmoryOptimizer.realize(manifest)
+                if (stack != null && existing == null) {
+                    data.minecraftSidecar.itemSnapshots[manifest.id] = mutableListOf(
+                        stack.save(CompoundTag()).also { it.putString(CORE_EQUIPMENT_ID_TAG, manifest.id) },
+                    )
+                }
+                val measured = stack?.let { TinkersArmoryOptimizer.manifest(manifest.id, it).capabilities }
+                EquipmentRealizationResult(
+                    effect.effectId,
+                    manifest.id,
+                    stack != null,
+                    measured,
+                    if (stack != null) "exact_formulation_realized" else "exact_formulation_failed",
+                )
+            }.toList()
+        if (results.isEmpty()) return transition
+        val acknowledged = data.requireEngine().transition(CoreFrame(0L, equipmentRealizations = results))
+        data.markChanged()
+        return WarbandTransition(transition.events + acknowledged.events, acknowledged.effects)
     }
 
     internal fun snapshotResult(campaign: PillagerCampaign, effectId: String? = null): CampaignSnapshotResult = CampaignSnapshotResult(
@@ -387,7 +394,7 @@ object WarbandCoreAdapter {
         val live = existing ?: PillagerCampaign(
             id, factionId, warbandId, officerId, playerId, dimension,
             core.position.x, core.position.z, core.target.x, core.target.z,
-            kotlin.math.ceil(core.members.sumOf(MemberManifest::threat)).toInt(), data.coreState.sequence,
+            kotlin.math.ceil(core.members.sumOf(MemberManifest::threat)).toInt(), data.snapshot().sequence,
             core.travelTickDebt.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt(), core.phase.toLivePhase(), null,
             null, 0L, mutableListOf(), core.lastCombatTick,
             committedThreat = core.members.sumOf(MemberManifest::threat),
@@ -407,45 +414,6 @@ object WarbandCoreAdapter {
         live.squadMemberIds.clear()
         core.physicalMemberIds.mapNotNullTo(live.squadMemberIds) { data.minecraftSidecar.entityIds[it] }
     }
-
-    fun coreWarband(warband: PillagerWarband): WarbandState = WarbandState(
-        id = warband.id.toString(),
-        factionId = warband.factionId.toString(),
-        rally = ChunkPosition(warband.dimension.toString(), warband.rallyChunkX, warband.rallyChunkZ),
-        capacity = warband.capacity.toDouble(),
-        reserveThreat = warband.reserve.toDouble(),
-        raidPool = warband.raidPool,
-        garrisonThreat = warband.garrisonThreat.values.sum(),
-        aggression = warband.aggression,
-        environment = com.gerald.warband.core.EnvironmentTraits(
-            warband.environment.habitability,
-            warband.environment.biomass,
-            warband.environment.mineralPotential,
-            warband.environment.exoticPotential,
-            warband.environment.travelFriction,
-        ),
-        preferences = warband.preferences.toMutableMap(),
-        materialLedger = warband.materialLedger.toMutableMap(),
-        empiricalThreat = warband.empiricalThreat.toMutableMap(),
-        stockpile = warband.stockpile.toMutableMap(),
-        selectionMemory = SelectionMemory(
-            warband.recruitSelectionMemory.toMutableMap(),
-            warband.materialSelectionMemory.toMutableMap(),
-            warband.equipmentSelectionMemory.toMutableMap(),
-            warband.selectionMemoryLastTick,
-        ),
-        armory = warband.armory.mapIndexedTo(mutableListOf()) { index, tag ->
-            TinkersArmoryOptimizer.manifest(
-                tag.getString(CORE_EQUIPMENT_ID_TAG).ifBlank { "forge-home:$index" }, ItemStack.of(tag),
-            )
-        },
-        recruitTickDebt = warband.recruitTickDebt,
-        mobilizationTickDebt = warband.mobilizationTickDebt,
-        extractionTickDebt = warband.extractionTickDebt,
-        nextRaidTick = warband.nextRaidTick,
-        defeated = warband.defeated,
-        activeCampaignLimit = warband.activeCampaignLimit,
-    )
 
     private fun CoreCampaignPhase.toLivePhase(): CampaignState = when (this) {
         CoreCampaignPhase.OUTBOUND -> CampaignState.TRAVELING

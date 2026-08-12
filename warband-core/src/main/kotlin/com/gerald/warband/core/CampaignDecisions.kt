@@ -2,7 +2,7 @@ package com.gerald.warband.core
 
 enum class ActiveCampaignDecision { CONTINUE, DEFEATED, MORALE_RETURN, IDLE_RETURN }
 
-object CampaignDecisions {
+internal object CampaignDecisions {
     fun activeDecision(
         aliveMembers: Int,
         liveThreat: Double,

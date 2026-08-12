@@ -1,12 +1,11 @@
 package com.gerald.pillagercampaigns.runner
 
-import com.gerald.warband.core.CoreCatalog
-import com.gerald.warband.core.CoreEffect
-import com.gerald.warband.core.CoreEvent
-import com.gerald.warband.core.CoreFrame
-import com.gerald.warband.core.CoreSnapshot
-import com.gerald.warband.core.WarbandCore
-import com.gerald.warband.core.CoreRules
+import com.gerald.warband.core.WarbandEffect
+import com.gerald.warband.core.WarbandEngine
+import com.gerald.warband.core.WarbandEvent
+import com.gerald.warband.core.WarbandFrame
+import com.gerald.warband.core.WarbandRuntimeSpec
+import com.gerald.warband.core.WarbandSnapshot
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
@@ -22,24 +21,24 @@ import kotlinx.serialization.json.JsonObject
 @Serializable
 data class WarbandTrace(
     val schemaVersion: Int = CURRENT_SCHEMA_VERSION,
-    val catalogRevision: String,
-    val initialState: CoreSnapshot,
+    val runtimeSpecRevision: String,
+    val initialState: WarbandSnapshot,
     val initialStateHash: String,
-    val catalog: CoreCatalog,
-    val rules: CoreRules,
+    val runtimeSpec: WarbandRuntimeSpec,
     val steps: List<WarbandTraceStep>,
+    val boundary: ExperimentBoundary = ExperimentBoundary(),
 ) {
     companion object {
-        const val CURRENT_SCHEMA_VERSION = 1
+        const val CURRENT_SCHEMA_VERSION = 4
     }
 }
 
 @Serializable
 data class WarbandTraceStep(
     val index: Int,
-    val frame: CoreFrame,
-    val events: List<CoreEvent>,
-    val effects: List<CoreEffect>,
+    val frame: WarbandFrame,
+    val events: List<WarbandEvent>,
+    val effects: List<WarbandEffect>,
     val postStateHash: String,
 )
 
@@ -68,34 +67,35 @@ class WarbandTraceCodec(
         require(trace.schemaVersion == WarbandTrace.CURRENT_SCHEMA_VERSION) {
             "unsupported trace schema ${trace.schemaVersion}"
         }
-        require(trace.catalogRevision == trace.catalog.revision) {
-            "trace catalog revision ${trace.catalogRevision} does not match embedded catalog ${trace.catalog.revision}"
+        trace.runtimeSpec.requireValidRevision()
+        require(trace.runtimeSpecRevision == trace.runtimeSpec.revision) {
+            "trace runtime-spec revision ${trace.runtimeSpecRevision} does not match embedded spec ${trace.runtimeSpec.revision}"
         }
         val initialHash = stateHash(trace.initialState)
         if (initialHash != trace.initialStateHash) {
             throw TraceDivergenceException(-1, "initialStateHash", trace.initialStateHash, initialHash)
         }
-        val state = cloneState(trace.initialState)
+        val engine = WarbandEngine.restore(trace.initialState, trace.runtimeSpec)
         trace.steps.forEachIndexed { expectedIndex, step ->
             if (step.index != expectedIndex) {
                 throw TraceDivergenceException(expectedIndex, "index", expectedIndex, step.index)
             }
-            val result = WarbandCore.transition(state, step.frame, trace.catalog, trace.rules)
+            val result = engine.transition(step.frame)
             if (result.events != step.events) {
                 throw TraceDivergenceException(step.index, "events", step.events, result.events)
             }
             if (result.effects != step.effects) {
                 throw TraceDivergenceException(step.index, "effects", step.effects, result.effects)
             }
-            val actualHash = stateHash(result.state)
+            val actualHash = stateHash(engine.snapshot())
             if (actualHash != step.postStateHash) {
                 throw TraceDivergenceException(step.index, "postStateHash", step.postStateHash, actualHash)
             }
         }
-        return TraceReplayResult(trace.steps.size, stateHash(state))
+        return TraceReplayResult(trace.steps.size, stateHash(engine.snapshot()))
     }
 
-    fun stateHash(state: CoreSnapshot): String {
+    fun stateHash(state: WarbandSnapshot): String {
         val element = json.parseToJsonElement(json.encodeToString(state))
         val canonical = canonicalJson(element)
         return MessageDigest.getInstance("SHA-256")
@@ -103,9 +103,9 @@ class WarbandTraceCodec(
             .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
     }
 
-    fun cloneState(state: CoreSnapshot): CoreSnapshot = json.decodeFromString(json.encodeToString(state))
+    fun cloneState(state: WarbandSnapshot): WarbandSnapshot = json.decodeFromString(json.encodeToString(state))
 
-    fun cloneFrame(frame: CoreFrame): CoreFrame = json.decodeFromString(json.encodeToString(frame))
+    fun cloneFrame(frame: WarbandFrame): WarbandFrame = json.decodeFromString(json.encodeToString(frame))
 
     private fun canonicalJson(element: JsonElement): String = when (element) {
         is JsonObject -> element.entries.sortedBy { it.key }

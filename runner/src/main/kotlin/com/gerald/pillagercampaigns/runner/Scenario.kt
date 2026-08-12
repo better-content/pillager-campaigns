@@ -3,6 +3,19 @@ package com.gerald.pillagercampaigns.runner
 import com.gerald.warband.core.*
 import kotlinx.serialization.Serializable
 
+/** Machine-readable scope carried by every runner result and trace. */
+@Serializable
+data class ExperimentBoundary(
+    val model: String = "warband-core",
+    val minecraftSimulation: Boolean = false,
+    val externalObservationsAreSynthetic: Boolean = true,
+    val statement: String = NOT_MINECRAFT_SIMULATION,
+)
+
+const val NOT_MINECRAFT_SIMULATION =
+    "Warband Core scenario only; does not simulate Minecraft entities, combat, pathfinding, world generation, or players."
+
+/** Synthetic facts supplied to Core by an experiment; these are not Minecraft measurements or predictions. */
 @Serializable
 data class BoundedAssumptions(
     val routeConfidence: Double = 0.6,
@@ -26,15 +39,15 @@ data class ExperimentScenario(
     val name: String,
     val durationTicks: Long,
     val stepTicks: Long = 20L,
-    val state: CoreSnapshot,
-    val catalog: CoreCatalog,
-    val rules: CoreRules = CoreRules(),
+    val initialSnapshot: WarbandSnapshot,
+    val runtimeSpec: WarbandRuntimeSpec,
     val players: List<PlayerFact> = emptyList(),
     val terrain: List<TerrainObservation> = emptyList(),
     val assumptions: BoundedAssumptions = BoundedAssumptions(),
 ) {
     fun validate() {
         require(name.isNotBlank() && durationTicks >= 0L && stepTicks > 0L)
+        runtimeSpec.requireValidRevision()
         assumptions.validate()
     }
 }
@@ -70,7 +83,8 @@ data class ExperimentSummary(
     val stockpileItems: Int = 0,
     val resourcesAcquired: Int = 0,
     val resourcesConsumed: Int = 0,
-    val meanSupplySatisfaction: Double = 1.0,
+    val meanSupplySatisfaction: Double? = null,
+    val supplyObservationCount: Int = 0,
     val shortageReturns: Int = 0,
     val attritionLosses: Int = 0,
     val recoverableCaches: Int = 0,
@@ -78,6 +92,11 @@ data class ExperimentSummary(
     val meanEquipmentDurability: Double = 1.0,
     val armamentActionCounts: Map<String, Int> = emptyMap(),
     val meanArmamentUtility: Double = 0.0,
+    val dispatchTicks: List<Long> = emptyList(),
+    val interDispatchTicks: List<Long> = emptyList(),
+    val minimumSquadSize: Int = 0,
+    val maximumSquadSize: Int = 0,
+    val boundary: ExperimentBoundary = ExperimentBoundary(),
 )
 
 @Serializable
@@ -114,7 +133,8 @@ data class BalanceFinding(
 
 @Serializable
 data class BalanceExploration(
-    val catalogRevision: String,
+    val runtimeSpecRevision: String,
     val summaries: List<ExperimentSummary>,
     val findings: List<BalanceFinding>,
+    val boundary: ExperimentBoundary = ExperimentBoundary(),
 )

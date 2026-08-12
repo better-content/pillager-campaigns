@@ -5,7 +5,7 @@ import net.minecraft.nbt.CompoundTag
 import net.minecraft.nbt.ListTag
 import net.minecraft.nbt.Tag
 import net.minecraft.resources.ResourceLocation
-import com.gerald.pillagercampaigns.system.EnvironmentTraits
+import com.gerald.warband.core.EnvironmentTraits
 import java.util.UUID
 
 data class PillagerFaction(

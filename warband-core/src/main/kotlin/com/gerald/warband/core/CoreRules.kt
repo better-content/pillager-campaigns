@@ -10,13 +10,44 @@ data class CoreRules(
     val minimumAggression: Int = 6,
     val maximumAggression: Int = 18,
     val initialAggression: Int = 6,
+    val idleReturnAggressionGrowth: Int = 1,
+    val defeatAggressionGrowth: Int = 1,
+    val victoryAggressionGrowth: Int = -1,
     val idleReturnTicks: Long = 12_000L,
+    val respawnProtectionTicks: Long = 6_000L,
+    val deathProtectionTicks: Long = 6_000L,
+    val resolvedRetentionTicks: Long = 24_000L,
     val travelTicksPerChunk: Long = 120L,
     val materializeDistanceChunks: Int = 6,
-    val raidCooldownTicks: Long = 6_000L,
+    val raidCooldownTicks: Long = 24_000L,
     val captainRecoveryTicks: Long = 6_000L,
     val captainSuccessRecoveryTicks: Long = 2_400L,
-    val maximumSquadMembers: Int = 24,
+    val dispatchIntervalTicks: Long = 200L,
+    val dispatchWorkBudget: Int = 8,
+    val maximumDispatchDistanceChunks: Int = 96,
+    val defaultActiveCampaignLimit: Int = 1,
+    val discoveryIntervalTicks: Long = 1_200L,
+    val discoveryWorkBudget: Int = 8,
+    val discoveryGridSpacingChunks: Int = 32,
+    val discoveryMinimumSpacingChunks: Int = 32,
+    val discoveryGridJitterChunks: Int = 0,
+    val discoveryMinimumPlayerDistanceChunks: Int = 0,
+    val discoveryMaximumDistanceChunks: Int = 160,
+    val discoveryChance: Double = 1.0,
+    val discoveryInitialReserveThreat: Double? = null,
+    val territoryRadiusChunks: Int = 12,
+    val territoryWarningBandChunks: Int = 3,
+    val maximumSquadMembers: Int = 6,
+    val maximumArmoryItems: Int = 96,
+    val maximumEquipmentFormulations: Int = 8_192,
+    val capacityBaseThreat: Double = 96.0,
+    val capacityHabitabilityThreat: Double = 120.0,
+    val capacityQuantumThreat: Double = 6.0,
+    val recruitBaseTicksPerThreat: Double = 1_260.0,
+    val recruitHabitabilityPenaltyTicksPerThreat: Double = 1_680.0,
+    val mobilizationBaseTicksPerThreat: Double = 240.0,
+    val mobilizationFrictionTicksPerThreat: Double = 480.0,
+    val extractionTicksMultiplier: Double = 0.5,
     val warbandLearningRate: Double = 0.05,
     val captainLearningRate: Double = 0.10,
     val threatLearningRate: Double = 0.10,
@@ -36,18 +67,21 @@ data class CoreRules(
     val successorDefeatWeight: Double = -1.0,
 ) {
     fun capacity(environment: EnvironmentTraits): Int =
-        ((96.0 + 120.0 * environment.bounded().habitability) / 6.0).roundToInt() * 6
+        ((capacityBaseThreat + capacityHabitabilityThreat * environment.bounded().habitability) /
+            capacityQuantumThreat.coerceAtLeast(1.0)).roundToInt() * capacityQuantumThreat.coerceAtLeast(1.0).roundToInt()
 
     fun recruitTicksPerThreat(environment: EnvironmentTraits): Double =
-        (180.0 + 240.0 * (1.0 - environment.bounded().habitability)) * 20.0
+        recruitBaseTicksPerThreat + recruitHabitabilityPenaltyTicksPerThreat * (1.0 - environment.bounded().habitability)
 
     fun mobilizationTicksPerThreat(environment: EnvironmentTraits): Double =
-        (30.0 + 60.0 * environment.bounded().travelFriction) * 20.0
+        mobilizationBaseTicksPerThreat + mobilizationFrictionTicksPerThreat * environment.bounded().travelFriction
 
-    fun extractionTicks(environment: EnvironmentTraits): Double = recruitTicksPerThreat(environment) / 2.0
+    fun extractionTicks(environment: EnvironmentTraits): Double =
+        recruitTicksPerThreat(environment) * extractionTicksMultiplier.coerceAtLeast(0.0)
 
     fun discoveryInitialThreat(environment: EnvironmentTraits): Double =
-        capacity(environment) * discoveryInitialThreatFraction.coerceIn(0.0, 1.0)
+        discoveryInitialReserveThreat?.coerceAtLeast(0.0)
+            ?: (capacity(environment) * discoveryInitialThreatFraction.coerceIn(0.0, 1.0))
 
     fun garrisonThreatTarget(warband: WarbandState, minimumRecruitThreat: Double): Double {
         val environment = warband.environment.bounded()

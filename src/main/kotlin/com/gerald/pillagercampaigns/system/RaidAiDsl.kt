@@ -18,7 +18,7 @@ class RaidAiDsl {
     private var weaponRange = 2.5
     private var cohesionRadius = 24.0
     private var successorByScore = true
-    private var idleReturnTicks = FormulaicWarbandRules.IDLE_RETURN_TICKS
+    private var idleReturnTicks = 1L
 
     fun assignedTarget(enabled: Boolean = true) = apply { targetPlayer = enabled }
     fun territoryBoundary(enabled: Boolean = true) = apply { territoryBound = enabled }

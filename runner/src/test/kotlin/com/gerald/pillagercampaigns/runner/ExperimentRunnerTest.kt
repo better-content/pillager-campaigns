@@ -2,6 +2,7 @@ package com.gerald.pillagercampaigns.runner
 
 import com.gerald.warband.core.*
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import java.nio.file.Files
 import kotlin.test.Test
@@ -19,16 +20,19 @@ class ExperimentRunnerTest {
                 preferences = linkedMapOf("damage" to 1.0), stockpile = linkedMapOf("ration" to 24),
             )),
             officers = linkedMapOf("o" to OfficerState("o", "f", "w")),
+            territoryRelations = linkedMapOf(
+                "w|p" to TerritoryRelationState("w", "p", TerritoryStatus.HOSTILE),
+            ),
         ),
-        CoreCatalog(
-            "v1", listOf(RecruitDefinition("r", 5.0, CapabilityVector(damage = 1.0))),
+        WarbandRuntimeSpec.create(
+            CoreRules(), listOf(RecruitDefinition("r", 5.0, CapabilityVector(damage = 1.0))),
             resources = listOf(ResourceDefinition("ration", ResourceVector(sustenance = 1.0))),
         ),
-        players = listOf(PlayerFact("p", ChunkPosition("overworld", 7, 0), setOf("w"))),
+        players = listOf(PlayerFact("p", ChunkPosition("overworld", 12, 0))),
     )
 
     @Test fun `experiment is deterministic and writes trace and summaries`() {
-        val json = Json { encodeDefaults = true }
+        val json = Json { prettyPrint = true; encodeDefaults = true }
         val first = ExperimentRunner(json).run(scenario())
         val second = ExperimentRunner(json).run(scenario())
         assertEquals(json.encodeToString(first.summary), json.encodeToString(second.summary))
@@ -39,22 +43,34 @@ class ExperimentRunnerTest {
         )
         assertTrue(first.summary.campaignsDispatched >= 1)
         assertTrue(first.summary.campaignsReturned >= 1)
+        assertEquals(first.summary.campaignsReturned, first.summary.resolvedCampaigns)
+        assertTrue(first.summary.meanRouteChunks > 0.0)
         assertTrue(first.summary.eventCounts.getOrDefault("dematerialized", 0) >= 1)
         assertEquals(
             first.summary.campaignsReturned,
             first.summary.eventCounts.getOrDefault("snapshots_applied", 0),
-            "the physical adapter must acknowledge each capture effect exactly once",
+            "the synthetic harness must acknowledge each assumed capture effect exactly once",
         )
         assertTrue(first.trace.last().state.pendingEffects.values.none {
             it.kind == EffectKind.MATERIALIZE || it.kind == EffectKind.CAPTURE_SNAPSHOTS
         })
         assertTrue(first.summary.resourcesConsumed > 0)
-        assertTrue(first.summary.meanSupplySatisfaction in 0.0..1.0)
+        assertTrue(first.summary.supplyObservationCount > 0)
+        assertTrue(requireNotNull(first.summary.meanSupplySatisfaction) in 0.0..1.0)
         val output = Files.createTempDirectory("warband-runner-test").toFile()
         ExperimentRunner(json).write(first, output)
-        assertTrue(output.resolve("trace.jsonl").readLines().isNotEmpty())
+        val traceLines = output.resolve("trace.jsonl").readLines()
+        assertEquals(first.trace.size, traceLines.size)
+        traceLines.forEach { line -> json.decodeFromString<ExperimentRunner.RunnerTransition>(line) }
         assertTrue(output.resolve("summary.json").isFile)
+        assertTrue(!json.decodeFromString<ExperimentBoundary>(output.resolve("scope.json").readText()).minecraftSimulation)
         assertTrue(output.resolve("summary.csv").readText().startsWith("name,ticks"))
+        assertTrue(!first.summary.boundary.minecraftSimulation)
+        val summaryOnly = ExperimentRunner(json).run(scenario(), retainTrace = false)
+        assertTrue(summaryOnly.trace.isEmpty() && summaryOnly.deterministicTrace == null)
+        val summaryOnlyOutput = Files.createTempDirectory("warband-runner-summary-test").toFile()
+        ExperimentRunner(json).write(summaryOnly, summaryOnlyOutput)
+        assertTrue(!summaryOnlyOutput.resolve("trace.jsonl").exists())
         val comparison = ExperimentRunner(json).compare(first.summary.copy(raidPool = first.summary.raidPool + 2.0), first.summary)
         assertEquals(2.0, comparison.raidPoolDelta)
     }
@@ -71,6 +87,7 @@ class ExperimentRunnerTest {
         val codec = WarbandTraceCodec(json)
         codec.write(trace, file)
         val decoded = codec.read(file)
+        assertTrue(!decoded.boundary.minecraftSimulation)
         val replayed = codec.replay(decoded)
         assertEquals(decoded.steps.size, replayed.stepCount)
         assertEquals(decoded.steps.last().postStateHash, replayed.finalStateHash)
@@ -96,6 +113,27 @@ class ExperimentRunnerTest {
         assertEquals("events", eventFailure.component)
     }
 
+    @Test fun `restoring every campaign phase reaches the uninterrupted final hash`() {
+        val json = Json { prettyPrint = true; encodeDefaults = true }
+        val run = ExperimentRunner(json).run(scenario().copy(durationTicks = 24_000L))
+        val trace = requireNotNull(run.deterministicTrace)
+        val codec = WarbandTraceCodec(json)
+        val finalHash = trace.steps.last().postStateHash
+        val phases = listOf(
+            CampaignPhase.OUTBOUND,
+            CampaignPhase.READY_TO_MATERIALIZE,
+            CampaignPhase.ACTIVE,
+            CampaignPhase.RETURNING,
+        )
+        phases.forEach { phase ->
+            val index = run.trace.indexOfFirst { transition -> transition.state.campaigns.values.any { it.phase == phase } }
+            assertTrue(index >= 0, "scenario never reached $phase")
+            val engine = WarbandEngine.restore(run.trace[index].state, scenario().runtimeSpec)
+            trace.steps.drop(index + 1).forEach { engine.transition(it.frame) }
+            assertEquals(finalHash, codec.stateHash(engine.snapshot()), "restore diverged from $phase")
+        }
+    }
+
     @Test fun `record and replay CLI writes a self contained trace`() {
         val json = Json { prettyPrint = true; encodeDefaults = true }
         val root = Files.createTempDirectory("warband-trace-cli-test").toFile()
@@ -108,26 +146,34 @@ class ExperimentRunnerTest {
 
     @Test fun `balance exploration cites existing evidence cells and writes all report formats`() {
         val json = Json { prettyPrint = true; encodeDefaults = true }
-        val catalog = CoreCatalog(
-            "forge-live-sha256:test",
-            listOf(
+        val runtimeSpec = WarbandRuntimeSpec.create(
+            CoreRules(), listOf(
                 RecruitDefinition("quick", 5.0, CapabilityVector(damage = 1.0, mobility = 1.5)),
                 RecruitDefinition("ranged", 6.0, CapabilityVector(range = 1.8, durability = .8)),
             ),
-            listOf(MaterialDefinition("wood", 1, 12.0), MaterialDefinition("iron", 2, 48.0)),
-            listOf(EquipmentDefinition("tool", listOf("wood"), CapabilityVector(damage = 1.0), mapOf("wood" to 2.0), setOf("melee"))),
-            listOf(EnvironmentTraits()),
+            materials = listOf(MaterialDefinition("wood", 1, 12.0), MaterialDefinition("iron", 2, 48.0)),
+            equipmentPlatforms = listOf(EquipmentPlatformDefinition(
+                "tool", supportedActions = setOf("melee"),
+                components = listOf(EquipmentComponentDefinition("head", "head", setOf("wood"), 2.0)),
+                baseCapabilities = CapabilityVector(damage = 1.0),
+            )),
+            environmentModel = EnvironmentModelDefinition(listOf(EnvironmentTraits())),
         )
         val root = Files.createTempDirectory("warband-balance-test").toFile()
-        val catalogFile = root.resolve("catalog.json").also { it.writeText(json.encodeToString(catalog)) }
+        val catalogFile = root.resolve("runtime-spec.json").also { it.writeText(json.encodeToString(runtimeSpec)) }
         val output = root.resolve("report")
         val exploration = BalanceExplorer(json).explore(
             catalogFile, output, BalanceExplorer.Settings(listOf(3L, 30L), listOf(11L), includeSensitivity = false),
         )
         val scenarioNames = exploration.summaries.map { it.name }.toSet()
         assertTrue(exploration.findings.flatMap { it.evidenceScenarios }.all { it in scenarioNames })
+        assertTrue(exploration.findings.none { it.topic == "Logistics pressure and recoverability" })
+        assertTrue(exploration.findings.none { it.topic == "Environmental route expression" })
         assertTrue(output.resolve("exploration.json").isFile)
         assertTrue(output.resolve("summaries.csv").readText().startsWith("name,ticks"))
-        assertTrue(output.resolve("balance-notes.md").readText().contains(catalog.revision))
+        val notes = output.resolve("balance-notes.md").readText()
+        assertTrue(notes.contains(runtimeSpec.revision))
+        assertTrue(notes.contains("Not a Minecraft simulation"))
+        assertTrue(!exploration.boundary.minecraftSimulation)
     }
 }

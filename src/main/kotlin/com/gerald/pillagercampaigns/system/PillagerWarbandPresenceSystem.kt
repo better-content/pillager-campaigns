@@ -23,7 +23,7 @@ object PillagerWarbandPresenceSystem {
         warband: PillagerWarband,
         campaign: PillagerCampaign,
         player: ServerPlayer,
-        distanceChunks: Int,
+        effect: com.gerald.warband.core.CoreEffect,
         now: Long,
     ): InvasionMaterialization {
         if (now - warband.lastPresenceAttemptTick < RETRY_COOLDOWN_TICKS) {
@@ -36,34 +36,18 @@ object PillagerWarbandPresenceSystem {
                 PillagerRuntime.liveManifestIds(level, campaign),
             )
         }
-        val site = PillagerSpawnPlacementRules.findMaterializationSite(level, player, campaign.currentChunkX, campaign.currentChunkZ, distanceChunks)
-            ?: return InvasionMaterialization(record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now))
-        val pos = site.pos
-        if (!level.hasChunk(pos.x shr 4, pos.z shr 4)) {
+        val anchor = effect.blockPosition ?: return InvasionMaterialization(record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now))
+        if (anchor.dimension != level.dimension().location().toString() || !level.hasChunk(anchor.x shr 4, anchor.z shr 4)) {
             return InvasionMaterialization(record(warband, PresenceMaterializationResult.NOT_LOADED, now))
         }
         val officer = data.officers[campaign.officerId]
             ?: return InvasionMaterialization(record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now))
         val faction = data.factions[warband.factionId]
             ?: return InvasionMaterialization(record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now))
-        val spawnedIds = if (campaign.memberSnapshots.isNotEmpty()) {
-            PillagerRuntime.restoreSnapshots(level, campaign, pos).also { ids ->
-                ids.mapNotNull { level.getEntity(it) as? net.minecraft.world.entity.Mob }.forEach { it.target = player }
-            }
-        } else {
-            PillagerRuntime.materializeWarbandSquad(
-                level = level,
-                warband = warband,
-                campaign = campaign,
-                bannerSeed = faction.bannerSeed,
-                officerRecord = officer,
-                player = player,
-                x = pos.x + 0.5,
-                y = pos.y.toDouble(),
-                z = pos.z + 0.5,
-            )
-        }
-        val attempted = campaign.plannedMembers.mapNotNullTo(linkedSetOf()) { it.manifestId.takeIf(String::isNotBlank) }
+        val spawnedIds = PillagerRuntime.materializeWarbandSquad(
+            level, data, warband, campaign, faction.bannerSeed, officer, player, effect,
+        )
+        val attempted = effect.memberIds.toSet()
         if (spawnedIds.isEmpty()) {
             return InvasionMaterialization(record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now), attemptedMemberIds = attempted)
         }
@@ -83,32 +67,55 @@ object PillagerWarbandPresenceSystem {
         now: Long,
         force: Boolean = false,
     ): PresenceMaterializationResult {
+        val effect = data.snapshot().pendingEffects.values.firstOrNull {
+            it.kind == com.gerald.warband.core.EffectKind.MATERIALIZE_WARLORD && it.warbandId == warband.id.toString()
+        }
+        val faction = data.factions[warband.factionId]
+        val warlord = data.officers[warband.warlordOfficerId]
         warband.rallyPresence?.entityId?.let { cachedId ->
             val cached = level.getEntity(cachedId)
             if (cached != null && cached.isAlive) {
                 warband.warlordEntityId = cachedId
                 warband.rallyPresence?.state = RallyPresenceState.MATERIALIZED
+                if (faction != null && warlord != null) realizePendingGarrison(level, data, warband, faction, warlord)
                 return record(warband, PresenceMaterializationResult.LIVE_ALREADY_PRESENT, now)
             }
         }
         warband.warlordEntityId?.let { cachedId ->
             val cached = level.getEntity(cachedId)
             if (cached != null && cached.isAlive) {
+                if (faction != null && warlord != null) realizePendingGarrison(level, data, warband, faction, warlord)
                 return record(warband, PresenceMaterializationResult.LIVE_ALREADY_PRESENT, now)
             }
         }
         if (!force && now - warband.lastPresenceAttemptTick < RETRY_COOLDOWN_TICKS) {
             return record(warband, PresenceMaterializationResult.COOLDOWN, now)
         }
-        if (!level.hasChunk(warband.rallyChunkX, warband.rallyChunkZ)) {
+        val exact = effect?.blockPosition
+            ?: return record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now)
+        if (exact.dimension != level.dimension().location().toString() || !level.hasChunk(exact.x shr 4, exact.z shr 4)) {
             return record(warband, PresenceMaterializationResult.NOT_LOADED, now)
         }
-        val pos = PillagerSpawnPlacementRules.findRallyPos(level, warband.rallyChunkX, warband.rallyChunkZ)
+        val pos = net.minecraft.core.BlockPos(exact.x, exact.y, exact.z)
+        if (faction == null || warlord == null) return record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now)
+        val member = effect?.memberManifest
             ?: return record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now)
-        val faction = data.factions[warband.factionId] ?: return record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now)
-        val warlord = data.officers[warband.warlordOfficerId] ?: return record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now)
-        val spawned = PillagerRuntime.materializeWarlord(level, warband, faction, warlord, pos.x + 0.5, pos.y.toDouble(), pos.z + 0.5)
-            ?: return record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now)
+        val spawned = PillagerRuntime.materializeWarlord(
+            level, warband, faction, warlord, member, pos.x + 0.5, pos.y.toDouble(), pos.z + 0.5,
+        )
+        if (spawned == null) {
+            WarbandCoreAdapter.transition(
+                data,
+                com.gerald.warband.core.CoreFrame(
+                    0L,
+                    acknowledgements = listOf(com.gerald.warband.core.EffectAcknowledgement(
+                        effect.effectId, false, "warlord_realization_failed",
+                    )),
+                ),
+                level.server,
+            )
+            return record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now)
+        }
         warband.warlordEntityId = spawned
         warband.rallyPresence?.apply {
             state = RallyPresenceState.MATERIALIZED
@@ -118,7 +125,46 @@ object PillagerWarbandPresenceSystem {
             anchorZ = pos.z
             lastMaterializedTick = now
         }
+        data.minecraftSidecar.entityIds[member.id] = spawned
+        WarbandCoreAdapter.transition(
+            data,
+            com.gerald.warband.core.CoreFrame(
+                0L,
+                acknowledgements = listOf(com.gerald.warband.core.EffectAcknowledgement(
+                    effect.effectId, true, "warlord_materialized",
+                )),
+            ),
+            level.server,
+        )
+        realizePendingGarrison(level, data, warband, faction, warlord)
         return record(warband, PresenceMaterializationResult.SUCCESS, now)
+    }
+
+    private fun realizePendingGarrison(
+        level: ServerLevel,
+        data: PillagerWorldData,
+        warband: PillagerWarband,
+        faction: com.gerald.pillagercampaigns.data.PillagerFaction,
+        warlord: com.gerald.pillagercampaigns.data.PillagerOfficer,
+    ) {
+        data.snapshot().pendingEffects.values.firstOrNull {
+            it.kind == com.gerald.warband.core.EffectKind.MATERIALIZE_GARRISON && it.warbandId == warband.id.toString()
+        }?.let { garrisonEffect ->
+            val garrisonId = garrisonEffect.garrisonId ?: return@let
+            val garrisonMembers = PillagerRuntime.materializeGarrison(
+                level, data, warband, faction, warlord, garrisonEffect,
+            )
+            WarbandCoreAdapter.transition(
+                data,
+                com.gerald.warband.core.CoreFrame(
+                    0L,
+                    garrisonResults = listOf(com.gerald.warband.core.GarrisonResult(
+                        garrisonId, garrisonMembers.isNotEmpty(), garrisonMembers, garrisonEffect.effectId,
+                    )),
+                ),
+                level.server,
+            )
+        }
     }
 
     fun statusLine(data: PillagerWorldData): String {

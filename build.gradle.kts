@@ -234,8 +234,8 @@ tasks.register("verifyFull") {
     dependsOn(tasks.named("headlessGameTest"))
 }
 
-tasks.register("warbandSim") {
+tasks.register("warbandCoreExperiment") {
     group = "application"
-    description = "Runs the Minecraft-free deterministic warband spreadsheet game."
+    description = "Runs the deterministic Warband Core scenario inspector; this is not a Minecraft simulation."
     dependsOn(":runner:run")
 }

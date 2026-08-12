@@ -4,6 +4,8 @@ import com.gerald.warband.core.ChunkPosition
 import com.gerald.warband.core.CoreSnapshot
 import com.gerald.warband.core.FactionState
 import com.gerald.warband.core.WarbandState
+import com.gerald.warband.core.CoreRules
+import com.gerald.warband.core.WarbandRuntimeSpec
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.nbt.ListTag
 import java.util.UUID
@@ -39,10 +41,7 @@ class PillagerWorldDataRepairTest {
             ),
             protectedPlayersUntilTick = linkedMapOf(UUID.randomUUID().toString() to 9_000L),
         )
-        val data = PillagerWorldData().apply {
-            coreState = state
-            coreCatalogRevision = "sha256:test-catalog"
-            minecraftSidecar = MinecraftSidecar(
+        val sidecar = MinecraftSidecar(
                 entityIds = linkedMapOf(memberId to entityId),
                 mobSnapshots = linkedMapOf(memberId to mob),
                 itemSnapshots = linkedMapOf(memberId to mutableListOf(item)),
@@ -51,17 +50,15 @@ class PillagerWorldDataRepairTest {
                     "core:effect:14" to MaterializationAttemptSidecar(UUID.randomUUID(), 8_001L),
                 ),
             )
-        }
 
-        val tag = data.save(CompoundTag())
+        val tag = WarbandCorePersistence.save(PersistedWarbandCore(state, "warband-runtime-sha256:test", sidecar))
         val loaded = PillagerWorldData.load(tag)
 
         assertEquals(WarbandCorePersistence.SCHEMA_VERSION, tag.getInt("schema"))
         assertEquals("warband-core", tag.getString("format"))
         assertTrue(tag.getByteArray("coreSnapshotJson").toString(Charsets.UTF_8).startsWith("{"))
-        assertEquals(8_000L, loaded.coreState.tick)
-        assertEquals(35.5, loaded.coreState.warbands.getValue("core:warband:2").reserveThreat)
-        assertEquals("sha256:test-catalog", loaded.coreCatalogRevision)
+        assertEquals(8_000L, loaded.snapshot().tick)
+        assertEquals(35.5, loaded.snapshot().warbands.getValue("core:warband:2").reserveThreat)
         assertEquals(entityId, loaded.minecraftSidecar.entityIds[memberId])
         assertEquals(mob, loaded.minecraftSidecar.mobSnapshots[memberId])
         assertEquals(item, loaded.minecraftSidecar.itemSnapshots.getValue(memberId).single())
@@ -80,12 +77,31 @@ class PillagerWorldDataRepairTest {
         val legacyFailure = assertFailsWith<UnsupportedWarbandCoreSchemaException> {
             PillagerWorldData.load(legacy)
         }
-        assertTrue(legacyFailure.message.orEmpty().contains("not migrated"))
+        assertTrue(legacyFailure.message.orEmpty().contains("Older strategic saves"))
 
         val malformed = WarbandCorePersistence.save(
             PersistedWarbandCore(CoreSnapshot(), "catalog", MinecraftSidecar()),
         ).also { it.putByteArray("coreSnapshotJson", byteArrayOf(0xc3.toByte(), 0x28)) }
         assertFailsWith<UnsupportedWarbandCoreSchemaException> { PillagerWorldData.load(malformed) }
+    }
+
+    @Test
+    fun `schema five snapshot deterministically adopts first complete runtime spec`() {
+        val tag = WarbandCorePersistence.save(
+            PersistedWarbandCore(CoreSnapshot(), "warband-runtime-sha256:placeholder", MinecraftSidecar()),
+        ).also {
+            it.putInt("schema", 5)
+            it.putString("catalogRevision", "pillager-campaigns-live-v1")
+            it.remove("runtimeSpecRevision")
+        }
+        val data = PillagerWorldData.load(tag)
+        assertEquals(PillagerWorldData.UNRESOLVED_RUNTIME_SPEC_REVISION, data.runtimeSpecRevision())
+        val spec = WarbandRuntimeSpec.create(
+            CoreRules(),
+            listOf(com.gerald.warband.core.RecruitDefinition("test:recruit", 1.0, com.gerald.warband.core.CapabilityVector())),
+        )
+        data.attachRuntimeSpec(spec)
+        assertEquals(spec.revision, data.runtimeSpecRevision())
     }
 
     @Test
@@ -108,11 +124,12 @@ class PillagerWorldDataRepairTest {
     @Test
     fun `player protection is stored only in core state`() {
         val playerId = UUID.randomUUID()
-        val data = PillagerWorldData()
-
-        data.coreState.protectedPlayersUntilTick[playerId.toString()] = 6_000L
+        val state = CoreSnapshot(protectedPlayersUntilTick = linkedMapOf(playerId.toString() to 6_000L))
+        val data = PillagerWorldData.load(WarbandCorePersistence.save(
+            PersistedWarbandCore(state, "warband-runtime-sha256:test", MinecraftSidecar()),
+        ))
         assertTrue(data.isPlayerProtected(playerId, 5_999L))
         assertFalse(data.isPlayerProtected(playerId, 6_001L))
-        assertTrue(playerId.toString() in data.coreState.protectedPlayersUntilTick)
+        assertTrue(playerId.toString() in data.snapshot().protectedPlayersUntilTick)
     }
 }

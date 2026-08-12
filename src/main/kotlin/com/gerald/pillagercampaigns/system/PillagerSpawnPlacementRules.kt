@@ -18,27 +18,39 @@ object PillagerSpawnPlacementRules {
     }
 
     fun findMaterializationSite(level: ServerLevel, player: ServerPlayer, originChunkX: Int, originChunkZ: Int, distanceChunks: Int): MaterializationSite? {
+        return findMaterializationSites(level, player, originChunkX, originChunkZ, distanceChunks).firstOrNull()
+    }
+
+    fun findMaterializationSites(level: ServerLevel, player: ServerPlayer, originChunkX: Int, originChunkZ: Int, distanceChunks: Int): List<MaterializationSite> {
         val playerChunkX = player.chunkPosition().x
         val playerChunkZ = player.chunkPosition().z
         val dirX = (playerChunkX - originChunkX).sign()
         val dirZ = (playerChunkZ - originChunkZ).sign()
         val desiredChunkX = playerChunkX - (dirX * distanceChunks)
         val desiredChunkZ = playerChunkZ - (dirZ * distanceChunks)
-        return deterministicDrySiteInLoadedChunks(level, desiredChunkX, desiredChunkZ, LAND_SEARCH_RADIUS_CHUNKS)
+        return deterministicDrySitesInLoadedChunks(level, desiredChunkX, desiredChunkZ, LAND_SEARCH_RADIUS_CHUNKS)
     }
 
     fun findRallyPos(level: ServerLevel, rallyChunkX: Int, rallyChunkZ: Int): BlockPos? =
         deterministicDrySiteInLoadedChunks(level, rallyChunkX, rallyChunkZ, LAND_SEARCH_RADIUS_CHUNKS)?.pos
 
+    fun findRallyCandidates(level: ServerLevel, rallyChunkX: Int, rallyChunkZ: Int): List<BlockPos> =
+        deterministicDrySitesInLoadedChunks(level, rallyChunkX, rallyChunkZ, LAND_SEARCH_RADIUS_CHUNKS).map(MaterializationSite::pos)
+
     private fun deterministicDrySiteInLoadedChunks(level: ServerLevel, startChunkX: Int, startChunkZ: Int, radiusChunks: Int): MaterializationSite? {
+        return deterministicDrySitesInLoadedChunks(level, startChunkX, startChunkZ, radiusChunks).firstOrNull()
+    }
+
+    private fun deterministicDrySitesInLoadedChunks(level: ServerLevel, startChunkX: Int, startChunkZ: Int, radiusChunks: Int): List<MaterializationSite> {
+        val sites = mutableListOf<MaterializationSite>()
         deterministicChunkOffsets(radiusChunks).forEach { (dx, dz) ->
             val x = startChunkX + dx
             val z = startChunkZ + dz
             val chunk = level.chunkSource.getChunkNow(x, z) ?: return@forEach
             val pos = deterministicDrySurface(level, chunk, x, z) ?: return@forEach
-            return MaterializationSite(pos)
+            sites += MaterializationSite(pos)
         }
-        return null
+        return sites
     }
 
     internal fun deterministicChunkOffsets(radiusChunks: Int): List<Pair<Int, Int>> {

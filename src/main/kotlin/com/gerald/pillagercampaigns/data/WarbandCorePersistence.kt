@@ -1,6 +1,6 @@
 package com.gerald.pillagercampaigns.data
 
-import com.gerald.warband.core.CoreSnapshot
+import com.gerald.warband.core.WarbandSnapshot
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.decodeFromString
@@ -137,8 +137,8 @@ data class MaterializationAttemptSidecar(
 }
 
 data class PersistedWarbandCore(
-    val snapshot: CoreSnapshot,
-    val catalogRevision: String,
+    val snapshot: WarbandSnapshot,
+    val runtimeSpecRevision: String,
     val sidecar: MinecraftSidecar,
 )
 
@@ -147,12 +147,13 @@ class UnsupportedWarbandCoreSchemaException(message: String, cause: Throwable? =
 /** Strict, deterministic NBT envelope for the runtime-independent snapshot. */
 @OptIn(ExperimentalSerializationApi::class)
 object WarbandCorePersistence {
-    const val SCHEMA_VERSION = 5
+    const val SCHEMA_VERSION = 6
     const val FORMAT = "warband-core"
 
     private const val SCHEMA_KEY = "schema"
     private const val FORMAT_KEY = "format"
-    private const val CATALOG_REVISION_KEY = "catalogRevision"
+    private const val RUNTIME_SPEC_REVISION_KEY = "runtimeSpecRevision"
+    private const val LEGACY_CATALOG_REVISION_KEY = "catalogRevision"
     private const val SNAPSHOT_KEY = "coreSnapshotJson"
     private const val SIDECAR_KEY = "minecraftSidecar"
 
@@ -164,11 +165,11 @@ object WarbandCorePersistence {
     }
 
     fun save(value: PersistedWarbandCore, tag: CompoundTag = CompoundTag()): CompoundTag {
-        require(value.catalogRevision.isNotBlank()) { "Warband Core catalog revision must not be blank" }
+        require(value.runtimeSpecRevision.isNotBlank()) { "Warband runtime-spec revision must not be blank" }
         val encoded = json.encodeToString(value.snapshot).toByteArray(StandardCharsets.UTF_8)
         tag.putInt(SCHEMA_KEY, SCHEMA_VERSION)
         tag.putString(FORMAT_KEY, FORMAT)
-        tag.putString(CATALOG_REVISION_KEY, value.catalogRevision)
+        tag.putString(RUNTIME_SPEC_REVISION_KEY, value.runtimeSpecRevision)
         tag.putByteArray(SNAPSHOT_KEY, encoded)
         tag.put(SIDECAR_KEY, value.sidecar.save())
         return tag
@@ -176,13 +177,20 @@ object WarbandCorePersistence {
 
     fun load(tag: CompoundTag): PersistedWarbandCore {
         val schema = if (tag.contains(SCHEMA_KEY, Tag.TAG_INT.toInt())) tag.getInt(SCHEMA_KEY) else null
-        if (schema != SCHEMA_VERSION || tag.getString(FORMAT_KEY) != FORMAT) {
+        if (schema !in setOf(5, SCHEMA_VERSION) || tag.getString(FORMAT_KEY) != FORMAT) {
             throw UnsupportedWarbandCoreSchemaException(
-                "Unsupported Pillager Campaigns save schema ${schema ?: "missing"}; expected $FORMAT schema $SCHEMA_VERSION. Legacy strategic saves are not migrated.",
+                "Unsupported Pillager Campaigns save schema ${schema ?: "missing"}; expected $FORMAT schema 5 or $SCHEMA_VERSION. Older strategic saves are not migrated.",
             )
         }
-        val revision = tag.getString(CATALOG_REVISION_KEY)
-        if (revision.isBlank()) throw UnsupportedWarbandCoreSchemaException("Warband Core save has no catalog revision")
+        val persistedRevision = tag.getString(if (schema == 5) LEGACY_CATALOG_REVISION_KEY else RUNTIME_SPEC_REVISION_KEY)
+        if (persistedRevision.isBlank()) throw UnsupportedWarbandCoreSchemaException("Warband Core save has no runtime-spec revision")
+        if (schema == SCHEMA_VERSION && persistedRevision == PillagerWorldData.UNRESOLVED_RUNTIME_SPEC_REVISION) {
+            throw UnsupportedWarbandCoreSchemaException("Warband Core save has an unresolved runtime-spec revision")
+        }
+        // Schema 5 could only identify its partial live catalog, not the complete
+        // decision specification. Its one supported migration adopts the first
+        // validated complete spec attached by the current runtime.
+        val revision = if (schema == 5) PillagerWorldData.UNRESOLVED_RUNTIME_SPEC_REVISION else persistedRevision
         if (!tag.contains(SNAPSHOT_KEY, Tag.TAG_BYTE_ARRAY.toInt())) {
             throw UnsupportedWarbandCoreSchemaException("Warband Core save has no UTF-8 snapshot payload")
         }
@@ -199,7 +207,7 @@ object WarbandCorePersistence {
             throw UnsupportedWarbandCoreSchemaException("Warband Core snapshot is not valid UTF-8", error)
         }
         val snapshot = try {
-            json.decodeFromString<CoreSnapshot>(text)
+            json.decodeFromString<WarbandSnapshot>(text)
         } catch (error: SerializationException) {
             throw UnsupportedWarbandCoreSchemaException("Warband Core snapshot JSON is invalid", error)
         }

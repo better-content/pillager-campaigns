@@ -20,18 +20,18 @@ Plain JUnit deliberately does not bootstrap full Forge networking or a Minecraft
 - `/pillagercampaigns campaign list`
 - `/pillagercampaigns list captains`
 
-Deterministic harness lane:
+Deterministic Warband Core scenario lane (not a Minecraft simulation):
 
 ```sh
-# Interactive use of the exact Warband Core packaged by the mod
-./gradlew warbandSim
+# Inspect the exact Warband Core packaged by the mod
+./gradlew warbandCoreExperiment
 
 # Produce a starter scenario, then run or compare it
 ./gradlew -q :runner:run --args='example' > /tmp/warband-scenario.json
 ./gradlew -q :runner:run --args='experiment /tmp/warband-scenario.json build/warband-experiment/example'
 ./gradlew -q :runner:run --args='compare /tmp/warband-scenario.json build/warband-experiment/example/summary.json build/warband-comparison/example'
 
-# Exercise the lower/nominal/upper physical-assumption bounds
+# Exercise lower/nominal/upper synthetic-input bounds
 ./gradlew -q :runner:run --args='matrix-example' > /tmp/warband-matrix.json
 ./gradlew -q :runner:run --args='sweep /tmp/warband-matrix.json build/warband-sweep/example'
 
@@ -39,12 +39,16 @@ Deterministic harness lane:
 ./gradlew -q :runner:run --args='record /tmp/warband-scenario.json /tmp/warband-trace.json'
 ./gradlew -q :runner:run --args='replay /tmp/warband-trace.json'
 
-# Capture the actual Forge registry/TCon catalog, then explore 1/3/10/30-day balance
-./gradlew verifyFull
-./gradlew -q :runner:run --args='explore ../build/warband-catalog/live-catalog.json ../build/warband-balance'
+# Analyze Warband Core under synthetic scenario inputs using an explicit runtime specification
+./gradlew -q :runner:run --args='explore /path/to/runtime-spec.json ../build/warband-core-analysis'
+
+# Hard MVP readiness gate; exits nonzero if any required behavior misses its envelope
+./gradlew -q :runner:run --args='mvp /path/to/runtime-spec.json ../build/warband-mvp'
 ```
 
-Scenario inputs provide bounded physical observations; they do not reimplement Minecraft combat or pathfinding. Every strategic consequence is executed by `warband-core`. A recorded trace embeds the catalog revision and content, rules, pristine initial state/hash, every exact input frame, emitted events/effects, and every post-state hash. Replay fails at the first divergent component. Forge architecture tests fail if any runtime source calls Core outside the canonical adapter or imports Minecraft into Core.
+Scenario inputs are authored synthetic Core frames. The runner does not implement, approximate, or predict Minecraft combat, pathfinding, world generation, entity behavior, or player behavior. Every result is conditional on those explicit inputs. A recorded trace embeds the runtime specification, a machine-readable non-simulation boundary, pristine initial state/hash, every exact input frame, emitted events/effects, and every post-state hash. Replay fails at the first divergent component.
+
+For the actual pack content, run `/pillagercampaigns export_runtime_spec` from an operator console after registries load. The command validates recruits, all four resource channels, compatible TCon material/platform data, and rewards, then atomically writes `pillagercampaigns/exports/warband-runtime-spec.json` beneath the world directory. It observes registry/config data only and does not advance or mutate strategic state.
 
 Existing external harness lane:
 

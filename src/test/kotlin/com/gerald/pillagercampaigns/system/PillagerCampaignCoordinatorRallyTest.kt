@@ -1,25 +1,9 @@
 package com.gerald.pillagercampaigns.system
 
 import kotlin.test.Test
-import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 
 class PillagerCampaignCoordinatorRallyTest {
-    @Test fun `materialization lease waits for members until its deadline`() {
-        assertEquals(
-            PillagerCampaignCoordinator.MaterializationLeaseAction.WAIT,
-            PillagerCampaignCoordinator.materializationLeaseAction(0, 199L, 200L),
-        )
-        assertEquals(
-            PillagerCampaignCoordinator.MaterializationLeaseAction.FAILED,
-            PillagerCampaignCoordinator.materializationLeaseAction(0, 200L, 200L),
-        )
-        assertEquals(
-            PillagerCampaignCoordinator.MaterializationLeaseAction.SUCCEEDED,
-            PillagerCampaignCoordinator.materializationLeaseAction(1, 100L, 200L),
-        )
-    }
-
     @Test
     fun `rally drift is disabled when no level is loaded for the dimension`() {
         assertFalse(PillagerCampaignCoordinator.shouldApplyRallyDrift(null, 4, -3, 7, -1))

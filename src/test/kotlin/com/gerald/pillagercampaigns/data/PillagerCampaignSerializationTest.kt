@@ -1,6 +1,6 @@
 package com.gerald.pillagercampaigns.data
 
-import com.gerald.pillagercampaigns.system.EnvironmentTraits
+import com.gerald.warband.core.EnvironmentTraits
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.resources.ResourceLocation
 import java.util.UUID

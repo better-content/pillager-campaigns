@@ -1,9 +1,10 @@
 package com.gerald.warband.core
 
+import java.util.UUID
 import kotlin.math.ceil
 
-object WarbandCore {
-    fun transition(
+internal object WarbandCore {
+    internal fun transition(
         state: CoreSnapshot,
         frame: CoreFrame,
         catalog: CoreCatalog,
@@ -15,10 +16,14 @@ object WarbandCore {
         val effects = mutableListOf<CoreEffect>()
         state.tick += frame.elapsedTicks
         state.protectedPlayersUntilTick.entries.removeIf { (_, untilTick) -> untilTick < state.tick }
+        applyPlayerLifecycle(state, rules, frame.playerLifecycle, events)
 
+        applyEquipmentRealizations(state, frame.equipmentRealizations, events)
+        applyNavigationResults(state, frame.navigationResults, events)
         applyAcknowledgements(state, frame.acknowledgements, events)
-        applyDiscoveries(state, rules, frame.discoveries, events)
-        applyTerritory(state, frame.territory, frame.territoryContacts, events, effects)
+        applyDiscoveries(state, catalog, rules, frame.players, frame.discoveries, events, effects)
+        applyMaterializationSites(state, frame.materializationSites, effects, events)
+        applyTerritory(state, rules, frame.territoryContacts, events, effects)
         frame.terrain.forEach { observation -> state.terrain[terrainKey(observation.position)] = observation }
         applyMaterializations(state, frame.materializations, events)
         applyGarrisonResults(state, frame.garrisonResults, events)
@@ -26,32 +31,29 @@ object WarbandCore {
         applySnapshots(state, frame.snapshots, events)
         applyPositions(state, frame.physicalPositions)
         applyDefeats(state, catalog, frame.defeats, effects, events)
+        applyWarlordDefeats(state, frame.warlordDefeats, events)
         val outcomeCampaigns = frame.outcomes.mapTo(hashSetOf(), CampaignOutcomeObservation::campaignId)
         frame.combat.forEach { observeCombat(state, catalog, rules, it, events, effects, decide = it.campaignId !in outcomeCampaigns) }
         frame.outcomes.forEach { observeOutcome(state, rules, it, events, effects) }
         frame.commands.forEach { command ->
             when (command) {
-                is CoreCommand.Dispatch -> dispatch(
-                    state, catalog, rules, command.warbandId, command.playerId, events,
-                    target = command.target, officerId = command.officerId, campaignId = command.campaignId,
-                )
-                is CoreCommand.BeginReturn -> beginReturn(state, command.campaignId, command.reason, command.aggressionDelta, events, effects)
-                is CoreCommand.Dematerialize -> dematerialize(state, command.campaignId, events)
+                is BeginReturnCommand -> beginReturn(state, command.campaignId, command.reason, command.aggressionDelta, events, effects)
+                is DematerializeCommand -> dematerialize(state, command.campaignId, events)
                 is CoreCommand.Manufacture -> repeat(command.count.coerceAtLeast(0)) {
-                    state.warbands[command.warbandId]?.let { manufacture(state, it, catalog, events) }
+                    state.warbands[command.warbandId]?.let { manufacture(state, it, catalog, rules, events, effects) }
                 }
-                is CoreCommand.ReserveGarrison -> reserveGarrison(state, catalog, rules, command, events, effects)
-                is CoreCommand.ResolveGarrison -> resolveGarrison(state, command, events)
+                is ReserveGarrisonCommand -> reserveGarrison(state, catalog, rules, command, events, effects)
+                is ResolveGarrisonCommand -> resolveGarrison(state, command, events)
                 is CoreCommand.CollapseWarband -> collapseWarband(state, command.warbandId, command.reason, events)
                 is CoreCommand.CollapseFaction -> collapseFaction(state, command.factionId, command.reason, events)
-                is CoreCommand.PromoteSuccessor -> promoteSuccessor(state, rules, command, events)
-                is CoreCommand.SelectCampaignSuccessor -> selectCampaignSuccessor(
+                is PromoteSuccessorCommand -> promoteSuccessor(state, rules, command, events)
+                is SelectCampaignSuccessorCommand -> selectCampaignSuccessor(
                     state, catalog, rules, command.campaignId, command.excludedMemberIds, events, effects,
                 )
-                is CoreCommand.DelayWarband -> state.warbands[command.warbandId]?.let {
+                is DelayWarbandCommand -> state.warbands[command.warbandId]?.let {
                     it.nextRaidTick = maxOf(it.nextRaidTick, command.untilTick.coerceAtLeast(state.tick))
                 }
-                is CoreCommand.ResolveCampaign -> state.campaigns[command.campaignId]?.let { campaign ->
+                is ResolveCampaignCommand -> state.campaigns[command.campaignId]?.let { campaign ->
                     if (campaign.phase != CampaignPhase.RESOLVED) {
                         campaign.returnReason = command.reason
                         reconcile(state, campaign, rules, events)
@@ -62,7 +64,7 @@ object WarbandCore {
                     val previous = state.protectedPlayersUntilTick[command.playerId] ?: Long.MIN_VALUE
                     if (command.untilTick > previous) state.protectedPlayersUntilTick[command.playerId] = command.untilTick
                 }
-                is CoreCommand.RecordSchedulerProgress -> {
+                is RecordSchedulerProgressCommand -> {
                     command.discoveryTick?.let { state.lastDiscoveryTick = it.coerceAtLeast(0L) }
                     command.campaignTick?.let { state.lastCampaignTick = it.coerceAtLeast(0L) }
                 }
@@ -70,10 +72,11 @@ object WarbandCore {
             }
         }
 
-        if (frame.advanceEconomy) advanceEconomies(state, catalog, rules, frame.elapsedTicks, events)
-        if (frame.allowAutomaticDispatch) automaticDispatch(state, catalog, rules, frame.players, events)
+        advanceEconomies(state, catalog, rules, frame.elapsedTicks, events, effects)
+        automaticDispatch(state, catalog, rules, frame.players, events)
         advanceCampaigns(state, catalog, rules, frame.players, frame.elapsedTicks, events, effects)
         applyTacticalIntent(state, catalog, rules, frame.tactical, effects, events)
+        pruneResolvedCampaigns(state, rules)
         publishEffects(state, effects)
         validate(state, catalog, rules)
         return CoreTransition(state, events, state.pendingEffects.values.toList())
@@ -81,8 +84,11 @@ object WarbandCore {
 
     private fun resetWorld(state: CoreSnapshot) {
         state.sequence = 0L
+        state.effectSequence = 0L
         state.lastDiscoveryTick = 0L
         state.lastCampaignTick = 0L
+        state.dispatchCursor = 0
+        state.discoveryCursor = 0
         state.factions.clear()
         state.warbands.clear()
         state.officers.clear()
@@ -96,9 +102,33 @@ object WarbandCore {
         state.pendingEffects.clear()
         state.acknowledgedEffectIds.clear()
         state.rewardedDefeatIds.clear()
+        state.defeatedWarlordIds.clear()
     }
 
-    fun chooseRecruit(
+    private fun applyPlayerLifecycle(
+        state: CoreSnapshot,
+        rules: CoreRules,
+        observations: List<PlayerLifecycleObservation>,
+        events: MutableList<CoreEvent>,
+    ) {
+        observations.forEach { observation ->
+            state.initializedPlayerIds += observation.playerId
+            val duration = when (observation.kind) {
+                PlayerLifecycleKind.JOINED -> 0L
+                PlayerLifecycleKind.RESPAWNED -> rules.respawnProtectionTicks
+                PlayerLifecycleKind.DIED -> rules.deathProtectionTicks
+            }
+            if (duration > 0L) {
+                state.protectedPlayersUntilTick[observation.playerId] = maxOf(
+                    state.protectedPlayersUntilTick[observation.playerId] ?: 0L,
+                    state.tick + duration,
+                )
+            }
+            events += event(state, "player_${observation.kind.name.lowercase()}", observation.playerId)
+        }
+    }
+
+    internal fun chooseRecruit(
         state: CoreSnapshot,
         warband: WarbandState,
         officer: OfficerState?,
@@ -117,7 +147,7 @@ object WarbandCore {
                 .thenByDescending { deterministicTie(warband.id, it.id, state.sequence + members.size) })
     }
 
-    fun recruitScore(
+    internal fun recruitScore(
         warband: WarbandState,
         officer: OfficerState?,
         recruit: RecruitDefinition,
@@ -129,7 +159,7 @@ object WarbandCore {
      * dispatch. Readiness expresses aggression while reserving enough room for
      * the preference-selected lead recruit and the cheapest distinct support.
      */
-    fun raidBudget(
+    internal fun raidBudget(
         state: CoreSnapshot,
         warband: WarbandState,
         officer: OfficerState?,
@@ -148,8 +178,8 @@ object WarbandCore {
         return if (warband.raidPool + EPSILON >= desired) desired else 0.0
     }
 
-    fun assignmentScore(warband: WarbandState, officer: OfficerState, player: PlayerFact): Int {
-        if (!player.eligible || player.protected || warband.id !in player.hostileWarbands ||
+    internal fun assignmentScore(warband: WarbandState, officer: OfficerState, player: PlayerFact): Int {
+        if (!player.eligible ||
             player.position.dimension != warband.rally.dimension) return Int.MIN_VALUE / 4
         val distance = manhattan(warband.rally, player.position)
         val grudge = if (officer.lastTargetPlayerId == player.id) 48 else 0
@@ -157,7 +187,7 @@ object WarbandCore {
         return grudge + rankBias + officer.victories * 5 - officer.defeats * 3 - distance * 4
     }
 
-    fun chooseAssignment(
+    internal fun chooseAssignment(
         state: CoreSnapshot,
         warband: WarbandState,
         players: Collection<PlayerFact>,
@@ -173,7 +203,7 @@ object WarbandCore {
      * Adapters may persist this plan and materialize it later without making a
      * second composition decision.
      */
-    fun planSquad(
+    internal fun planSquad(
         state: CoreSnapshot,
         warband: WarbandState,
         officer: OfficerState?,
@@ -205,7 +235,7 @@ object WarbandCore {
         return SquadPlan(members, members.sumOf(MemberManifest::threat))
     }
 
-    fun chooseMaterial(
+    internal fun chooseMaterial(
         state: CoreSnapshot,
         warband: WarbandState,
         catalog: CoreCatalog,
@@ -225,7 +255,7 @@ object WarbandCore {
     }
 
     /** Marginal progress one extracted unit makes toward functional armament. */
-    fun armamentMaterialDemand(warband: WarbandState, materialId: String, catalog: CoreCatalog): Double =
+    internal fun armamentMaterialDemand(warband: WarbandState, materialId: String, catalog: CoreCatalog): Double =
         catalog.equipment.mapNotNull { definition ->
             val required = definition.cost[materialId]?.takeIf { it > EPSILON } ?: return@mapNotNull null
             val available = warband.materialLedger.getOrDefault(materialId, 0.0)
@@ -241,13 +271,16 @@ object WarbandCore {
             progress * (0.5 + otherReadiness) * (1.0 + functionalNeed)
         }.average().takeIf(Double::isFinite) ?: 0.0
 
-    fun chooseEquipment(
+    internal fun chooseEquipment(
         state: CoreSnapshot,
         warband: WarbandState,
         catalog: CoreCatalog,
         rules: CoreRules = CoreRules(),
-    ): EquipmentDefinition? =
-        catalog.equipment.asSequence()
+    ): EquipmentDefinition? {
+        val candidates = catalog.equipment + catalog.equipmentPlatforms.mapNotNull { platform ->
+            formulateEquipment(state, warband, catalog.materials, platform, rules)
+        }
+        return candidates.asSequence()
             .filter { definition -> definition.cost.all { (id, amount) -> warband.materialLedger.getOrDefault(id, 0.0) + EPSILON >= amount } }
             .maxWithOrNull(compareBy<EquipmentDefinition> { definition ->
                 // Preserve live baseline semantics: affordability is exact, then the
@@ -261,8 +294,54 @@ object WarbandCore {
                     EcologyMath.repetitionPenalty(warband.selectionMemory.equipment, definition.id, rules.diversityWeight) -
                     stockCoverage * rules.diversityWeight
             }.thenByDescending { deterministicTie(warband.id, it.id, state.sequence) })
+    }
 
-    fun choosePartMaterial(
+    private fun formulateEquipment(
+        state: CoreSnapshot,
+        warband: WarbandState,
+        materials: List<MaterialDefinition>,
+        platform: EquipmentPlatformDefinition,
+        rules: CoreRules,
+    ): EquipmentDefinition? {
+        val available = warband.materialLedger.toMutableMap()
+        val formulation = mutableListOf<String>()
+        val costs = linkedMapOf<String, Double>()
+        var capabilities = platform.baseCapabilities
+        platform.components.forEachIndexed { index, component ->
+            val material = choosePartMaterial(
+                state, warband, materials, component.compatibleMaterialIds, available,
+                component.requiredUnits, index, rules,
+            ) ?: return null
+            formulation += material.id
+            costs[material.id] = costs.getOrDefault(material.id, 0.0) + component.requiredUnits
+            available[material.id] = available.getOrDefault(material.id, 0.0) - component.requiredUnits
+            capabilities += material.capabilities.componentTimes(component.capabilityScale) * component.requiredUnits
+        }
+        capabilities = capabilities.componentTimes(CapabilityVector(
+            platform.aggregationParameters["durabilityScale"] ?: 1.0,
+            platform.aggregationParameters["damageScale"] ?: 1.0,
+            platform.aggregationParameters["mobilityScale"] ?: 1.0,
+            platform.aggregationParameters["rangeScale"] ?: 1.0,
+            platform.aggregationParameters["controlScale"] ?: 1.0,
+        )) + CapabilityVector(
+            platform.aggregationParameters["durabilityOffset"] ?: 0.0,
+            platform.aggregationParameters["damageOffset"] ?: 0.0,
+            platform.aggregationParameters["mobilityOffset"] ?: 0.0,
+            platform.aggregationParameters["rangeOffset"] ?: 0.0,
+            platform.aggregationParameters["controlOffset"] ?: 0.0,
+        )
+        return EquipmentDefinition(platform.id, formulation, capabilities, costs, platform.supportedActions)
+    }
+
+    private fun CapabilityVector.componentTimes(other: CapabilityVector) = CapabilityVector(
+        durability * other.durability,
+        damage * other.damage,
+        mobility * other.mobility,
+        range * other.range,
+        control * other.control,
+    )
+
+    internal fun choosePartMaterial(
         state: CoreSnapshot,
         warband: WarbandState,
         materials: Collection<MaterialDefinition>,
@@ -279,7 +358,7 @@ object WarbandCore {
                 EcologyMath.repetitionPenalty(warband.selectionMemory.materials, material.id, rules.diversityWeight)
         }.thenByDescending { deterministicTie(warband.id, it.id, state.sequence + salt) })
 
-    fun chooseTacticalPosition(
+    internal fun chooseTacticalPosition(
         positions: Collection<TacticalPosition>,
         capabilities: CapabilityVector,
         preferences: CapabilityVector,
@@ -290,7 +369,7 @@ object WarbandCore {
             EcologyMath.tacticalScore(it, capabilities, preferences, cohesionRadius)
         }.thenByDescending(TacticalPosition::id))
 
-    fun validate(state: CoreSnapshot, catalog: CoreCatalog, rules: CoreRules = CoreRules()) {
+    internal fun validate(state: CoreSnapshot, catalog: CoreCatalog, rules: CoreRules = CoreRules()) {
         require(state.tick >= 0L && state.sequence >= 0L)
         state.warbands.values.forEach { warband ->
             require(warband.reserveThreat >= -EPSILON && warband.raidPool >= -EPSILON && warband.garrisonThreat >= -EPSILON)
@@ -310,6 +389,23 @@ object WarbandCore {
         require(equipmentIds.distinct().size == equipmentIds.size) { "duplicate equipment identity" }
         val targets = state.campaigns.values.filter { it.phase != CampaignPhase.RESOLVED }.map { it.targetPlayerId }
         require(targets.distinct().size == targets.size) { "multiple unresolved campaigns target one player" }
+        state.campaigns.values.forEach { campaign ->
+            val officer = state.officers[campaign.officerId]
+            if (campaign.phase == CampaignPhase.RESOLVED) {
+                require(officer?.deployedCampaignId != campaign.id) { "resolved campaign ${campaign.id} still owns its officer" }
+            } else {
+                require(officer != null) { "campaign ${campaign.id} references unknown officer ${campaign.officerId}" }
+                require(officer.deployedCampaignId == campaign.id) { "unresolved campaign ${campaign.id} does not own its officer" }
+            }
+        }
+        state.officers.values.forEach { officer ->
+            officer.deployedCampaignId?.let { campaignId ->
+                val campaign = state.campaigns[campaignId]
+                require(campaign != null && campaign.phase != CampaignPhase.RESOLVED && campaign.officerId == officer.id) {
+                    "officer ${officer.id} references non-live campaign $campaignId"
+                }
+            }
+        }
         state.campaigns.values.flatMap { it.members }.forEach { member ->
             require(catalog.recruits.any { it.id == member.recruitId }) { "unknown recruit ${member.recruitId}" }
             require(member.threat > 0.0 && member.healthFraction in 0.0..1.0)
@@ -340,6 +436,10 @@ object WarbandCore {
         acknowledgements.forEach { acknowledgement ->
             if (acknowledgement.effectId in state.acknowledgedEffectIds) return@forEach
             val effect = state.pendingEffects[acknowledgement.effectId] ?: return@forEach
+            require(effect.kind in setOf(
+                EffectKind.WARN_PLAYER, EffectKind.REWARD_PLAYER,
+                EffectKind.PROMOTE_SUCCESSOR, EffectKind.MATERIALIZE_WARLORD,
+            )) { "effect ${effect.effectId} requires a typed result" }
             if (!acknowledgement.successful) {
                 events += event(
                     state, "effect_attempt_failed", acknowledgement.effectId,
@@ -358,10 +458,71 @@ object WarbandCore {
         }
     }
 
-    private fun acknowledgeEffect(state: CoreSnapshot, effectId: String?, events: MutableList<CoreEvent>): Boolean {
-        if (effectId == null) return true
+    private fun applyEquipmentRealizations(
+        state: CoreSnapshot,
+        results: List<EquipmentRealizationResult>,
+        events: MutableList<CoreEvent>,
+    ) {
+        results.forEach resultLoop@{ result ->
+            if (result.effectId in state.acknowledgedEffectIds) return@resultLoop
+            val effect = state.pendingEffects[result.effectId]
+                ?.takeIf { it.kind == EffectKind.REALIZE_EQUIPMENT }
+                ?: return@resultLoop
+            val manifest = effect.equipmentManifest?.takeIf { it.id == result.equipmentId } ?: return@resultLoop
+            val warband = effect.warbandId?.let(state.warbands::get) ?: return@resultLoop
+            val stored = warband.armory.firstOrNull { it.id == manifest.id } ?: return@resultLoop
+            state.pendingEffects.remove(result.effectId)
+            state.acknowledgedEffectIds += result.effectId
+            if (result.successful) {
+                result.measuredCapabilities?.takeIf(CapabilityVector::finite)?.let { measured ->
+                    val index = warband.armory.indexOf(stored)
+                    warband.armory[index] = stored.copy(capabilities = measured)
+                }
+                events += event(state, "equipment_realized", manifest.id, result.detail)
+            } else {
+                warband.armory.remove(stored)
+                stored.billOfMaterials.forEach { (materialId, amount) ->
+                    warband.materialLedger[materialId] = warband.materialLedger.getOrDefault(materialId, 0.0) + amount
+                }
+                events += event(state, "equipment_realization_failed", manifest.id, result.detail)
+            }
+        }
+    }
+
+    private fun applyNavigationResults(
+        state: CoreSnapshot,
+        results: List<NavigationResult>,
+        events: MutableList<CoreEvent>,
+    ) {
+        results.forEach resultLoop@{ result ->
+            if (result.effectId in state.acknowledgedEffectIds) return@resultLoop
+            val effect = state.pendingEffects[result.effectId]
+                ?.takeIf { it.kind == EffectKind.NAVIGATE && it.campaignId == result.campaignId }
+                ?: return@resultLoop
+            require(effect.memberIds == listOf(result.memberId)) { "navigation result member does not match effect" }
+            state.pendingEffects.remove(effect.effectId)
+            state.acknowledgedEffectIds += effect.effectId
+            events += event(
+                state, "navigation_${result.status.name.lowercase()}", result.campaignId,
+                result.detail.ifBlank { effect.tacticalPositionId.orEmpty() },
+            )
+        }
+    }
+
+    private fun acknowledgeEffect(
+        state: CoreSnapshot,
+        effectId: String,
+        expectedKind: EffectKind,
+        events: MutableList<CoreEvent>,
+        campaignId: String? = null,
+        garrisonId: String? = null,
+    ): Boolean {
         if (effectId in state.acknowledgedEffectIds) return false
-        if (state.pendingEffects.remove(effectId) == null) return false
+        val effect = state.pendingEffects[effectId] ?: return false
+        require(effect.kind == expectedKind) { "effect $effectId has kind ${effect.kind}, expected $expectedKind" }
+        require(campaignId == null || effect.campaignId == campaignId) { "effect $effectId belongs to another campaign" }
+        require(garrisonId == null || effect.garrisonId == garrisonId) { "effect $effectId belongs to another garrison" }
+        state.pendingEffects.remove(effectId)
         state.acknowledgedEffectIds += effectId
         events += event(state, "effect_acknowledged", effectId)
         return true
@@ -373,89 +534,166 @@ object WarbandCore {
                 pending.kind == candidate.kind && pending.warbandId == candidate.warbandId &&
                     pending.campaignId == candidate.campaignId && pending.garrisonId == candidate.garrisonId &&
                     pending.playerId == candidate.playerId && pending.tacticalPositionId == candidate.tacticalPositionId &&
-                    pending.memberIds == candidate.memberIds && pending.itemId == candidate.itemId && pending.count == candidate.count
+                    pending.position == candidate.position && pending.memberIds == candidate.memberIds &&
+                    pending.blockPosition == candidate.blockPosition &&
+                    pending.memberPlacements == candidate.memberPlacements &&
+                    pending.itemId == candidate.itemId && pending.count == candidate.count &&
+                    pending.equipmentManifest == candidate.equipmentManifest && pending.memberManifest == candidate.memberManifest &&
+                    pending.memberManifests == candidate.memberManifests
             }
             if (!duplicate) {
-                val effect = candidate.copy(effectId = nextId(state, "effect"))
+                val effect = freezeEffect(candidate).copy(effectId = nextEffectId(state))
                 state.pendingEffects[effect.effectId] = effect
             }
         }
     }
 
+    private fun freezeEffect(effect: CoreEffect): CoreEffect = effect.copy(
+        memberIds = effect.memberIds.toList(),
+        equipmentManifest = effect.equipmentManifest?.let(::copyEquipment),
+        memberManifest = effect.memberManifest?.let(::copyMember),
+        memberManifests = effect.memberManifests.map(::copyMember),
+        memberPlacements = effect.memberPlacements.toList(),
+    )
+
+    private fun copyMember(member: MemberManifest): MemberManifest = member.copy(
+        equipment = member.equipment?.let(::copyEquipment),
+        cargo = member.cargo.toMutableMap(),
+    )
+
+    private fun copyEquipment(equipment: EquipmentManifest): EquipmentManifest = equipment.copy(
+        formulation = equipment.formulation.toList(),
+        billOfMaterials = equipment.billOfMaterials.toMap(),
+        supportedActions = equipment.supportedActions.toSet(),
+    )
+
     private fun applyDiscoveries(
         state: CoreSnapshot,
+        catalog: CoreCatalog,
         rules: CoreRules,
+        players: List<PlayerFact>,
         observations: List<WarbandDiscoveryObservation>,
         events: MutableList<CoreEvent>,
+        effects: MutableList<CoreEffect>,
     ) {
-        observations.sortedBy(WarbandDiscoveryObservation::siteId).forEach { observation ->
-            require(observation.siteId.isNotBlank())
-            if (!state.discoveredSiteIds.add(observation.siteId)) return@forEach
-            val factionId = observation.factionId ?: nextId(state, "faction")
-            val warbandId = observation.warbandId ?: nextId(state, "warband")
-            val officerId = observation.officerId ?: nextId(state, "officer")
+        if (observations.isEmpty()) return
+        if (state.lastDiscoveryTick > 0L && state.tick - state.lastDiscoveryTick < rules.discoveryIntervalTicks) return
+        val ordered = observations.sortedWith(compareBy<WarbandDiscoveryObservation> { it.rally.dimension }
+            .thenBy { it.cellX ?: it.rally.x }.thenBy { it.cellZ ?: it.rally.z }.thenBy { it.siteId })
+        val work = minOf(rules.discoveryWorkBudget.coerceAtLeast(0), ordered.size)
+        val start = if (ordered.isEmpty()) 0 else Math.floorMod(state.discoveryCursor, ordered.size)
+        val scheduled = (0 until work).map { ordered[(start + it) % ordered.size] }
+        state.discoveryCursor = if (ordered.isEmpty()) 0 else (start + work) % ordered.size
+        scheduled.forEach { observation ->
+            require((observation.cellX == null) == (observation.cellZ == null))
+            require(observation.siteId.isNotBlank() || observation.cellX != null)
+            val siteKey = if (observation.cellX != null) {
+                "${observation.rally.dimension}|${observation.worldSeed}|${observation.cellX}|${observation.cellZ}"
+            } else observation.siteId
+            val exactSite = observation.siteCandidates.sortedWith(compareBy<BlockPosition> { it.dimension }
+                .thenBy { it.x }.thenBy { it.y }.thenBy { it.z }).firstOrNull() ?: return@forEach
+            val baseRally = ChunkPosition(exactSite.dimension, exactSite.x shr 4, exactSite.z shr 4)
+            val seed = deterministicTie(
+                siteKey, baseRally.dimension,
+                observation.worldSeed xor (baseRally.x.toLong() * 31L + baseRally.z),
+            )
+            val rally = baseRally
+            if (state.warbands.values.any {
+                    it.rally.dimension == rally.dimension &&
+                        manhattan(it.rally, rally) < rules.discoveryMinimumSpacingChunks
+                }) return@forEach
+            if (players.isNotEmpty() && players.none {
+                    it.position.dimension == rally.dimension &&
+                        manhattan(it.position, rally) in
+                            rules.discoveryMinimumPlayerDistanceChunks..rules.discoveryMaximumDistanceChunks
+                }) return@forEach
+            val chance = rules.discoveryChance.coerceIn(0.0, 1.0)
+            val roll = (deterministicTie(siteKey, "discovery", observation.worldSeed).ushr(11).toDouble() /
+                (1L shl 53).toDouble()).coerceIn(0.0, 1.0)
+            if (roll > chance) return@forEach
+            if (!state.discoveredSiteIds.add(siteKey)) return@forEach
+            val factionId = nextId(state, "faction")
+            val warbandId = nextId(state, "warband")
+            val officerId = nextId(state, "officer")
             require(factionId.isNotBlank() && warbandId.isNotBlank() && officerId.isNotBlank())
             require(factionId !in state.factions && warbandId !in state.warbands && officerId !in state.officers) {
                 "discovery supplied an existing canonical identity"
             }
             val environment = observation.environment.bounded()
-            state.factions[factionId] = FactionState(factionId, observation.factionName, observation.bannerSeed)
-            state.warbands[warbandId] = WarbandState(
+            state.factions[factionId] = FactionState(factionId, "Faction-${seed.toULong().toString(36).take(8)}", seed.toInt())
+            val initialThreat = maxOf(
+                rules.discoveryInitialThreat(environment),
+                catalog.recruits.minOfOrNull(RecruitDefinition::baseThreat) ?: 0.0,
+            )
+            val warband = WarbandState(
                 warbandId,
                 factionId,
-                observation.rally,
+                rally,
                 rules.capacity(environment).toDouble(),
-                rules.discoveryInitialThreat(environment),
+                initialThreat,
                 aggression = rules.initialAggression.coerceIn(rules.minimumAggression, rules.maximumAggression),
                 environment = environment,
-                preferences = FormulaMath.initialPreferences(observation.preferenceSeed, environment),
+                preferences = FormulaMath.initialPreferences(seed, environment),
+                activeCampaignLimit = rules.defaultActiveCampaignLimit.coerceAtLeast(1),
             )
+            state.warbands[warbandId] = warband
             state.officers[officerId] = OfficerState(
                 officerId,
                 factionId,
                 warbandId,
-                FormulaMath.initialPreferences(observation.preferenceSeed xor -7046029254386353131L, environment),
+                FormulaMath.initialPreferences(seed xor -7046029254386353131L, environment),
             )
-            events += event(state, "warband_discovered", warbandId, observation.siteId)
+            val recruit = chooseRecruit(state, warband, state.officers[officerId], catalog, warband.reserveThreat, rules = rules)
+            if (recruit != null) {
+                val threat = observedThreat(warband, recruit)
+                val warlord = MemberManifest(nextId(state, "member"), recruit.id, threat)
+                warband.reserveThreat = (warband.reserveThreat - threat).coerceAtLeast(0.0)
+                warband.warlord = warlord
+                effects += CoreEffect(
+                    kind = EffectKind.MATERIALIZE_WARLORD,
+                    warbandId = warband.id,
+                    position = warband.rally,
+                    blockPosition = exactSite,
+                    memberIds = listOf(warlord.id),
+                    memberManifest = warlord,
+                    memberPlacements = listOf(MemberPlacement(warlord.id, exactSite)),
+                )
+            }
+            reserveGarrison(
+                state, catalog, rules,
+                ReserveGarrisonCommand(warband.id, warband.rally, blockPosition = exactSite),
+                events, effects,
+            )
+            events += event(state, "warband_discovered", warbandId, siteKey)
         }
+        state.lastDiscoveryTick = state.tick.coerceAtLeast(1L)
     }
 
     private fun applyTerritory(
         state: CoreSnapshot,
-        observations: List<TerritoryObservation>,
+        rules: CoreRules,
         contacts: List<TerritoryContactObservation>,
         events: MutableList<CoreEvent>,
         effects: MutableList<CoreEffect>,
     ) {
-        observations.forEach { observation ->
-            if (observation.warbandId !in state.warbands) return@forEach
-            if (observation.initialized) state.initializedPlayerIds += observation.playerId
-            val protection = observation.protectedUntilTick.coerceAtLeast(0L)
-            val key = "${observation.warbandId}|${observation.playerId}"
-            state.territoryRelations[key] = TerritoryRelationState(
-                observation.warbandId, observation.playerId,
-                if (observation.hostile) TerritoryStatus.HOSTILE else TerritoryStatus.UNCONTACTED,
-                protection,
-            )
-            if (protection > 0L) state.protectedPlayersUntilTick[observation.playerId] = protection
-            else state.protectedPlayersUntilTick.remove(observation.playerId)
-            events += event(state, "territory_observed", observation.warbandId, observation.playerId)
-        }
         contacts.forEach { contact ->
             require(contact.distanceChunks.isFinite() && contact.distanceChunks >= 0.0)
-            require(contact.territoryRadiusChunks >= 0 && contact.warningBandChunks >= 0)
             val warband = state.warbands[contact.warbandId] ?: return@forEach
             val key = "${contact.warbandId}|${contact.playerId}"
             val previous = state.territoryRelations[key]?.status ?: TerritoryStatus.UNCONTACTED
-            val boundary = (contact.territoryRadiusChunks - contact.warningBandChunks).coerceAtLeast(0)
+            val boundary = (rules.territoryRadiusChunks - rules.territoryWarningBandChunks).coerceAtLeast(0)
             val next = when {
                 previous == TerritoryStatus.HOSTILE || contact.attacked || contact.distanceChunks < boundary -> TerritoryStatus.HOSTILE
-                contact.distanceChunks <= contact.territoryRadiusChunks -> TerritoryStatus.WARNED
+                contact.distanceChunks <= rules.territoryRadiusChunks -> TerritoryStatus.WARNED
                 else -> TerritoryStatus.UNCONTACTED
             }
             state.initializedPlayerIds += contact.playerId
+            val protection = maxOf(
+                state.protectedPlayersUntilTick[contact.playerId] ?: 0L,
+                state.territoryRelations[key]?.protectedUntilTick ?: 0L,
+            )
             state.territoryRelations[key] = TerritoryRelationState(
-                warband.id, contact.playerId, next, contact.protectedUntilTick.coerceAtLeast(0L),
+                warband.id, contact.playerId, next, protection,
             )
             if (next != previous && next != TerritoryStatus.UNCONTACTED) {
                 effects += CoreEffect(
@@ -467,11 +705,45 @@ object WarbandCore {
         }
     }
 
+    private fun applyMaterializationSites(
+        state: CoreSnapshot,
+        observations: List<MaterializationSiteObservation>,
+        effects: MutableList<CoreEffect>,
+        events: MutableList<CoreEvent>,
+    ) {
+        observations.forEach { observation ->
+            val campaign = state.campaigns[observation.campaignId]
+                ?.takeIf { it.phase == CampaignPhase.READY_TO_MATERIALIZE && !it.physical }
+                ?: return@forEach
+            if (state.pendingEffects.values.any {
+                    it.kind == EffectKind.MATERIALIZE && it.campaignId == campaign.id
+                }) return@forEach
+            val anchor = observation.candidates.asSequence()
+                .filter { it.dimension == campaign.position.dimension }
+                .sortedWith(compareBy<BlockPosition> { it.x }.thenBy { it.y }.thenBy { it.z })
+                .firstOrNull() ?: return@forEach
+            effects += CoreEffect(
+                kind = EffectKind.MATERIALIZE,
+                warbandId = campaign.warbandId,
+                campaignId = campaign.id,
+                playerId = campaign.targetPlayerId,
+                position = ChunkPosition(anchor.dimension, anchor.x shr 4, anchor.z shr 4),
+                blockPosition = anchor,
+                memberIds = campaign.members.map(MemberManifest::id),
+                memberManifests = campaign.members,
+                memberPlacements = campaign.members.mapIndexed { index, member ->
+                    MemberPlacement(member.id, anchor.copy(x = anchor.x + index % 3 - 1, z = anchor.z + index / 3 + 1))
+                },
+            )
+            events += event(state, "materialization_site_selected", campaign.id, "${anchor.x},${anchor.y},${anchor.z}")
+        }
+    }
+
     private fun reserveGarrison(
         state: CoreSnapshot,
         catalog: CoreCatalog,
         rules: CoreRules,
-        command: CoreCommand.ReserveGarrison,
+        command: ReserveGarrisonCommand,
         events: MutableList<CoreEvent>,
         effects: MutableList<CoreEffect>,
     ) {
@@ -491,7 +763,14 @@ object WarbandCore {
             EffectKind.MATERIALIZE_GARRISON,
             warbandId = warband.id,
             position = command.position,
+            blockPosition = command.blockPosition,
             memberIds = plan.members.map(MemberManifest::id),
+            memberManifests = plan.members,
+            memberPlacements = command.blockPosition?.let { anchor ->
+                plan.members.mapIndexed { index, member ->
+                    MemberPlacement(member.id, anchor.copy(x = anchor.x + index % 3 - 1, z = anchor.z + index / 3 + 1))
+                }
+            }.orEmpty(),
             garrisonId = id,
         )
         events += event(state, "garrison_reserved", id, "threat=${plan.committedThreat}")
@@ -503,7 +782,7 @@ object WarbandCore {
         events: MutableList<CoreEvent>,
     ) {
         results.forEach resultLoop@{ result ->
-            if (!acknowledgeEffect(state, result.effectId, events)) return@resultLoop
+            if (!acknowledgeEffect(state, result.effectId, EffectKind.MATERIALIZE_GARRISON, events, garrisonId = result.garrisonId)) return@resultLoop
             val garrison = state.garrisons[result.garrisonId] ?: return@resultLoop
             if (garrison.phase != GarrisonPhase.RESERVED) return@resultLoop
             val warband = state.warbands[garrison.warbandId] ?: return@resultLoop
@@ -532,7 +811,7 @@ object WarbandCore {
 
     private fun resolveGarrison(
         state: CoreSnapshot,
-        command: CoreCommand.ResolveGarrison,
+        command: ResolveGarrisonCommand,
         events: MutableList<CoreEvent>,
     ) {
         val garrison = state.garrisons[command.garrisonId] ?: return
@@ -554,7 +833,9 @@ object WarbandCore {
         events: MutableList<CoreEvent>,
     ) {
         results.forEach resultLoop@{ result ->
-            if (!acknowledgeEffect(state, result.effectId, events)) return@resultLoop
+            if (result.effectId != null && !acknowledgeEffect(
+                    state, result.effectId, EffectKind.CAPTURE_SNAPSHOTS, events, garrisonId = result.garrisonId,
+                )) return@resultLoop
             val garrison = state.garrisons[result.garrisonId]?.takeIf { it.phase == GarrisonPhase.ACTIVE } ?: return@resultLoop
             val warband = state.warbands[garrison.warbandId] ?: return@resultLoop
             val existing = garrison.members.associateBy(MemberManifest::id)
@@ -572,6 +853,7 @@ object WarbandCore {
                 snapshot.cargo.filterValues { it > 0 }.forEach(member.cargo::put)
             }
             garrison.physicalMemberIds.retainAll(garrison.members.mapTo(hashSetOf(), MemberManifest::id))
+            if (garrison.members.isEmpty()) garrison.phase = GarrisonPhase.RESOLVED
             events += event(state, "garrison_snapshots_applied", garrison.id, "members=${garrison.members.size}")
         }
     }
@@ -594,6 +876,7 @@ object WarbandCore {
             campaign.physicalMemberIds.clear()
             campaign.physical = false
             campaign.phase = CampaignPhase.RESOLVED
+            campaign.resolvedAtTick = state.tick
             campaign.returnReason = reason
             state.officers[campaign.officerId]?.deployedCampaignId = null
         }
@@ -658,10 +941,24 @@ object WarbandCore {
         }
     }
 
+    private fun applyWarlordDefeats(
+        state: CoreSnapshot,
+        observations: List<WarlordDefeatObservation>,
+        events: MutableList<CoreEvent>,
+    ) {
+        observations.forEach { observation ->
+            val warband = state.warbands[observation.warbandId] ?: return@forEach
+            val warlord = warband.warlord?.takeIf { it.id == observation.memberId } ?: return@forEach
+            if (!state.defeatedWarlordIds.add(warlord.id)) return@forEach
+            events += event(state, "warlord_defeated", warband.id, observation.playerId.orEmpty())
+            collapseFaction(state, warband.factionId, "warlord_defeated", events)
+        }
+    }
+
     private fun promoteSuccessor(
         state: CoreSnapshot,
         rules: CoreRules,
-        command: CoreCommand.PromoteSuccessor,
+        command: PromoteSuccessorCommand,
         events: MutableList<CoreEvent>,
     ) {
         val warband = state.warbands[command.warbandId] ?: return
@@ -696,12 +993,15 @@ object WarbandCore {
             val capabilities = (recruit?.capabilities ?: CapabilityVector()) +
                 (member.equipment?.capabilities ?: CapabilityVector())
             member.threat * 0.25 + member.healthFraction * 2.0 + member.experience + capabilities.dot(preferences)
-        }.thenByDescending(MemberManifest::id)) ?: return
+        }.thenByDescending(MemberManifest::id))
+        campaign.leaderMemberId = successor?.id
+        successor ?: return
         effects += CoreEffect(
             EffectKind.PROMOTE_SUCCESSOR,
             warbandId = warband.id,
             campaignId = campaign.id,
             memberIds = listOf(successor.id),
+            memberManifest = successor,
         )
         events += event(state, "campaign_successor_selected", campaign.id, successor.id)
     }
@@ -726,15 +1026,21 @@ object WarbandCore {
             val selected = chooseTacticalPosition(
                 observation.positions, capabilities, preferences, observation.cohesionRadius,
             ) ?: return@forEach
-            effects += CoreEffect(
-                EffectKind.NAVIGATE,
-                warbandId = warband.id,
-                campaignId = campaign.id,
-                playerId = campaign.targetPlayerId,
-                position = selected.position,
-                memberIds = campaign.physicalMemberIds.toList(),
-                tacticalPositionId = selected.id,
-            )
+            campaign.physicalMemberIds.sorted().forEach memberLoop@{ memberId ->
+                if (state.pendingEffects.values.any {
+                        it.kind == EffectKind.NAVIGATE && it.campaignId == campaign.id && it.memberIds == listOf(memberId)
+                    }) return@memberLoop
+                effects += CoreEffect(
+                    EffectKind.NAVIGATE,
+                    warbandId = warband.id,
+                    campaignId = campaign.id,
+                    playerId = campaign.targetPlayerId,
+                    position = selected.position,
+                    blockPosition = selected.blockPosition,
+                    memberIds = listOf(memberId),
+                    tacticalPositionId = selected.id,
+                )
+            }
             events += event(state, "tactical_intent_selected", campaign.id, selected.id)
         }
     }
@@ -753,6 +1059,7 @@ object WarbandCore {
         rules: CoreRules,
         elapsed: Long,
         events: MutableList<CoreEvent>,
+        effects: MutableList<CoreEffect>,
     ) {
         var remaining = elapsed
         var simulationTick = state.tick - elapsed
@@ -762,7 +1069,7 @@ object WarbandCore {
             state.warbands.values.forEach {
                 EcologyMath.decay(it.selectionMemory, simulationTick, rules.selectionMemoryHalfLifeTicks)
             }
-            advanceEconomySlice(state, catalog, rules, slice, events)
+            advanceEconomySlice(state, catalog, rules, slice, events, effects)
             remaining -= slice
         }
     }
@@ -773,6 +1080,7 @@ object WarbandCore {
         rules: CoreRules,
         elapsed: Long,
         events: MutableList<CoreEvent>,
+        effects: MutableList<CoreEffect>,
     ) {
         state.warbands.values.filterNot(WarbandState::defeated).forEach { warband ->
             val deployed = state.campaigns.values.filter { it.warbandId == warband.id && it.phase != CampaignPhase.RESOLVED }
@@ -785,7 +1093,7 @@ object WarbandCore {
                 warband.reserveThreat += 1.0
                 events += event(state, "recruited", warband.id, "threat=1")
                 if (warband.armory.size < rules.desiredArmoryItems(warband, catalog.recruits)) {
-                    manufacture(state, warband, catalog, events)
+                    manufacture(state, warband, catalog, rules, events, effects)
                 }
             }
 
@@ -795,7 +1103,7 @@ object WarbandCore {
                 warband.extractionTickDebt -= extractionTicks
                 extract(state, warband, catalog, events)
                 if (warband.armory.size < rules.desiredArmoryItems(warband, catalog.recruits)) {
-                    manufacture(state, warband, catalog, events)
+                    manufacture(state, warband, catalog, rules, events, effects)
                 }
             }
 
@@ -822,13 +1130,26 @@ object WarbandCore {
         state: CoreSnapshot,
         warband: WarbandState,
         catalog: CoreCatalog,
+        rules: CoreRules,
         events: MutableList<CoreEvent>,
+        effects: MutableList<CoreEffect>,
     ) {
+        if (warband.armory.size >= rules.maximumArmoryItems.coerceAtLeast(0)) return
         val selected = chooseEquipment(state, warband, catalog) ?: return
         selected.cost.forEach { (id, amount) -> warband.materialLedger[id] = (warband.materialLedger.getOrDefault(id, 0.0) - amount).coerceAtLeast(0.0) }
         val manifest = EquipmentManifest(nextId(state, "equipment"), selected.id, selected.formulation, selected.cost, selected.capabilities, selected.actions)
         warband.armory += manifest
         warband.selectionMemory.equipment[selected.id] = warband.selectionMemory.equipment.getOrDefault(selected.id, 0.0) + 1.0
+        effects += CoreEffect(
+            kind = EffectKind.REALIZE_EQUIPMENT,
+            warbandId = warband.id,
+            itemId = selected.id,
+            equipmentManifest = manifest.copy(
+                formulation = manifest.formulation.toList(),
+                billOfMaterials = manifest.billOfMaterials.toMap(),
+                supportedActions = manifest.supportedActions.toSet(),
+            ),
+        )
         events += event(state, "manufactured", manifest.id, selected.id)
     }
 
@@ -839,11 +1160,38 @@ object WarbandCore {
         players: List<PlayerFact>,
         events: MutableList<CoreEvent>,
     ) {
+        val interval = rules.dispatchIntervalTicks.coerceAtLeast(1L)
+        val scheduledTick = state.tick / interval * interval
+        val initialObservedDispatch = state.tick == 0L && state.lastCampaignTick == 0L && players.isNotEmpty()
+        if (!initialObservedDispatch && scheduledTick <= state.lastCampaignTick) return
+        state.lastCampaignTick = scheduledTick
         val targeted = state.campaigns.values.filter { it.phase != CampaignPhase.RESOLVED }.mapTo(mutableSetOf()) { it.targetPlayerId }
-        state.warbands.values.sortedBy { it.id }.forEach { warband ->
+        val ordered = state.warbands.values.sortedBy { it.id }
+        if (ordered.isEmpty()) {
+            state.dispatchCursor = 0
+            return
+        }
+        val start = Math.floorMod(state.dispatchCursor, ordered.size)
+        val work = minOf(rules.dispatchWorkBudget.coerceAtLeast(0), ordered.size)
+        val scheduled = (0 until work).map { ordered[(start + it) % ordered.size] }
+        state.dispatchCursor = (start + work) % ordered.size
+        scheduled.forEach { warband ->
             if (warband.defeated || state.tick < warband.nextRaidTick) return@forEach
             if (state.campaigns.values.count { it.warbandId == warband.id && it.phase != CampaignPhase.RESOLVED } >= warband.activeCampaignLimit) return@forEach
-            val candidates = players.filter { it.id !in targeted }
+            val candidates = players.asSequence()
+                .filter { it.id !in targeted && it.physicallyAvailable }
+                .filter { manhattan(warband.rally, it.position) <= rules.maximumDispatchDistanceChunks }
+                .filter { state.territoryRelations["${warband.id}|${it.id}"]?.status == TerritoryStatus.HOSTILE }
+                .map { player ->
+                    val relation = state.territoryRelations["${warband.id}|${player.id}"]
+                    val protectedUntil = maxOf(
+                        state.protectedPlayersUntilTick[player.id] ?: 0L,
+                        relation?.protectedUntilTick ?: 0L,
+                    )
+                    player.copy(
+                        eligible = player.eligible && player.gameModeEligible && protectedUntil <= state.tick,
+                    )
+                }.toList()
             val assignment = chooseAssignment(state, warband, candidates) ?: return@forEach
             val player = candidates.first { it.id == assignment.playerId }
             if (dispatch(state, catalog, rules, warband.id, player.id, events, player.position, assignment.officerId)) targeted += player.id
@@ -884,6 +1232,7 @@ object WarbandCore {
         state.campaigns[resolvedCampaignId] = CampaignState(
             resolvedCampaignId, warband.id, officer.id, playerId, warband.rally,
             destination, members, lastCombatTick = state.tick, route = route,
+            leaderMemberId = members.firstOrNull()?.id,
         )
         officer.lastTargetPlayerId = playerId
         officer.deployedCampaignId = resolvedCampaignId
@@ -906,7 +1255,12 @@ object WarbandCore {
             val warband = state.warbands[campaign.warbandId] ?: return@forEach
             val player = players.firstOrNull { it.id == campaign.targetPlayerId }
             if (player != null) campaign.target = player.position
-            if (player != null && (!player.eligible || player.protected) && campaign.phase != CampaignPhase.RETURNING) {
+            val relationProtection = state.territoryRelations["${warband.id}|${campaign.targetPlayerId}"]?.protectedUntilTick ?: 0L
+            val playerProtected = maxOf(
+                state.protectedPlayersUntilTick[campaign.targetPlayerId] ?: 0L, relationProtection,
+            ) > state.tick
+            if (player != null && (!player.eligible || !player.gameModeEligible || !player.physicallyAvailable || playerProtected) &&
+                campaign.phase != CampaignPhase.RETURNING) {
                 beginReturn(state, campaign.id, "target_ineligible", 0, events, effects)
             }
             if (campaign.phase == CampaignPhase.ACTIVE) {
@@ -916,7 +1270,9 @@ object WarbandCore {
                 when (CampaignDecisions.activeDecision(campaign.members.size, liveThreat, committed, conservation, warband.aggression, state.tick, campaign.lastCombatTick, rules)) {
                     ActiveCampaignDecision.DEFEATED, ActiveCampaignDecision.MORALE_RETURN ->
                         beginDefeatReturn(state, campaign, rules, "morale", events, effects)
-                    ActiveCampaignDecision.IDLE_RETURN -> beginReturn(state, campaign.id, "idle", 1, events, effects)
+                    ActiveCampaignDecision.IDLE_RETURN -> beginReturn(
+                        state, campaign.id, "idle", rules.idleReturnAggressionGrowth, events, effects,
+                    )
                     ActiveCampaignDecision.CONTINUE -> Unit
                 }
             }
@@ -932,12 +1288,14 @@ object WarbandCore {
                 applySegmentLogistics(state, campaign, warband, catalog, rules, events)
                 if (campaign.members.isEmpty()) {
                     campaign.phase = CampaignPhase.RESOLVED
+                    campaign.resolvedAtTick = state.tick
                     warband.aggression = (warband.aggression + 1).coerceIn(rules.minimumAggression, rules.maximumAggression)
                     state.officers[campaign.officerId]?.let { officer ->
                         officer.defeats += 1
                         officer.availableAtTick = state.tick + rules.captainRecoveryTicks
                     }
                     campaign.returnReason = "supply_attrition"
+                    releaseCampaignOwnership(state, campaign)
                     events += event(state, "campaign_lost_to_attrition", campaign.id)
                     break
                 }
@@ -947,8 +1305,7 @@ object WarbandCore {
                 }
                 if (campaign.phase == CampaignPhase.OUTBOUND && manhattan(campaign.position, campaign.target) <= rules.materializeDistanceChunks) {
                     campaign.phase = CampaignPhase.READY_TO_MATERIALIZE
-                    effects += CoreEffect(EffectKind.MATERIALIZE, warband.id, campaign.id, campaign.targetPlayerId, campaign.position, campaign.members.map { it.id })
-                    events += event(state, "materialization_requested", campaign.id)
+                    events += event(state, "materialization_site_requested", campaign.id)
                     break
                 }
             }
@@ -974,6 +1331,19 @@ object WarbandCore {
             cacheMember(state, campaign, it)
             campaign.members.remove(it)
             events += event(state, "member_lost", it.id, campaign.id)
+        }
+        if (campaign.leaderMemberId != null && dead.any { it.id == campaign.leaderMemberId }) {
+            selectCampaignSuccessor(
+                state, catalog, rules, campaign.id,
+                dead.mapTo(linkedSetOf(), MemberManifest::id), events, effects,
+            )
+            if (campaign.leaderMemberId == null) {
+                state.officers[campaign.officerId]?.let { officer ->
+                    officer.defeats += 1
+                    officer.availableAtTick = Long.MAX_VALUE
+                }
+                beginReturn(state, campaign.id, "captain_killed", 1, events, effects)
+            }
         }
         if (observation.applyHealthDamage) {
             val damageRatio = observation.playerDamage / (observation.playerDamage + observation.campaignDamage + 1.0)
@@ -1014,7 +1384,7 @@ object WarbandCore {
 
     private fun applyMaterializations(state: CoreSnapshot, results: List<MaterializationResult>, events: MutableList<CoreEvent>) {
         results.forEach resultLoop@{ result ->
-            if (!acknowledgeEffect(state, result.effectId, events)) return@resultLoop
+            if (!acknowledgeEffect(state, result.effectId, EffectKind.MATERIALIZE, events, campaignId = result.campaignId)) return@resultLoop
             val campaign = state.campaigns[result.campaignId] ?: return@resultLoop
             if (campaign.phase != CampaignPhase.READY_TO_MATERIALIZE && campaign.phase != CampaignPhase.MATERIALIZING) return@resultLoop
             if (!result.success) {
@@ -1031,8 +1401,9 @@ object WarbandCore {
                 campaign.physical = false
                 campaign.physicalMemberIds.clear()
                 if (campaign.phase == CampaignPhase.RESOLVED) {
+                    campaign.resolvedAtTick = state.tick
                     campaign.returnReason = "materialization_exhausted"
-                    state.officers[campaign.officerId]?.deployedCampaignId = null
+                    releaseCampaignOwnership(state, campaign)
                 }
                 events += event(state, "materialization_failed", campaign.id)
                 return@resultLoop
@@ -1054,7 +1425,9 @@ object WarbandCore {
 
     private fun applySnapshots(state: CoreSnapshot, results: List<CampaignSnapshotResult>, events: MutableList<CoreEvent>) {
         results.forEach snapshotLoop@{ result ->
-            if (!acknowledgeEffect(state, result.effectId, events)) return@snapshotLoop
+            if (result.effectId != null && !acknowledgeEffect(
+                    state, result.effectId, EffectKind.CAPTURE_SNAPSHOTS, events, campaignId = result.campaignId,
+                )) return@snapshotLoop
             val campaign = state.campaigns[result.campaignId] ?: return@snapshotLoop
             if (campaign.phase != CampaignPhase.RETURNING && campaign.phase != CampaignPhase.ACTIVE &&
                 campaign.phase != CampaignPhase.MATERIALIZING) return@snapshotLoop
@@ -1092,15 +1465,15 @@ object WarbandCore {
         when (observation.outcome) {
             CampaignOutcomeKind.CAPTAIN_VICTORY -> {
                 officer?.let { it.victories += 1; it.availableAtTick = state.tick + rules.captainSuccessRecoveryTicks }
-                beginReturn(state, campaign.id, observation.reason, -1, events, effects)
+                beginReturn(state, campaign.id, observation.reason, rules.victoryAggressionGrowth, events, effects)
             }
             CampaignOutcomeKind.SURVIVING_DEFEAT -> {
                 officer?.let { it.defeats += 1; it.availableAtTick = state.tick + rules.captainRecoveryTicks }
-                beginReturn(state, campaign.id, observation.reason, 1, events, effects)
+                beginReturn(state, campaign.id, observation.reason, rules.defeatAggressionGrowth, events, effects)
             }
             CampaignOutcomeKind.CAPTAIN_KILLED -> {
                 officer?.let { it.defeats += 1; it.availableAtTick = Long.MAX_VALUE }
-                beginReturn(state, campaign.id, observation.reason, 1, events, effects)
+                beginReturn(state, campaign.id, observation.reason, rules.defeatAggressionGrowth, events, effects)
             }
             CampaignOutcomeKind.ABORTED -> beginReturn(state, campaign.id, observation.reason, 0, events, effects)
             CampaignOutcomeKind.WARBAND_COLLAPSE -> {
@@ -1174,12 +1547,32 @@ object WarbandCore {
         warband.aggression = (warband.aggression + campaign.returnAggressionDelta)
             .coerceIn(rules.minimumAggression, rules.maximumAggression)
         campaign.phase = CampaignPhase.RESOLVED
+        campaign.resolvedAtTick = state.tick
         campaign.physicalMemberIds.clear()
         state.officers[campaign.officerId]?.let { officer ->
             officer.availableAtTick = maxOf(officer.availableAtTick, state.tick)
-            officer.deployedCampaignId = null
         }
+        releaseCampaignOwnership(state, campaign)
         events += event(state, "returned", campaign.id, "threat=$returned")
+    }
+
+    private fun releaseCampaignOwnership(state: CoreSnapshot, campaign: CampaignState) {
+        state.officers[campaign.officerId]?.takeIf { it.deployedCampaignId == campaign.id }?.deployedCampaignId = null
+        val obsoleteKinds = setOf(
+            EffectKind.MATERIALIZE, EffectKind.PROBE_ROUTE, EffectKind.CAPTURE_SNAPSHOTS,
+            EffectKind.RESTORE_SNAPSHOTS, EffectKind.NAVIGATE, EffectKind.REMOVE_ENTITIES, EffectKind.DEMATERIALIZE,
+        )
+        state.pendingEffects.entries.removeIf { (_, effect) ->
+            effect.campaignId == campaign.id && effect.kind in obsoleteKinds
+        }
+    }
+
+    private fun pruneResolvedCampaigns(state: CoreSnapshot, rules: CoreRules) {
+        val retention = rules.resolvedRetentionTicks.coerceAtLeast(0L)
+        state.campaigns.entries.removeIf { (_, campaign) ->
+            campaign.phase == CampaignPhase.RESOLVED && campaign.resolvedAtTick > 0L &&
+                state.tick - campaign.resolvedAtTick >= retention
+        }
     }
 
     private fun validateCatalog(catalog: CoreCatalog) {
@@ -1188,6 +1581,7 @@ object WarbandCore {
         require(catalog.recruits.all { it.id.isNotBlank() && it.baseThreat > 0.0 && it.capabilities.finite() })
         require(catalog.materials.all { it.id.isNotBlank() && it.tier > 0 && it.extractionCost >= 0.0 })
         require(catalog.equipment.all { it.id.isNotBlank() && it.cost.values.all { value -> value >= 0.0 } })
+        require(catalog.equipmentPlatforms.map { it.id }.distinct().size == catalog.equipmentPlatforms.size)
         require(catalog.environmentSamples.all { it == it.bounded() })
         require(catalog.resources.map { it.itemId }.distinct().size == catalog.resources.size)
         require(catalog.resources.all {
@@ -1383,7 +1777,23 @@ object WarbandCore {
         control = 1.0 - environment.biomass,
     )
 
-    private fun nextId(state: CoreSnapshot, kind: String) = "core:$kind:${state.sequence++}"
+    private fun nextId(state: CoreSnapshot, kind: String): String {
+        val sequence = state.sequence++
+        var most = deterministicTie("warband-core", kind, sequence)
+        var least = deterministicTie(kind, "canonical-id", sequence xor -7046029254386353131L)
+        most = (most and -0xF001L) or 0x5000L
+        least = (least and 0x3fffffffffffffffL) or Long.MIN_VALUE
+        return UUID(most, least).toString()
+    }
+
+    private fun nextEffectId(state: CoreSnapshot): String {
+        val sequence = state.effectSequence++
+        var most = deterministicTie("warband-core-effect", "effect", sequence)
+        var least = deterministicTie("effect", "durable-outbox", sequence xor -7046029254386353131L)
+        most = (most and -0xF001L) or 0x5000L
+        least = (least and 0x3fffffffffffffffL) or Long.MIN_VALUE
+        return UUID(most, least).toString()
+    }
 
     private fun event(state: CoreSnapshot, type: String, subject: String, detail: String = "") =
         CoreEvent(state.tick, type, subject, detail)
