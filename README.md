@@ -23,14 +23,14 @@ Common commands:
 
 `verifyFast` runs the Forge-facing JVM suite, the Minecraft-independent Warband Core suite, runner tests, and both JaCoCo gates. `verifyFull` adds the headless Forge GameTest pass.
 
-The `mvp` runner command is the hard Core play-test readiness gate. It checks deterministic lifecycle completion, steady-escalation cadence, power growth, squad and equipment expression, logistics sensitivity, environment response, and dispatch boundaries under authored synthetic observations. Export actual registry content with `/pillagercampaigns export_runtime_spec`, then pass the generated `pillagercampaigns/exports/warband-runtime-spec.json` to the runner. Exporting content does not simulate Minecraft behavior.
+The `mvp` runner command is the hard Core play-test readiness gate. It checks deterministic lifecycle completion, steady-escalation cadence, power growth, squad and equipment expression, logistics sensitivity, environment response, and dispatch boundaries under authored synthetic observations. Export actual registry content with `/pillager_campaigns export_runtime_spec`, then pass the generated `pillager_campaigns/exports/warband-runtime-spec.json` to the runner. Exporting content does not simulate Minecraft behavior.
 
 ## Project Layout
 
 - `warband-core/` is the authoritative Minecraft-independent warband state machine and formula library.
 - `runner/` is a Warband Core state inspector, synthetic-scenario experiment host, trace writer, and baseline comparator. It is not a Minecraft simulator.
-- `src/main/kotlin/com/gerald/pillagercampaigns/` contains Forge observation/effect adapters, persistence, and physical entity behavior.
-- `src/test/kotlin/com/gerald/pillagercampaigns/` contains JVM tests for pure logic and scenario behavior.
+- `src/main/kotlin/com/bettercontent/pillagercampaigns/` contains Forge observation/effect adapters, persistence, and physical entity behavior.
+- `src/test/kotlin/com/bettercontent/pillagercampaigns/` contains JVM tests for pure logic and scenario behavior.
 - `src/main/resources/META-INF/mods.toml` is expanded from Gradle properties during resource processing.
 - `docs/testing.md` documents the current test coverage focus and manual in-game validation commands.
 
@@ -43,3 +43,7 @@ World saves use the strict `warband-core` schema 6 envelope. The Core snapshot i
 ## Community and support
 
 For modpack and mod discussion, playtest feedback, and bug reports, join the [Better Content Discord](https://discord.gg/EkRnZbzqS9).
+
+## Identity
+
+The clean-break canonical identity is repository/artifact `pillager-campaigns`, mod ID and resource namespace `pillager_campaigns`, and Maven group `com.bettercontent`. Legacy `pillagercampaigns` saved data and commands are not migrated.

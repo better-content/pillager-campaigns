@@ -14,7 +14,7 @@ dependencies {
 
 kotlin { jvmToolchain(17) }
 
-application { mainClass.set("com.gerald.pillagercampaigns.runner.WarbandRunner") }
+application { mainClass.set("com.bettercontent.pillagercampaigns.runner.WarbandRunner") }
 
 tasks.test { useJUnitPlatform() }
 tasks.named<JavaExec>("run") { standardInput = System.`in` }

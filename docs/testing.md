@@ -13,12 +13,12 @@ Current coverage focus:
 
 Plain JUnit deliberately does not bootstrap full Forge networking or a Minecraft world. Runtime/event/entity behavior remains covered by build compilation plus Forge GameTests and manual/in-world validation commands:
 
-- `/pillagercampaigns status`
-- `/pillagercampaigns tick_once`
-- `/pillagercampaigns warbands list`
-- `/pillagercampaigns warbands materialize_warlord <prefix>`
-- `/pillagercampaigns campaign list`
-- `/pillagercampaigns list captains`
+- `/pillager_campaigns status`
+- `/pillager_campaigns tick_once`
+- `/pillager_campaigns warbands list`
+- `/pillager_campaigns warbands materialize_warlord <prefix>`
+- `/pillager_campaigns campaign list`
+- `/pillager_campaigns list captains`
 
 Deterministic Warband Core scenario lane (not a Minecraft simulation):
 
@@ -48,7 +48,7 @@ Deterministic Warband Core scenario lane (not a Minecraft simulation):
 
 Scenario inputs are authored synthetic Core frames. The runner does not implement, approximate, or predict Minecraft combat, pathfinding, world generation, entity behavior, or player behavior. Every result is conditional on those explicit inputs. A recorded trace embeds the runtime specification, a machine-readable non-simulation boundary, pristine initial state/hash, every exact input frame, emitted events/effects, and every post-state hash. Replay fails at the first divergent component.
 
-For the actual pack content, run `/pillagercampaigns export_runtime_spec` from an operator console after registries load. The command validates recruits, all four resource channels, compatible TCon material/platform data, and rewards, then atomically writes `pillagercampaigns/exports/warband-runtime-spec.json` beneath the world directory. It observes registry/config data only and does not advance or mutate strategic state.
+For the actual pack content, run `/pillager_campaigns export_runtime_spec` from an operator console after registries load. The command validates recruits, all four resource channels, compatible TCon material/platform data, and rewards, then atomically writes `pillager_campaigns/exports/warband-runtime-spec.json` beneath the world directory. It observes registry/config data only and does not advance or mutate strategic state.
 
 Existing external harness lane:
 
@@ -60,11 +60,11 @@ Existing external harness lane:
 Required live-world validation before shipping as a pack-wide surface pressure replacement:
 
 - Start a new overworld with other hostile surface spawns disabled by the pack.
-- Verify `/pillagercampaigns status` reports enabled systems and nonzero warbands after overworld discovery has run near a player.
-- Travel within discovery radius of a vanilla pillager outpost in the overworld and verify a strategic warband appears in `/pillagercampaigns warbands list`.
-- Force a rally presence with `/pillagercampaigns warbands materialize_warlord <prefix>` on a loaded rally chunk and verify the warlord stays anchored to the rally instead of drifting.
+- Verify `/pillager_campaigns status` reports enabled systems and nonzero warbands after overworld discovery has run near a player.
+- Travel within discovery radius of a vanilla pillager outpost in the overworld and verify a strategic warband appears in `/pillager_campaigns warbands list`.
+- Force a rally presence with `/pillager_campaigns warbands materialize_warlord <prefix>` on a loaded rally chunk and verify the warlord stays anchored to the rally instead of drifting.
 - Let a warband run for several campaign ticks and verify a named captain, not the rally warlord, leads the materialized squad.
-- Force a failed campaign where the captain survives, then verify `/pillagercampaigns list captains` shows the same captain in `recovering` with updated history before they return later.
+- Force a failed campaign where the captain survives, then verify `/pillager_campaigns list captains` shows the same captain in `recovering` with updated history before they return later.
 - Kill a warlord and verify the home warband collapses, active campaigns resolve, and captain history records the collapse instead of converting the warlord into roaming pressure.
 - Confirm no generic fallback squad appears. Ambient pressure should come only from registered warbands, campaign objectives, and loaded campaign materialization.
 

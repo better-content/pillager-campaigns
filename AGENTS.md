@@ -1,4 +1,8 @@
 # AGENTS.md
 
-## Commit Discipline
-- Commit as you make changes: after each coherent completed change, run the relevant validation, commit the finished work, and push the current branch. Do not leave completed work uncommitted or unpushed unless the user explicitly asks to hold it locally.
+## Commit discipline
+
+- Treat existing dirty and untracked files as user-owned unless the user explicitly says otherwise.
+- Keep each commit focused on one coherent change.
+- Run `./gradlew verifyFull --no-daemon` before committing and pushing.
+- Do not push while validation is failing.

@@ -25,7 +25,7 @@ group = property("mod_group") as String
 version = modVersion
 
 base {
-    archivesName.set(modId)
+    archivesName.set("pillager-campaigns")
 }
 
 evaluationDependsOn(":warband-core")
@@ -124,7 +124,7 @@ val cleanGameTestWorld by tasks.registering(Delete::class) {
 tasks.withType<JavaExec>().configureEach {
     if (name == "runGameTestServer") {
         dependsOn(cleanGameTestWorld, syncGameTestStructures)
-        systemProperty("pillagercampaigns.catalogOutput", layout.buildDirectory.file("warband-catalog/live-catalog.json").get().asFile.absolutePath)
+        systemProperty("pillager_campaigns.catalogOutput", layout.buildDirectory.file("warband-catalog/live-catalog.json").get().asFile.absolutePath)
     }
 }
 
