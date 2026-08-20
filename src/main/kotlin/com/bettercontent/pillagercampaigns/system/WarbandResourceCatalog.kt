@@ -1,16 +1,25 @@
 package com.bettercontent.pillagercampaigns.system
 
+import com.bettercontent.pillagercampaigns.PillagerCampaignsMod
 import com.gerald.warband.core.EnvironmentTraits
 import com.gerald.warband.core.ResourceDefinition
 import com.gerald.warband.core.ResourceVector
+import net.minecraft.core.registries.Registries
+import net.minecraft.resources.ResourceLocation
 import net.minecraft.tags.ItemTags
+import net.minecraft.tags.TagKey
 import net.minecraft.world.item.ArrowItem
+import net.minecraft.world.item.Item
 import net.minecraft.world.item.ItemStack
 import net.minecraftforge.common.Tags
 import net.minecraftforge.registries.ForgeRegistries
 
 /** Derives logistics uses from registry-visible item behavior and tags. */
 object WarbandResourceCatalog {
+    val WARBAND_RATIONS: TagKey<Item> = TagKey.create(
+        Registries.ITEM,
+        ResourceLocation(PillagerCampaignsMod.MOD_ID, "warband_rations"),
+    )
     @Volatile private var cached: List<ResourceDefinition>? = null
 
     fun definitions(): List<ResourceDefinition> = cached ?: buildDefinitions().also { cached = it }
@@ -19,6 +28,7 @@ object WarbandResourceCatalog {
         val id = ForgeRegistries.ITEMS.getKey(item)?.toString() ?: return@mapNotNull null
         val stack = ItemStack(item)
         val food = item.foodProperties
+        if (food != null && !stack.`is`(WARBAND_RATIONS)) return@mapNotNull null
         val sustenance = food?.let { it.nutrition + it.saturationModifier * it.nutrition * 2.0 } ?: 0.0
         val munitions = if (item is ArrowItem) 1.0 else 0.0
         val woody = stack.`is`(ItemTags.PLANKS) || stack.`is`(ItemTags.LOGS)

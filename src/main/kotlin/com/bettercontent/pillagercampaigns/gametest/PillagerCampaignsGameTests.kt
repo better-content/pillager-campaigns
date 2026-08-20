@@ -4,6 +4,7 @@ import com.bettercontent.pillagercampaigns.PillagerCampaignsMod
 import com.bettercontent.pillagercampaigns.data.PillagerWorldData
 import com.bettercontent.pillagercampaigns.system.WarbandCoreAdapter
 import com.bettercontent.pillagercampaigns.system.PillagerSpawnPlacementRules
+import com.bettercontent.pillagercampaigns.system.WarbandResourceCatalog
 import com.gerald.warband.core.WarbandRuntimeSpec
 import net.minecraft.core.BlockPos
 import net.minecraft.gametest.framework.GameTest
@@ -97,6 +98,27 @@ object PillagerCampaignsGameTests {
         helper.assertTrue(
             resolved == raisedFloor.above(),
             "Each campaign member must be reprojected above its own terrain column; got $resolved",
+        )
+        helper.succeed()
+    }
+
+    @JvmStatic
+    @GameTest(templateNamespace = "minecraft", template = "empty", timeoutTicks = 40)
+    fun campaignProvisionsUseFieldRations(helper: GameTestHelper) {
+        val sustenance = WarbandResourceCatalog.definitions()
+            .filter { it.unitsPerItem.sustenance > 0.0 }
+            .associateBy { it.itemId }
+
+        helper.assertTrue("minecraft:bread" in sustenance, "Bread must remain available as a campaign ration")
+        helper.assertTrue("minecraft:cooked_beef" in sustenance, "Ordinary cooked meat must remain available as a campaign ration")
+        helper.assertTrue("minecraft:pumpkin_pie" !in sustenance, "Desserts must not enter campaign logistics automatically")
+        helper.assertTrue("minecraft:golden_carrot" !in sustenance, "Luxury foods must not enter campaign logistics automatically")
+        helper.assertTrue(
+            sustenance.keys.all { id ->
+                net.minecraftforge.registries.ForgeRegistries.ITEMS.getValue(net.minecraft.resources.ResourceLocation(id))
+                    ?.let { net.minecraft.world.item.ItemStack(it).`is`(WarbandResourceCatalog.WARBAND_RATIONS) } == true
+            },
+            "Every campaign food resource must be explicitly tagged as a warband ration",
         )
         helper.succeed()
     }
