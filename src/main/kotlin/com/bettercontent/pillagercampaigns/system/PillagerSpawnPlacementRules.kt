@@ -9,6 +9,7 @@ import net.minecraft.world.level.levelgen.Heightmap
 
 object PillagerSpawnPlacementRules {
     private const val LAND_SEARCH_RADIUS_CHUNKS = 3
+    private const val MEMBER_SEARCH_RADIUS_BLOCKS = 2
 
     data class MaterializationSite(val pos: BlockPos)
 
@@ -37,6 +38,12 @@ object PillagerSpawnPlacementRules {
     fun findRallyCandidates(level: ServerLevel, rallyChunkX: Int, rallyChunkZ: Int): List<BlockPos> =
         deterministicDrySitesInLoadedChunks(level, rallyChunkX, rallyChunkZ, LAND_SEARCH_RADIUS_CHUNKS).map(MaterializationSite::pos)
 
+    fun findMemberSurfacePos(level: ServerLevel, x: Int, z: Int, occupied: Set<BlockPos>): BlockPos? {
+        return deterministicBlockOffsets(MEMBER_SEARCH_RADIUS_BLOCKS).firstNotNullOfOrNull { (dx, dz) ->
+            drySurfaceInLoadedColumn(level, x + dx, z + dz)?.takeUnless { it in occupied }
+        }
+    }
+
     private fun deterministicDrySiteInLoadedChunks(level: ServerLevel, startChunkX: Int, startChunkZ: Int, radiusChunks: Int): MaterializationSite? {
         return deterministicDrySitesInLoadedChunks(level, startChunkX, startChunkZ, radiusChunks).firstOrNull()
     }
@@ -60,17 +67,36 @@ object PillagerSpawnPlacementRules {
         }
     }
 
+    internal fun deterministicBlockOffsets(radiusBlocks: Int): List<Pair<Int, Int>> {
+        val radius = radiusBlocks.coerceAtLeast(0)
+        return (0..radius).flatMap { ring ->
+            (-ring..ring).flatMap { dx ->
+                (-ring..ring).mapNotNull { dz ->
+                    (dx to dz).takeIf { maxOf(kotlin.math.abs(dx), kotlin.math.abs(dz)) == ring }
+                }
+            }
+        }
+    }
+
     private fun deterministicDrySurface(level: ServerLevel, chunk: LevelChunk, chunkX: Int, chunkZ: Int): BlockPos? {
         deterministicInChunkOffsets().forEach { (localX, localZ) ->
             val x = chunkX * 16 + localX
             val z = chunkZ * 16 + localZ
-            // LevelChunk reports the surface block; the spawn body belongs in the free block above it.
-            val y = chunk.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, localX, localZ) + 1
-            if (y <= level.minBuildHeight || y >= level.maxBuildHeight) return@forEach
-            val pos = BlockPos(x, y, z)
-            if (isDryLandSpawn(level, chunk, pos)) return pos
+            drySurface(level, chunk, x, z)?.let { return it }
         }
         return null
+    }
+
+    private fun drySurfaceInLoadedColumn(level: ServerLevel, x: Int, z: Int): BlockPos? {
+        val chunk = level.chunkSource.getChunkNow(x shr 4, z shr 4) ?: return null
+        return drySurface(level, chunk, x, z)
+    }
+
+    private fun drySurface(level: ServerLevel, chunk: LevelChunk, x: Int, z: Int): BlockPos? {
+        // LevelChunk reports the surface block; the spawn body belongs in the free block above it.
+        val y = chunk.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x and 15, z and 15) + 1
+        if (y <= level.minBuildHeight || y >= level.maxBuildHeight) return null
+        return BlockPos(x, y, z).takeIf { isDryLandSpawn(level, chunk, it) }
     }
 
     private fun deterministicInChunkOffsets(): List<Pair<Int, Int>> = listOf(

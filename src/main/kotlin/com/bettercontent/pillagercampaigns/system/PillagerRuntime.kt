@@ -187,6 +187,7 @@ object PillagerRuntime {
         val manifests = effect.memberManifests.associateBy(MemberManifest::id)
         if (manifests.isEmpty() || effect.memberPlacements.map { it.memberId }.toSet() != manifests.keys) return emptyList()
         val result = mutableListOf<UUID>()
+        val occupiedPositions = linkedSetOf<BlockPos>()
         effect.memberPlacements.forEachIndexed { index, placement ->
             val member = manifests.getValue(placement.memberId)
             val type = ResourceLocation.tryParse(member.recruitId)?.let(ForgeRegistries.ENTITY_TYPES::getValue) ?: return@forEachIndexed
@@ -195,8 +196,12 @@ object PillagerRuntime {
             if (position.dimension != level.dimension().location().toString() || !level.hasChunk(position.x shr 4, position.z shr 4)) {
                 mob.discard(); return@forEachIndexed
             }
+            val surfacePos = PillagerSpawnPlacementRules.findMemberSurfacePos(
+                level, position.x, position.z, occupiedPositions,
+            ) ?: run { mob.discard(); return@forEachIndexed }
+            occupiedPositions += surfacePos
             prepareCampaignMob(mob, warband, campaign, officerRecord, member.threat, index == 0,
-                position.x + .5, position.y.toDouble(), position.z + .5)
+                surfacePos.x + .5, surfacePos.y.toDouble(), surfacePos.z + .5)
             mob.health = (mob.maxHealth * member.healthFraction.coerceIn(0.0, 1.0).toFloat()).coerceAtLeast(1.0f)
             mob.persistentData.putString(MANIFEST_ID_TAG, member.id)
             mob.persistentData.put(CARGO_TAG, CompoundTag().also { cargo -> member.cargo.forEach(cargo::putInt) })

@@ -79,4 +79,25 @@ object PillagerCampaignsGameTests {
         )
         helper.succeed()
     }
+
+    @JvmStatic
+    @GameTest(templateNamespace = "minecraft", template = "empty", timeoutTicks = 40)
+    fun campaignMemberPlacementReprojectsToItsOwnSurface(helper: GameTestHelper) {
+        val level = helper.level
+        val origin = helper.absolutePos(BlockPos(8, 2, 8))
+        val requested = BlockPos(origin.x, level.maxBuildHeight - 8, origin.z)
+        val raisedFloor = requested.above(3)
+        level.getChunk(requested.x shr 4, requested.z shr 4)
+        helper.assertTrue(level.setBlockAndUpdate(raisedFloor, Blocks.STONE.defaultBlockState()), "Raised surface must be placeable")
+        level.setBlockAndUpdate(raisedFloor.above(), Blocks.AIR.defaultBlockState())
+        level.setBlockAndUpdate(raisedFloor.above(2), Blocks.AIR.defaultBlockState())
+
+        val resolved = PillagerSpawnPlacementRules.findMemberSurfacePos(level, requested.x, requested.z, emptySet())
+
+        helper.assertTrue(
+            resolved == raisedFloor.above(),
+            "Each campaign member must be reprojected above its own terrain column; got $resolved",
+        )
+        helper.succeed()
+    }
 }
