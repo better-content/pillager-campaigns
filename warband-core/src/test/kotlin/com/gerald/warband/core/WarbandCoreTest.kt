@@ -83,6 +83,27 @@ class WarbandCoreTest {
         }
     }
 
+    @Test fun `proactive dispatch does not require a hostile territory relation`() {
+        val state = state(pool = 20.0)
+        val player = PlayerFact("player", ChunkPosition("overworld", 12, 0))
+
+        val result = WarbandCore.transition(state, CoreFrame(0L, players = listOf(player)), catalog, rules)
+
+        assertTrue(result.events.any { it.type == "dispatched" })
+        assertEquals(player.id, state.campaigns.values.single().targetPlayerId)
+    }
+
+    @Test fun `hostile proactive targets outrank closer uncontacted players`() {
+        val state = state(pool = 20.0)
+        val near = PlayerFact("near", ChunkPosition("overworld", 4, 0))
+        val hostile = PlayerFact("hostile", ChunkPosition("overworld", 20, 0))
+        makeHostile(state, hostile.id)
+
+        WarbandCore.transition(state, CoreFrame(0L, players = listOf(near, hostile)), catalog, rules)
+
+        assertEquals(hostile.id, state.campaigns.values.single().targetPlayerId)
+    }
+
     @Test fun `public squad plan is the exact dispatch composition primitive`() {
         fun planned(): Pair<SquadPlan, CoreSnapshot> {
             val state = state()
@@ -550,6 +571,74 @@ class WarbandCoreTest {
         )
         assertTrue(effect.effectId in state.acknowledgedEffectIds)
         assertTrue(committed > 0.0)
+    }
+
+    @Test fun `unloaded coverage discovery bypasses chance once and defers physical presence`() {
+        val state = CoreSnapshot()
+        val selectedRules = rules.copy(
+            discoveryChance = 0.0,
+            discoveryMinimumPlayerDistanceChunks = 24,
+            discoveryMaximumDistanceChunks = 96,
+            maximumDispatchDistanceChunks = 32,
+        )
+        val player = PlayerFact("player", ChunkPosition("overworld", 0, 0))
+        val discovery = WarbandDiscoveryObservation(
+            siteId = "coverage",
+            rally = ChunkPosition("overworld", 32, 0),
+            environment = EnvironmentTraits(habitability = 0.8),
+            worldSeed = 7L,
+            coveragePlayerId = player.id,
+        )
+
+        val first = WarbandCore.transition(
+            state, CoreFrame(0L, players = listOf(player), discoveries = listOf(discovery)), catalog, selectedRules,
+        )
+        val warband = state.warbands.values.single()
+        assertEquals(32, warband.rally.x)
+        assertEquals(selectedRules.raidCooldownTicks, warband.nextRaidTick)
+        assertTrue(first.effects.any {
+            it.kind == EffectKind.MATERIALIZE_WARLORD && it.blockPosition == null && it.memberPlacements.isEmpty()
+        })
+        assertTrue(first.effects.any {
+            it.kind == EffectKind.MATERIALIZE_GARRISON && it.blockPosition == null && it.memberPlacements.isEmpty()
+        })
+
+        WarbandCore.transition(
+            state,
+            CoreFrame(selectedRules.discoveryIntervalTicks, players = listOf(player), discoveries = listOf(discovery)),
+            catalog,
+            selectedRules,
+        )
+        assertEquals(1, state.warbands.size)
+    }
+
+    @Test fun `fresh coverage dispatches before the two day pressure deadline`() {
+        val state = CoreSnapshot()
+        val selectedRules = rules.copy(
+            discoveryChance = 0.0,
+            discoveryMinimumPlayerDistanceChunks = 24,
+            discoveryMaximumDistanceChunks = 96,
+            maximumDispatchDistanceChunks = 32,
+            discoveryInitialReserveThreat = 24.0,
+        )
+        val player = PlayerFact("player", ChunkPosition("overworld", 0, 0))
+        val discovery = WarbandDiscoveryObservation(
+            siteId = "coverage-deadline",
+            rally = ChunkPosition("overworld", 32, 0),
+            environment = EnvironmentTraits(habitability = 0.8),
+            worldSeed = 8L,
+            coveragePlayerId = player.id,
+        )
+        WarbandCore.transition(
+            state, CoreFrame(0L, players = listOf(player), discoveries = listOf(discovery)), catalog, selectedRules,
+        )
+
+        val result = WarbandCore.transition(
+            state, CoreFrame(selectedRules.raidCooldownTicks, players = listOf(player)), catalog, selectedRules,
+        )
+
+        assertTrue(state.tick < 48_000L)
+        assertTrue(result.events.any { it.type == "dispatched" })
     }
 
     @Test fun `tactical intent and successor selection are deterministic core effects`() {

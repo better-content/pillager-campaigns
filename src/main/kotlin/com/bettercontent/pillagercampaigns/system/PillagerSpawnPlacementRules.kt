@@ -64,9 +64,8 @@ object PillagerSpawnPlacementRules {
         deterministicInChunkOffsets().forEach { (localX, localZ) ->
             val x = chunkX * 16 + localX
             val z = chunkZ * 16 + localZ
-            // Heightmaps already return the first free block above the surface. Adding one here
-            // materialized officers a full block in the air and the anchor logic kept them there.
-            val y = chunk.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, localX, localZ)
+            // LevelChunk reports the surface block; the spawn body belongs in the free block above it.
+            val y = chunk.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, localX, localZ) + 1
             if (y <= level.minBuildHeight || y >= level.maxBuildHeight) return@forEach
             val pos = BlockPos(x, y, z)
             if (isDryLandSpawn(level, chunk, pos)) return pos

@@ -35,20 +35,23 @@ object PillagerWarbandDiscoveryService {
             CoreFrame(
                 elapsedTicks = if (snapshot.warbands.isEmpty()) (now - snapshot.tick).coerceAtLeast(0L) else 0L,
                 players = players,
-                discoveries = observed.mapNotNull { candidate ->
-                    if (!level.hasChunk(candidate.chunkX, candidate.chunkZ)) return@mapNotNull null
-                    val sites = PillagerSpawnPlacementRules.findRallyCandidates(level, candidate.chunkX, candidate.chunkZ)
-                    if (sites.isEmpty()) return@mapNotNull null
+                discoveries = observed.map { candidate ->
+                    val sites = if (level.hasChunk(candidate.chunkX, candidate.chunkZ)) {
+                        PillagerSpawnPlacementRules.findRallyCandidates(level, candidate.chunkX, candidate.chunkZ)
+                    } else {
+                        emptyList()
+                    }
                     WarbandDiscoveryObservation(
-                        siteId = "",
+                        siteId = candidate.siteId,
                         rally = ChunkPosition(candidate.dimension.toString(), candidate.chunkX, candidate.chunkZ),
                         environment = EnvironmentSampler.sample(level, candidate.chunkX, candidate.chunkZ, data.environmentModel()),
-                        cellX = candidate.cellX,
-                        cellZ = candidate.cellZ,
+                        cellX = candidate.cellX.takeIf { candidate.siteId.isBlank() },
+                        cellZ = candidate.cellZ.takeIf { candidate.siteId.isBlank() },
                         worldSeed = level.seed,
                         siteCandidates = sites.map { site -> com.gerald.warband.core.BlockPosition(
                             level.dimension().location().toString(), site.x, site.y, site.z,
                         ) },
+                        coveragePlayerId = candidate.coveragePlayerId,
                     )
                 },
             ),

@@ -60,7 +60,9 @@ Existing external harness lane:
 Required live-world validation before shipping as a pack-wide surface pressure replacement:
 
 - Start a new overworld with other hostile surface spawns disabled by the pack.
-- Verify `/pillager_campaigns status` reports enabled systems and nonzero warbands after overworld discovery has run near a player.
+- With server view and simulation distance set to four, remain near the initial base and verify `/pillager_campaigns status` reports full `pressure_coverage` and nonzero warbands after overworld discovery runs.
+- Verify the first campaign dispatches and materializes within 48,000 ticks without requiring the player to approach or attack a rally.
+- Verify abstract discovery does not load or generate the remote rally chunk; loading that chunk later must materialize exactly one warlord and its reserved garrison.
 - Travel within discovery radius of a vanilla pillager outpost in the overworld and verify a strategic warband appears in `/pillager_campaigns warbands list`.
 - Force a rally presence with `/pillager_campaigns warbands materialize_warlord <prefix>` on a loaded rally chunk and verify the warlord stays anchored to the rally instead of drifting.
 - Let a warband run for several campaign ticks and verify a named captain, not the rally warlord, leads the materialized squad.

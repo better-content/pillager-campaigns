@@ -134,7 +134,7 @@ val stageRuntimeJar by tasks.registering(Copy::class) {
     dependsOn(tasks.named("reobfJar"))
     from(layout.buildDirectory.file("reobfJar/output.jar"))
     into(layout.buildDirectory.dir("libs"))
-    rename { "${modId}-${modVersion}.jar" }
+    rename { "pillager-campaigns-${modVersion}.jar" }
 }
 
 tasks.assemble {

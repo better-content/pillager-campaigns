@@ -7,6 +7,7 @@ import com.bettercontent.pillagercampaigns.data.PresenceMaterializationResult
 import com.bettercontent.pillagercampaigns.data.RallyPresenceState
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.server.level.ServerPlayer
+import net.minecraft.core.BlockPos
 
 object PillagerWarbandPresenceSystem {
     private const val RETRY_COOLDOWN_TICKS: Long = 100L
@@ -77,22 +78,25 @@ object PillagerWarbandPresenceSystem {
             if (cached != null && cached.isAlive) {
                 warband.warlordEntityId = cachedId
                 warband.rallyPresence?.state = RallyPresenceState.MATERIALIZED
-                if (faction != null && warlord != null) realizePendingGarrison(level, data, warband, faction, warlord)
+                if (faction != null && warlord != null) realizePendingGarrison(level, data, warband, faction, warlord, cached.blockPosition())
                 return record(warband, PresenceMaterializationResult.LIVE_ALREADY_PRESENT, now)
             }
         }
         warband.warlordEntityId?.let { cachedId ->
             val cached = level.getEntity(cachedId)
             if (cached != null && cached.isAlive) {
-                if (faction != null && warlord != null) realizePendingGarrison(level, data, warband, faction, warlord)
+                if (faction != null && warlord != null) realizePendingGarrison(level, data, warband, faction, warlord, cached.blockPosition())
                 return record(warband, PresenceMaterializationResult.LIVE_ALREADY_PRESENT, now)
             }
         }
         if (!force && now - warband.lastPresenceAttemptTick < RETRY_COOLDOWN_TICKS) {
             return record(warband, PresenceMaterializationResult.COOLDOWN, now)
         }
-        val exact = effect?.blockPosition
-            ?: return record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now)
+        val exact = effect?.blockPosition ?: PillagerSpawnPlacementRules.findRallyPos(
+            level, warband.rallyChunkX, warband.rallyChunkZ,
+        )?.let { pos -> com.gerald.warband.core.BlockPosition(
+            level.dimension().location().toString(), pos.x, pos.y, pos.z,
+        ) } ?: return record(warband, PresenceMaterializationResult.NO_SAFE_SITE, now)
         if (exact.dimension != level.dimension().location().toString() || !level.hasChunk(exact.x shr 4, exact.z shr 4)) {
             return record(warband, PresenceMaterializationResult.NOT_LOADED, now)
         }
@@ -136,7 +140,7 @@ object PillagerWarbandPresenceSystem {
             ),
             level.server,
         )
-        realizePendingGarrison(level, data, warband, faction, warlord)
+        realizePendingGarrison(level, data, warband, faction, warlord, pos)
         return record(warband, PresenceMaterializationResult.SUCCESS, now)
     }
 
@@ -146,13 +150,17 @@ object PillagerWarbandPresenceSystem {
         warband: PillagerWarband,
         faction: com.bettercontent.pillagercampaigns.data.PillagerFaction,
         warlord: com.bettercontent.pillagercampaigns.data.PillagerOfficer,
+        anchor: BlockPos,
     ) {
         data.snapshot().pendingEffects.values.firstOrNull {
             it.kind == com.gerald.warband.core.EffectKind.MATERIALIZE_GARRISON && it.warbandId == warband.id.toString()
         }?.let { garrisonEffect ->
             val garrisonId = garrisonEffect.garrisonId ?: return@let
+            val realizedEffect = withDeferredGarrisonPlacements(
+                garrisonEffect, anchor, level.dimension().location().toString(),
+            )
             val garrisonMembers = PillagerRuntime.materializeGarrison(
-                level, data, warband, faction, warlord, garrisonEffect,
+                level, data, warband, faction, warlord, realizedEffect,
             )
             WarbandCoreAdapter.transition(
                 data,
@@ -173,6 +181,25 @@ object PillagerWarbandPresenceSystem {
             .joinToString(",") { "${it.key.name.lowercase()}=${it.value}" }
             .ifBlank { "none" }
         return "warband_presence_failures=$failures"
+    }
+
+    internal fun withDeferredGarrisonPlacements(
+        effect: com.gerald.warband.core.CoreEffect,
+        anchor: BlockPos,
+        dimension: String,
+    ): com.gerald.warband.core.CoreEffect {
+        if (effect.memberPlacements.isNotEmpty()) return effect
+        return effect.copy(memberPlacements = effect.memberManifests.mapIndexed { index, member ->
+            com.gerald.warband.core.MemberPlacement(
+                member.id,
+                com.gerald.warband.core.BlockPosition(
+                    dimension,
+                    anchor.x + index % 3 - 1,
+                    anchor.y,
+                    anchor.z + index / 3 + 1,
+                ),
+            )
+        })
     }
 
     private fun record(warband: PillagerWarband, result: PresenceMaterializationResult, now: Long): PresenceMaterializationResult {

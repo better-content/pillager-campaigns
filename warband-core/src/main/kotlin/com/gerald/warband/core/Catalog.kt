@@ -169,6 +169,8 @@ data class WarbandDiscoveryObservation(
     val cellZ: Int? = null,
     val worldSeed: Long = 0L,
     val siteCandidates: List<BlockPosition> = emptyList(),
+    /** Eligible player whose local pressure coverage this candidate may guarantee. */
+    val coveragePlayerId: String? = null,
 )
 
 @Serializable

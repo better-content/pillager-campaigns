@@ -578,12 +578,16 @@ internal object WarbandCore {
     ) {
         if (observations.isEmpty()) return
         if (state.lastDiscoveryTick > 0L && state.tick - state.lastDiscoveryTick < rules.discoveryIntervalTicks) return
-        val ordered = observations.sortedWith(compareBy<WarbandDiscoveryObservation> { it.rally.dimension }
+        val ordered = observations.sortedWith(compareBy<WarbandDiscoveryObservation> { it.coveragePlayerId == null }
+            .thenBy { it.rally.dimension }
             .thenBy { it.cellX ?: it.rally.x }.thenBy { it.cellZ ?: it.rally.z }.thenBy { it.siteId })
         val work = minOf(rules.discoveryWorkBudget.coerceAtLeast(0), ordered.size)
-        val start = if (ordered.isEmpty()) 0 else Math.floorMod(state.discoveryCursor, ordered.size)
-        val scheduled = (0 until work).map { ordered[(start + it) % ordered.size] }
-        state.discoveryCursor = if (ordered.isEmpty()) 0 else (start + work) % ordered.size
+        val coverage = ordered.filter { it.coveragePlayerId != null }.take(work)
+        val procedural = ordered.filter { it.coveragePlayerId == null }
+        val proceduralWork = (work - coverage.size).coerceAtMost(procedural.size)
+        val start = if (procedural.isEmpty()) 0 else Math.floorMod(state.discoveryCursor, procedural.size)
+        val scheduled = coverage + (0 until proceduralWork).map { procedural[(start + it) % procedural.size] }
+        state.discoveryCursor = if (procedural.isEmpty()) 0 else (start + proceduralWork) % procedural.size
         scheduled.forEach { observation ->
             require((observation.cellX == null) == (observation.cellZ == null))
             require(observation.siteId.isNotBlank() || observation.cellX != null)
@@ -591,13 +595,21 @@ internal object WarbandCore {
                 "${observation.rally.dimension}|${observation.worldSeed}|${observation.cellX}|${observation.cellZ}"
             } else observation.siteId
             val exactSite = observation.siteCandidates.sortedWith(compareBy<BlockPosition> { it.dimension }
-                .thenBy { it.x }.thenBy { it.y }.thenBy { it.z }).firstOrNull() ?: return@forEach
-            val baseRally = ChunkPosition(exactSite.dimension, exactSite.x shr 4, exactSite.z shr 4)
+                .thenBy { it.x }.thenBy { it.y }.thenBy { it.z }).firstOrNull()
+            val baseRally = exactSite?.let { ChunkPosition(it.dimension, it.x shr 4, it.z shr 4) } ?: observation.rally
             val seed = deterministicTie(
                 siteKey, baseRally.dimension,
                 observation.worldSeed xor (baseRally.x.toLong() * 31L + baseRally.z),
             )
             val rally = baseRally
+            val coveragePlayer = observation.coveragePlayerId?.let { playerId ->
+                players.firstOrNull { it.id == playerId && it.eligible && it.physicallyAvailable }
+            }
+            if (observation.coveragePlayerId != null && coveragePlayer == null) return@forEach
+            if (coveragePlayer != null && state.warbands.values.any {
+                    !it.defeated && it.rally.dimension == coveragePlayer.position.dimension &&
+                        manhattan(it.rally, coveragePlayer.position) <= rules.maximumDispatchDistanceChunks
+                }) return@forEach
             if (state.warbands.values.any {
                     it.rally.dimension == rally.dimension &&
                         manhattan(it.rally, rally) < rules.discoveryMinimumSpacingChunks
@@ -610,7 +622,7 @@ internal object WarbandCore {
             val chance = rules.discoveryChance.coerceIn(0.0, 1.0)
             val roll = (deterministicTie(siteKey, "discovery", observation.worldSeed).ushr(11).toDouble() /
                 (1L shl 53).toDouble()).coerceIn(0.0, 1.0)
-            if (roll > chance) return@forEach
+            if (roll > chance && coveragePlayer == null) return@forEach
             if (!state.discoveredSiteIds.add(siteKey)) return@forEach
             val factionId = nextId(state, "faction")
             val warbandId = nextId(state, "warband")
@@ -635,6 +647,7 @@ internal object WarbandCore {
                 environment = environment,
                 preferences = FormulaMath.initialPreferences(seed, environment),
                 activeCampaignLimit = rules.defaultActiveCampaignLimit.coerceAtLeast(1),
+                nextRaidTick = state.tick + rules.raidCooldownTicks,
             )
             state.warbands[warbandId] = warband
             state.officers[officerId] = OfficerState(
@@ -656,7 +669,7 @@ internal object WarbandCore {
                     blockPosition = exactSite,
                     memberIds = listOf(warlord.id),
                     memberManifest = warlord,
-                    memberPlacements = listOf(MemberPlacement(warlord.id, exactSite)),
+                    memberPlacements = exactSite?.let { listOf(MemberPlacement(warlord.id, it)) }.orEmpty(),
                 )
             }
             reserveGarrison(
@@ -1178,10 +1191,9 @@ internal object WarbandCore {
         scheduled.forEach { warband ->
             if (warband.defeated || state.tick < warband.nextRaidTick) return@forEach
             if (state.campaigns.values.count { it.warbandId == warband.id && it.phase != CampaignPhase.RESOLVED } >= warband.activeCampaignLimit) return@forEach
-            val candidates = players.asSequence()
+            val reachable = players.asSequence()
                 .filter { it.id !in targeted && it.physicallyAvailable }
                 .filter { manhattan(warband.rally, it.position) <= rules.maximumDispatchDistanceChunks }
-                .filter { state.territoryRelations["${warband.id}|${it.id}"]?.status == TerritoryStatus.HOSTILE }
                 .map { player ->
                     val relation = state.territoryRelations["${warband.id}|${player.id}"]
                     val protectedUntil = maxOf(
@@ -1191,7 +1203,22 @@ internal object WarbandCore {
                     player.copy(
                         eligible = player.eligible && player.gameModeEligible && protectedUntil <= state.tick,
                     )
-                }.toList()
+                }.filter(PlayerFact::eligible)
+                .toList()
+            val preferredRelation = reachable.maxOfOrNull { player ->
+                when (state.territoryRelations["${warband.id}|${player.id}"]?.status ?: TerritoryStatus.UNCONTACTED) {
+                    TerritoryStatus.HOSTILE -> 2
+                    TerritoryStatus.WARNED -> 1
+                    TerritoryStatus.UNCONTACTED -> 0
+                }
+            } ?: return@forEach
+            val candidates = reachable.filter { player ->
+                when (state.territoryRelations["${warband.id}|${player.id}"]?.status ?: TerritoryStatus.UNCONTACTED) {
+                    TerritoryStatus.HOSTILE -> 2
+                    TerritoryStatus.WARNED -> 1
+                    TerritoryStatus.UNCONTACTED -> 0
+                } == preferredRelation
+            }
             val assignment = chooseAssignment(state, warband, candidates) ?: return@forEach
             val player = candidates.first { it.id == assignment.playerId }
             if (dispatch(state, catalog, rules, warband.id, player.id, events, player.position, assignment.officerId)) targeted += player.id

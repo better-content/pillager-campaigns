@@ -590,6 +590,8 @@ object PillagerCampaignsEvents {
             )
                 .append(" ")
                 .append(Component.literal(PillagerWarbandPresenceSystem.statusLine(data)))
+                .append(" ")
+                .append(Component.literal(PillagerDiscoveryCoordinator.statusLine(source.server, data)))
         }, false)
         return Command.SINGLE_SUCCESS
     }

@@ -42,8 +42,37 @@ class PillagerWarbandDiscoveryRulesTest {
             settings = settings.copy(minSpawnDistanceChunks = 256),
         )
 
-        assertEquals(0, observed?.chunkX)
-        assertEquals(0, observed?.chunkZ)
+        assertTrue(observed != null)
+        assertTrue(observed.chunkX in 24..40)
+        assertTrue(observed.chunkZ in 24..40)
+    }
+
+    @Test
+    fun `candidate jitter stays centered inside its cell`() {
+        val observed = PillagerWarbandDiscoveryRules.candidateForCell(
+            seed = 44L,
+            dimension = ResourceLocation("minecraft", "overworld"),
+            cellX = -2,
+            cellZ = 3,
+            settings = settings,
+        )!!
+
+        assertTrue(observed.chunkX in -104..-88)
+        assertTrue(observed.chunkZ in 216..232)
+    }
+
+    @Test
+    fun `coverage candidates are deterministic distinct and in dispatch range`() {
+        val dimension = ResourceLocation("minecraft", "overworld")
+        val first = PillagerWarbandDiscoveryRules.coverageCandidates(9L, dimension, "player", 100, -40, 24, 32)
+        val second = PillagerWarbandDiscoveryRules.coverageCandidates(9L, dimension, "player", 100, -40, 24, 32)
+
+        assertEquals(first, second)
+        assertEquals(8, first.map { it.id }.distinct().size)
+        assertTrue(first.all { candidate ->
+            kotlin.math.abs(candidate.chunkX - 100) + kotlin.math.abs(candidate.chunkZ + 40) == 32 &&
+                candidate.coveragePlayerId == "player" && candidate.siteId.isNotBlank()
+        })
     }
 
     @Test

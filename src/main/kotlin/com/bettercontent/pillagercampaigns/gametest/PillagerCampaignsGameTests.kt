@@ -3,11 +3,14 @@ package com.bettercontent.pillagercampaigns.gametest
 import com.bettercontent.pillagercampaigns.PillagerCampaignsMod
 import com.bettercontent.pillagercampaigns.data.PillagerWorldData
 import com.bettercontent.pillagercampaigns.system.WarbandCoreAdapter
+import com.bettercontent.pillagercampaigns.system.PillagerSpawnPlacementRules
 import com.gerald.warband.core.WarbandRuntimeSpec
+import net.minecraft.core.BlockPos
 import net.minecraft.gametest.framework.GameTest
 import net.minecraft.gametest.framework.GameTestHelper
 import net.minecraftforge.gametest.GameTestHolder
 import net.minecraftforge.gametest.PrefixGameTestTemplate
+import net.minecraft.world.level.block.Blocks
 
 /**
  * Behavioral GameTests intentionally remain out of this source-refactor phase.
@@ -29,6 +32,51 @@ object PillagerCampaignsGameTests {
         helper.assertTrue(spec.revision == spec.computedRevision(), "runtime-spec revision must cover all decision inputs")
         data.attachRuntimeSpec(spec)
         helper.assertTrue(data.runtimeSpecRevision() == spec.revision, "world must retain the exact runtime-spec revision")
+        helper.succeed()
+    }
+
+    @JvmStatic
+    @GameTest(templateNamespace = "minecraft", template = "empty", timeoutTicks = 40)
+    fun deferredRallyLookupNeverLoadsRemoteChunks(helper: GameTestHelper) {
+        val level = helper.level
+        val origin = helper.absolutePos(BlockPos(8, 2, 8))
+        val remoteChunkX = (origin.x shr 4) + 20
+        val remoteChunkZ = origin.z shr 4
+        helper.assertTrue(level.chunkSource.getChunkNow(remoteChunkX, remoteChunkZ) == null, "Remote probe chunk must start unloaded")
+
+        val remote = PillagerSpawnPlacementRules.findRallyPos(level, remoteChunkX, remoteChunkZ)
+
+        helper.assertTrue(remote == null, "Unloaded rally must defer physical placement")
+        helper.assertTrue(level.chunkSource.getChunkNow(remoteChunkX, remoteChunkZ) == null, "Rally lookup must not load its target chunk")
+        helper.succeed()
+    }
+
+    @JvmStatic
+    @GameTest(templateNamespace = "minecraft", template = "empty", timeoutTicks = 40)
+    fun deferredRallyResolvesAfterItsChunkIsLoaded(helper: GameTestHelper) {
+        val level = helper.level
+        val origin = helper.absolutePos(BlockPos(8, 2, 8))
+        val chunkX = origin.x shr 4
+        val chunkZ = origin.z shr 4
+        val probeX = (chunkX shl 4) + 8
+        val probeZ = (chunkZ shl 4) + 8
+        level.getChunk(chunkX, chunkZ)
+        val probe = BlockPos(probeX, level.maxBuildHeight - 2, probeZ)
+        helper.assertTrue(level.setBlockAndUpdate(probe.below(), Blocks.STONE.defaultBlockState()), "Dry rally floor must be placeable")
+        level.setBlockAndUpdate(probe, Blocks.AIR.defaultBlockState())
+        level.setBlockAndUpdate(probe.above(), Blocks.AIR.defaultBlockState())
+        val loadedChunk = level.chunkSource.getChunkNow(chunkX, chunkZ)
+        helper.assertTrue(loadedChunk != null, "Explicitly loaded rally chunk must be visible without another load")
+        val surfaceY = loadedChunk!!.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, 8, 8)
+        helper.assertTrue(surfaceY + 1 == probe.y, "Dry rally heightmap must resolve immediately below the prepared body; got $surfaceY")
+
+        val resolved = PillagerSpawnPlacementRules.findRallyPos(level, chunkX, chunkZ)
+
+        helper.assertTrue(resolved != null, "Loaded dry rally must resolve to a physical site")
+        helper.assertTrue(
+            level.chunkSource.getChunkNow(resolved!!.x shr 4, resolved.z shr 4) != null,
+            "Resolved rally must remain inside an already-loaded chunk",
+        )
         helper.succeed()
     }
 }
