@@ -116,8 +116,10 @@ object PillagerSpawnPlacementRules {
         val floor: BlockState = chunk.getBlockState(below)
         if (!floor.fluidState.isEmpty) return false
         if (!floor.isSolidRender(level, below)) return false
-        val body = level.getBlockState(pos)
-        val head = level.getBlockState(pos.above())
+        // The caller has already obtained this loaded chunk. Keep every lookup
+        // local so a chunk-load callback never waits on the chunk scheduler.
+        val body = chunk.getBlockState(pos)
+        val head = chunk.getBlockState(pos.above())
         return body.fluidState.isEmpty &&
             head.fluidState.isEmpty &&
             body.getCollisionShape(level, pos).isEmpty &&
