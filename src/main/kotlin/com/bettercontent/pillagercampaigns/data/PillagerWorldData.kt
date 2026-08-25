@@ -1,101 +1,77 @@
 package com.bettercontent.pillagercampaigns.data
 
-import com.gerald.warband.core.WarbandEngine
-import com.gerald.warband.core.WarbandRuntimeSpec
-import com.gerald.warband.core.WarbandSnapshot
-import com.gerald.warband.core.EnvironmentModelDefinition
-import com.gerald.warband.core.WarbandRules
+import com.bettercontent.pillagercampaigns.PillagerCampaignsMod
+import com.bettercontent.pillagercampaigns.core.DirectorFrame
+import com.bettercontent.pillagercampaigns.core.DirectorSnapshot
+import com.bettercontent.pillagercampaigns.core.DirectorTransition
+import com.bettercontent.pillagercampaigns.core.InvasionDirector
+import com.bettercontent.pillagercampaigns.core.InvasionRuntimeSpec
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.server.MinecraftServer
 import net.minecraft.world.level.saveddata.SavedData
-import java.util.UUID
 
-class PillagerWorldData : SavedData() {
-    private var restoredSnapshot: WarbandSnapshot = WarbandSnapshot()
-    private var runtimeSpecRevision: String = UNRESOLVED_RUNTIME_SPEC_REVISION
-    private var engine: WarbandEngine? = null
-    private var attachedRuntimeSpec: WarbandRuntimeSpec? = null
-    var minecraftSidecar: MinecraftSidecar = MinecraftSidecar()
+class PillagerWorldData private constructor(private var restored: DirectorSnapshot) : SavedData() {
+    private var engine: InvasionDirector? = null
+    private var runtimeRevision: String = "unresolved"
 
-    /*
-     * Minecraft-native projections rebuilt by WarbandCoreAdapter. They carry
-     * entity-facing metadata only and are never serialized as strategic state.
-     */
-    val factions: MutableMap<UUID, PillagerFaction> = linkedMapOf()
-    val warbands: MutableMap<UUID, PillagerWarband> = linkedMapOf()
-    val officers: MutableMap<UUID, PillagerOfficer> = linkedMapOf()
-    val campaigns: MutableMap<UUID, PillagerCampaign> = linkedMapOf()
-    val lastDiscoveryTick: Long get() = snapshot().lastDiscoveryTick
-    val lastCampaignTick: Long get() = snapshot().lastCampaignTick
-    val coreSequence: Long get() = snapshot().sequence
-
-    /** Attaches the exact decision specification before gameplay can transition. */
-    fun attachRuntimeSpec(runtimeSpec: WarbandRuntimeSpec): WarbandEngine {
-        runtimeSpec.requireValidRevision()
-        if (runtimeSpecRevision != UNRESOLVED_RUNTIME_SPEC_REVISION) {
-            require(runtimeSpecRevision == runtimeSpec.revision) {
-                "saved runtime-spec revision $runtimeSpecRevision does not match ${runtimeSpec.revision}"
-            }
+    fun transition(frame: DirectorFrame, spec: InvasionRuntimeSpec): DirectorTransition {
+        val director = engine ?: InvasionDirector.restore(restored, spec).also {
+            engine = it
+            runtimeRevision = spec.revision
         }
-        attachedRuntimeSpec = Json.decodeFromString(Json.encodeToString(runtimeSpec))
-        engine?.let {
-            require(it.runtimeSpecRevision() == runtimeSpec.revision)
-            return it
-        }
-        runtimeSpecRevision = runtimeSpec.revision
-        return WarbandEngine.restore(restoredSnapshot, runtimeSpec).also { engine = it }
+        val result = director.transition(frame)
+        restored = director.snapshot()
+        setDirty()
+        return result
     }
 
-    fun requireEngine(): WarbandEngine = checkNotNull(engine) { "Warband runtime specification has not been attached" }
+    fun attach(spec: InvasionRuntimeSpec) {
+        if (engine == null) {
+            engine = InvasionDirector.restore(restored, spec)
+            runtimeRevision = spec.revision
+        }
+    }
 
-    fun runtimeSpecRevision(): String = runtimeSpecRevision
-
-    fun environmentModel(): EnvironmentModelDefinition =
-        checkNotNull(attachedRuntimeSpec) { "Warband runtime specification has not been attached" }.environmentModel
-
-    fun runtimeRules(): WarbandRules =
-        checkNotNull(attachedRuntimeSpec) { "Warband runtime specification has not been attached" }.rules
-
-    fun snapshot(): WarbandSnapshot = engine?.snapshot() ?: restoredSnapshot.deepCopy()
+    fun snapshot(): DirectorSnapshot = engine?.snapshot() ?: copy(restored)
+    fun runtimeRevision(): String = runtimeRevision
 
     override fun save(tag: CompoundTag): CompoundTag {
-        check(runtimeSpecRevision != UNRESOLVED_RUNTIME_SPEC_REVISION) {
-            "cannot save Warband state before a complete runtime specification is attached"
-        }
-        return WarbandCorePersistence.save(
-            PersistedWarbandCore(snapshot(), runtimeSpecRevision, minecraftSidecar),
-            tag,
-        )
-    }
-
-    fun markChanged() {
-        setDirty()
-    }
-
-    fun isPlayerProtected(playerId: UUID, now: Long): Boolean {
-        return now <= (snapshot().protectedPlayersUntilTick[playerId.toString()] ?: Long.MIN_VALUE)
+        val snapshot = snapshot()
+        tag.putInt("schema", DirectorSnapshot.CURRENT_SCHEMA_VERSION)
+        tag.putString("runtimeRevision", runtimeRevision)
+        tag.putString("snapshot", JSON.encodeToString(snapshot))
+        return tag
     }
 
     companion object {
         private const val KEY = "pillager_campaigns_world"
-        const val UNRESOLVED_RUNTIME_SPEC_REVISION = "unresolved"
+        private val JSON = Json { encodeDefaults = true; ignoreUnknownKeys = false }
 
-        fun get(server: MinecraftServer): PillagerWorldData =
-            server.overworld().dataStorage.computeIfAbsent(::load, ::PillagerWorldData, KEY)
-
-        fun load(tag: CompoundTag): PillagerWorldData {
-            val persisted = WarbandCorePersistence.load(tag)
-            return PillagerWorldData().also { data ->
-                data.restoredSnapshot = persisted.snapshot.deepCopy()
-                data.runtimeSpecRevision = persisted.runtimeSpecRevision
-                data.minecraftSidecar = persisted.sidecar
-            }
+        fun get(server: MinecraftServer): PillagerWorldData {
+            val seed = server.overworld().seed
+            return server.overworld().dataStorage.computeIfAbsent(
+                { tag -> load(tag, seed) },
+                { PillagerWorldData(DirectorSnapshot(worldSeed = seed)) },
+                KEY,
+            )
         }
+
+        internal fun load(tag: CompoundTag, worldSeed: Long): PillagerWorldData {
+            if (tag.getInt("schema") != DirectorSnapshot.CURRENT_SCHEMA_VERSION || !tag.contains("snapshot")) {
+                if (!tag.isEmpty) PillagerCampaignsMod.LOGGER.warn("Discarding pre-0.3 Pillager Campaigns strategic state; the invasion director starts fresh")
+                return PillagerWorldData(DirectorSnapshot(worldSeed = worldSeed))
+            }
+            val snapshot = runCatching { JSON.decodeFromString<DirectorSnapshot>(tag.getString("snapshot")) }
+                .getOrElse { error ->
+                    PillagerCampaignsMod.LOGGER.error("Invalid Pillager Campaigns invasion state; starting fresh", error)
+                    DirectorSnapshot(worldSeed = worldSeed)
+                }
+            return PillagerWorldData(snapshot).also { it.runtimeRevision = tag.getString("runtimeRevision").ifBlank { "unresolved" } }
+        }
+
+        private fun copy(snapshot: DirectorSnapshot): DirectorSnapshot = JSON.decodeFromString(JSON.encodeToString(snapshot))
     }
 }
-
-private fun WarbandSnapshot.deepCopy(): WarbandSnapshot =
-    Json.decodeFromString(Json.encodeToString(this))

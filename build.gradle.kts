@@ -28,8 +28,8 @@ base {
     archivesName.set("pillager-campaigns")
 }
 
-evaluationDependsOn(":warband-core")
-val coreMainSourceSet = project(":warband-core").extensions.getByType<SourceSetContainer>().getByName("main")
+evaluationDependsOn(":invasion-core")
+val coreMainSourceSet = project(":invasion-core").extensions.getByType<SourceSetContainer>().getByName("main")
 
 java {
     toolchain.languageVersion.set(JavaLanguageVersion.of(17))
@@ -71,13 +71,9 @@ repositories {
 }
 
 dependencies {
-    implementation(project(":warband-core"))
+    implementation(project(":invasion-core"))
     minecraft("net.minecraftforge:forge:$minecraftVersion-$forgeVersion")
     implementation("thedarkcolour:kotlinforforge:$kotlinForForgeVersion")
-    compileOnly(fg.deobf("curse.maven:mantle-74924:7563777"))
-    compileOnly(fg.deobf("curse.maven:tinkers-construct-74072:7449219"))
-    runtimeOnly(fg.deobf("curse.maven:mantle-74924:7563777"))
-    runtimeOnly(fg.deobf("curse.maven:tinkers-construct-74072:7449219"))
     testImplementation(kotlin("test"))
 }
 
@@ -103,7 +99,7 @@ tasks.processResources {
 
 tasks.jar {
     from("src/compat/resources")
-    dependsOn(":warband-core:classes")
+    dependsOn(":invasion-core:classes")
     from(coreMainSourceSet.output)
     finalizedBy("reobfJar")
 }
@@ -124,7 +120,6 @@ val cleanGameTestWorld by tasks.registering(Delete::class) {
 tasks.withType<JavaExec>().configureEach {
     if (name == "runGameTestServer") {
         dependsOn(cleanGameTestWorld, syncGameTestStructures)
-        systemProperty("pillager_campaigns.catalogOutput", layout.buildDirectory.file("warband-catalog/live-catalog.json").get().asFile.absolutePath)
     }
 }
 
@@ -170,26 +165,11 @@ tasks.jacocoTestReport {
                         "**/PillagerCampaignsMod*",
                         "**/PillagerCampaignsEvents*",
                         "**/PillagerCampaignsConfig*",
-                        "**/PillagerCampaignCoordinator*",
-                        "**/WarbandCoreAdapter*",
-                        "**/PillagerRuntime*",
-                        "**/PillagerWarbandPresenceSystem*",
-                        "**/PillagerWarbandDiscoveryService*",
-                        "**/PillagerWarbandDiscoveryRules*",
-                        "**/SquadRoutePlanner*",
-                        "**/PillagerDiscoveryCoordinator*",
-                        "**/PillagerSpawnPlacementRules*",
-                        "**/EnvironmentSampler*",
-                        "**/TinkersArmoryOptimizer*",
-                        // Minecraft registry/projection adapters are exercised by Forge GameTests;
-                        // the JVM coverage gate measures runtime-independent logic and persistence.
-                        "**/WarbandResourceCatalog*",
-                        "**/PillagerFaction*",
-                        "**/PillagerOfficer*",
-                        "**/WarbandFormulaData*",
-                        "**/sim/WarbandScenarioMain*",
+                        "**/InvasionRuntime*",
+                        "**/PillagerWorldData*",
+                        "**/SurfaceGridSampler*",
+                        "**/InvasionRoster*",
                         "**/gametest/**",
-                        "**/sam/api/**",
                     )
                 }
             },
@@ -223,7 +203,7 @@ tasks.register("verifyFast") {
     group = "verification"
     description = "Runs the fast deterministic verification lane."
     dependsOn(tasks.named("check"))
-    dependsOn(":warband-core:check")
+    dependsOn(":invasion-core:check")
     dependsOn(":runner:test")
 }
 
@@ -234,8 +214,8 @@ tasks.register("verifyFull") {
     dependsOn(tasks.named("headlessGameTest"))
 }
 
-tasks.register("warbandCoreExperiment") {
+tasks.register("invasionCoreExperiment") {
     group = "application"
-    description = "Runs the deterministic Warband Core scenario inspector; this is not a Minecraft simulation."
+    description = "Runs the deterministic Invasion Core scenario inspector; this is not a Minecraft simulation."
     dependsOn(":runner:run")
 }

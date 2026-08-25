@@ -1,7 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
-- Repair solo pillager pressure by discovering strategic warbands without loading their rally chunks, guaranteeing bounded survival-player coverage, and allowing campaigns to target settled players proactively.
-- Defer warlord and garrison placement until a rally chunk is naturally loaded.
-- Normalize the project identity to `pillager-campaigns / pillager_campaigns (formerly pillagercampaigns)`; this is a clean break with no legacy aliases or migrations.
+- Replace the warband simulation with a minimal per-player Overworld invasion director.
+- Add guaranteed warning/cadence windows, bounded time-and-outcome scaling, and curated vanilla/optional pack squads.
+- Path immaterial approaches over a budgeted loaded/cached solid-surface graph before transactional materialization.
+- Remove factions, rallies, officers, garrisons, territory, economy, logistics, TConstruct armories, rewards, succession, tactical routing, and SAM integration.
+- Remove mandatory Mantle and TConstruct dependencies.
+- Intentionally reset pre-0.3 strategic saves into invasion schema 1.

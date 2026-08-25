@@ -25,7 +25,6 @@ class PillagerCampaignsMod {
 
     companion object {
         const val MOD_ID: String = "pillager_campaigns"
-        const val PATROL_TAG: String = "BoundToMatterPillagerCampaigns"
         val LOGGER: Logger = LogUtils.getLogger()
     }
 }

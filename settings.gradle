@@ -8,4 +8,4 @@ pluginManagement {
 }
 
 rootProject.name = "pillager-campaigns"
-include("warband-core", "runner")
+include("invasion-core", "runner")
