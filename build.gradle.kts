@@ -169,6 +169,7 @@ tasks.jacocoTestReport {
                         "**/PillagerWorldData*",
                         "**/SurfaceGridSampler*",
                         "**/InvasionRoster*",
+                        "**/api/CampaignStatusApi*",
                         "**/gametest/**",
                     )
                 }
