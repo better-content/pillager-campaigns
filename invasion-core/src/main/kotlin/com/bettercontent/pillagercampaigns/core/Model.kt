@@ -147,6 +147,7 @@ data class InvasionState(
     var strategicTravelMilliBlocks: Long = 0L,
     var strategicAtlasRevision: Long = -1L,
     var strategicFrontier: StrategicFrontier = StrategicFrontier.UNKNOWN,
+    var adminExpedited: Boolean = false,
 ) {
     val members: List<MemberPlan> get() = waves.flatMap(WavePlan::members)
     val threatBudget: Int get() = waves.sumOf(WavePlan::budget)
@@ -162,6 +163,7 @@ data class PlayerPressureTrack(
     var outcomeAdjustment: Int = 0,
     var invasion: InvasionState? = null,
     var joinedInvasionId: String? = null,
+    var expediteNextEncounter: EncounterKind? = null,
 )
 
 @Serializable
@@ -200,7 +202,11 @@ data class DirectorEffect(
 
 @Serializable
 sealed interface DirectorCommand {
-    @Serializable data class Force(val playerId: String, val kind: EncounterKind = EncounterKind.ASSAULT) : DirectorCommand
+    @Serializable data class Force(
+        val playerId: String,
+        val kind: EncounterKind = EncounterKind.ASSAULT,
+        val expediteTravel: Boolean = false,
+    ) : DirectorCommand
     @Serializable data class Reset(val playerId: String? = null) : DirectorCommand
 }
 

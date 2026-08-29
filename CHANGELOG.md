@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1
+
+- Add permission-gated immediate scout and assault commands for client/server validation without waiting through the authored cadence.
+- Keep forced encounters gated by recorded distant-terrain routing and normal materialization checks.
+- Add structured live encounter inspection for route, wave, roster, targeting, and provenance verification.
+
 ## 0.5.0
 
 - Dispatch immaterial scout and assault groups from deterministic origins 512–768 blocks away while preserving the existing arrival windows.

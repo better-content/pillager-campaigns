@@ -36,7 +36,8 @@ World saves use campaign schema 3. Schema-2 eligible clocks, cadence, sequence, 
 ## Commands
 
 - `/pillager_campaigns status [player]`
-- `/pillager_campaigns force [player]`
+- `/pillager_campaigns force [scout|assault] [player]` immediately exercises a real encounter while retaining distant-route and materialization safety checks
+- `/pillager_campaigns inspect [player]` reports the live encounter, wave, targeting, provenance, strategic route, and roster state
 - `/pillager_campaigns reset [player]`
 - `/pillager_campaigns export_runtime_spec`
 

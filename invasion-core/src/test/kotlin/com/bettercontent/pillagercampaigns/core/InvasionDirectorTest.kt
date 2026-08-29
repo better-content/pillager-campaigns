@@ -251,6 +251,35 @@ class InvasionDirectorTest {
         assertEquals(points.first(), track(engine).invasion!!.strategicOrigin)
     }
 
+    @Test fun `expedited admin encounters still require a known route and preserve its distant origin`() {
+        val travelRules = rules.copy(
+            strategicOriginMinimumBlocks = 5, strategicOriginMaximumBlocks = 6,
+            scoutStrategicMilliBlocksPerTick = 1_000,
+        )
+        val engine = InvasionDirector.create(78, InvasionRuntimeSpec.create(travelRules, roster))
+        engine.transition(DirectorFrame(0, commands = listOf(
+            DirectorCommand.Force("player", EncounterKind.SCOUT, expediteTravel = true),
+        )))
+        engine.transition(playerFrame(0))
+        val invasion = track(engine).invasion!!
+
+        val unknown = engine.transition(playerFrame(10))
+        assertEquals(InvasionPhase.APPROACHING, track(engine).invasion!!.phase)
+        assertTrue(unknown.effects.none { it.kind == EffectKind.MATERIALIZE },
+            "An expedited encounter must not invent a route across unknown terrain")
+
+        val points = (6 downTo 4).map { BlockPoint("minecraft:overworld", it, 64, 0) }
+        val routed = engine.transition(DirectorFrame(0, players = listOf(observation("player")), strategicRoutes = listOf(
+            StrategicRouteObservation("player", invasion.invasionId, invasion.routeTarget!!, 9, points, StrategicFrontier.OPEN),
+        )))
+        assertTrue(routed.effects.any { it.kind == EffectKind.MATERIALIZE })
+        val expedited = track(engine).invasion!!
+        assertEquals(points.first(), expedited.strategicOrigin)
+        assertEquals(points.last(), expedited.anchor)
+        assertEquals(points.lastIndex, expedited.strategicRouteIndex)
+        assertEquals(StrategicFrontier.OPEN, expedited.strategicFrontier)
+    }
+
     @Test fun `default distant origin corpus is deterministic and reaches the approach band`() {
         val target = BlockPoint("minecraft:overworld", 0, 64, 0)
         val recordedCorridor = (0..768).map { SurfaceCell(it, 64, 0) }

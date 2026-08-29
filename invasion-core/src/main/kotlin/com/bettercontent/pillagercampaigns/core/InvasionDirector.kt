@@ -90,7 +90,9 @@ class InvasionDirector private constructor(
             phase = InvasionPhase.APPROACHING,
             lastCombatTick = state.tick, routeTarget = primary.position,
             scheduledArrivalEligibleTick = due(track, kind),
+            adminExpedited = track.expediteNextEncounter == kind,
         )
+        if (invasion.adminExpedited) track.expediteNextEncounter = null
         track.invasion = invasion
         participants.filter { it.playerId != primary.playerId }.forEach { track(it.playerId).joinedInvasionId = id }
         if (kind == EncounterKind.SCOUT) {
@@ -154,6 +156,11 @@ class InvasionDirector private constructor(
         if (invasion.strategicRoute.isEmpty() || invasion.strategicFrontier == StrategicFrontier.UNKNOWN) return
         val speed = if (invasion.kind == EncounterKind.SCOUT) spec.rules.scoutStrategicMilliBlocksPerTick
             else spec.rules.assaultStrategicMilliBlocksPerTick
+        if (invasion.adminExpedited) {
+            invasion.strategicRouteIndex = invasion.strategicRoute.lastIndex
+            invasion.strategicPosition = invasion.strategicRoute.last()
+            invasion.scheduledArrivalEligibleTick = track.eligibleTicks
+        }
         invasion.strategicTravelMilliBlocks += elapsed * speed
         while (invasion.strategicTravelMilliBlocks >= 1_000L && invasion.strategicRouteIndex + 1 < invasion.strategicRoute.size) {
             invasion.strategicTravelMilliBlocks -= 1_000L
@@ -356,6 +363,7 @@ class InvasionDirector private constructor(
                 is DirectorCommand.Force -> track(command.playerId).let {
                     if (command.kind == EncounterKind.SCOUT) it.nextScoutEligibleTick = it.eligibleTicks
                     else it.nextAssaultEligibleTick = it.eligibleTicks
+                    if (command.expediteTravel) it.expediteNextEncounter = command.kind
                     events += event("forced", command.playerId, command.kind.name.lowercase())
                 }
                 is DirectorCommand.Reset -> if (command.playerId == null) {

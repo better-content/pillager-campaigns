@@ -190,8 +190,19 @@ object PillagerCampaignsEvents {
                 .executes { status(it.source, null) }
                 .then(Commands.argument("player", StringArgumentType.word()).executes { status(it.source, StringArgumentType.getString(it, "player")) }))
             .then(Commands.literal("force").requires { it.hasPermission(2) }
-                .executes { force(it.source, null) }
-                .then(Commands.argument("player", StringArgumentType.word()).executes { force(it.source, StringArgumentType.getString(it, "player")) }))
+                .executes { force(it.source, null, EncounterKind.ASSAULT) }
+                .then(Commands.literal("scout")
+                    .executes { force(it.source, null, EncounterKind.SCOUT) }
+                    .then(Commands.argument("player", StringArgumentType.word())
+                        .executes { force(it.source, StringArgumentType.getString(it, "player"), EncounterKind.SCOUT) }))
+                .then(Commands.literal("assault")
+                    .executes { force(it.source, null, EncounterKind.ASSAULT) }
+                    .then(Commands.argument("player", StringArgumentType.word())
+                        .executes { force(it.source, StringArgumentType.getString(it, "player"), EncounterKind.ASSAULT) })))
+            .then(Commands.literal("inspect").requires { it.hasPermission(2) }
+                .executes { inspect(it.source, null) }
+                .then(Commands.argument("player", StringArgumentType.word())
+                    .executes { inspect(it.source, StringArgumentType.getString(it, "player")) }))
             .then(Commands.literal("reset").requires { it.hasPermission(2) }
                 .executes { reset(it.source, null) }
                 .then(Commands.argument("player", StringArgumentType.word()).executes { reset(it.source, StringArgumentType.getString(it, "player")) }))
@@ -213,11 +224,33 @@ object PillagerCampaignsEvents {
         return Command.SINGLE_SUCCESS
     }
 
-    private fun force(source: CommandSourceStack, name: String?): Int {
+    private fun force(source: CommandSourceStack, name: String?, kind: EncounterKind): Int {
         val player = target(source, name)
         if (player == null) { source.sendFailure(Component.literal("Player is not online")); return 0 }
-        advance(source.server, 0L, listOf(DirectorCommand.Force(player.uuid.toString())))
-        source.sendSuccess({ Component.literal("Forced assault pressure for ${player.scoreboardName}") }, true)
+        advance(source.server, 0L, listOf(DirectorCommand.Force(player.uuid.toString(), kind, expediteTravel = true)))
+        source.sendSuccess({ Component.literal("Forced immediate ${kind.name.lowercase()} pressure for ${player.scoreboardName}; recorded distant routing is still required") }, true)
+        return Command.SINGLE_SUCCESS
+    }
+
+    private fun inspect(source: CommandSourceStack, name: String?): Int {
+        val player = target(source, name)
+        if (player == null) { source.sendFailure(Component.literal("Player is not online")); return 0 }
+        val track = PillagerWorldData.get(source.server).snapshot().tracks[player.uuid.toString()]
+        val invasion = track?.invasion
+        if (invasion == null) {
+            source.sendSuccess({ Component.literal("campaign_inspect player=${player.scoreboardName} encounter=none") }, false)
+            return Command.SINGLE_SUCCESS
+        }
+        val live = InvasionRuntime.liveMembers(source.server, invasion.invasionId)
+        val roster = live.mapNotNull { net.minecraftforge.registries.ForgeRegistries.ENTITY_TYPES.getKey(it.type)?.toString() }
+            .groupingBy { it }.eachCount().toSortedMap()
+            .entries.joinToString(",") { "${it.key}=${it.value}" }
+        val targeted = live.count { it.persistentData.hasUUID(InvasionRuntime.TARGET_TAG) &&
+            it.persistentData.getUUID(InvasionRuntime.TARGET_TAG) == player.uuid && it.target === player }
+        val provenanced = live.count { it.persistentData.getString(InvasionRuntime.INVASION_TAG) == invasion.invasionId &&
+            it.persistentData.getString(InvasionRuntime.MEMBER_TAG).isNotBlank() }
+        source.sendSuccess({ Component.literal(
+            "campaign_inspect player=${player.scoreboardName} encounter=${invasion.invasionId} kind=${invasion.kind.name.lowercase()} phase=${invasion.phase.name.lowercase()} wave=${invasion.currentWave + 1}/${invasion.waves.size} planned=${invasion.waves[invasion.currentWave].members.size} queued=${invasion.waves[invasion.currentWave].queuedMembers} materialized=${invasion.waves[invasion.currentWave].materializedMembers} live=${live.size} targeted=$targeted provenanced=$provenanced frontier=${invasion.strategicFrontier.name.lowercase()} origin=${invasion.strategicOrigin} anchor=${invasion.anchor} roster=[$roster]") }, false)
         return Command.SINGLE_SUCCESS
     }
 
