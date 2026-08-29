@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0
+
+- Dispatch immaterial scout and assault groups from deterministic origins 512–768 blocks away while preserving the existing arrival windows.
+- Persist a compact surface atlas from genuinely loaded chunks and route over that record without loading, ticketing, or generating terrain.
+- Treat missing terrain as blocked, route around known terrain where possible, and stop at the exterior of known sealed walls or unwalkable cliffs.
+- Materialize only into exact connected exterior positions; require a complete real path for open approaches and permit an unreachable real path only for a known defensive frontier.
+- Migrate schema-2 clocks and outcomes to schema 3 while clearing active legacy near-player encounters.
+- Add fixed-point travel, wall, cliff, unknown-terrain, cadence, actual-unload, sealed-base, real-mob, targeting, and provenance proofs.
+
 ## 0.4.0
 
 - Split surface pressure into silent 6–12 minute scouts and warned 60–120 minute three-wave assaults.

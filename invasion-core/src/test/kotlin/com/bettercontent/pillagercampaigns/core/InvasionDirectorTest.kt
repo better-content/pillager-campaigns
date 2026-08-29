@@ -80,16 +80,17 @@ class InvasionDirectorTest {
         assertTrue(retiring.effects.any { it.kind == EffectKind.RETIRE })
     }
 
-    @Test fun `assault warns for surface time then uses three progress-gated waves`() {
+    @Test fun `assault warning is tied to arrival and uses three progress-gated waves`() {
         val engine = InvasionDirector.create(3, fixedSpec())
         val forced = engine.transition(DirectorFrame(0, commands = listOf(DirectorCommand.Force("player", EncounterKind.ASSAULT))))
         assertTrue(forced.events.any { it.type == "forced" })
-        val warned = engine.transition(playerFrame(0))
-        val warn = warned.effects.single { it.kind == EffectKind.WARN }
-        engine.transition(playerFrame(0, results = listOf(EffectResult(warn.effectId))))
-        engine.transition(playerFrame(19, surfaces = listOf(grid())))
-        assertTrue(engine.snapshot().pendingEffects.values.none { it.kind == EffectKind.MATERIALIZE })
-        engine.transition(playerFrame(1, surfaces = listOf(grid())))
+        val dispatched = engine.transition(playerFrame(0))
+        assertTrue(dispatched.effects.none { it.kind == EffectKind.WARN },
+            "An assault with no known route must not warn and then stall indefinitely")
+        val arrived = engine.transition(playerFrame(19, surfaces = listOf(grid())))
+        assertTrue(arrived.effects.any { it.kind == EffectKind.WARN })
+        assertTrue(arrived.effects.any { it.kind == EffectKind.MATERIALIZE })
+        acknowledge(engine, arrived)
         drainWave(engine)
         var invasion = track(engine).invasion!!
         assertEquals(0, invasion.currentWave)
@@ -159,8 +160,8 @@ class InvasionDirectorTest {
         val far = listOf(observation("a", 0, low = true), observation("b", 100))
         var transition = engine.transition(DirectorFrame(0, players = far))
         acknowledge(engine, transition)
-        engine.transition(DirectorFrame(20, players = far, surfaces = listOf(grid("a", 0), grid("b", 100))))
-        transition = engine.transition(DirectorFrame(0, players = far, liveCampaignMobs = 90, secondSpawnCount = 20))
+        transition = engine.transition(DirectorFrame(20, players = far,
+            surfaces = listOf(grid("a", 0), grid("b", 100)), liveCampaignMobs = 90, secondSpawnCount = 20))
         assertTrue(transition.effects.filter { it.kind == EffectKind.MATERIALIZE }.sumOf { it.members.size } <= 4)
         acknowledge(engine, transition)
         val served = mutableSetOf<String>()
@@ -200,6 +201,69 @@ class InvasionDirectorTest {
         assertNull(SurfaceApproach.choose(open.filter { it.x !in -1..1 }, target, rules, 1))
         assertNull(SurfaceApproach.choose(open.map { if (kotlin.math.abs(it.x) == 1) it.copy(bodyY = 68) else it }, target, rules, 1))
         assertNull(SurfaceApproach.choose(open.map { it.copy(passable = false) }, target, rules, 1))
+    }
+
+    @Test fun `strategic routing starts far away respects cliffs walls and unknown terrain`() {
+        val strategicRules = rules.copy(
+            strategicOriginMinimumBlocks = 8, strategicOriginMaximumBlocks = 10,
+            strategicMaximumSearchExpansions = 2_000,
+        )
+        val target = BlockPoint("minecraft:overworld", 0, 64, 0)
+        val open = (0..10).flatMap { x -> (-2..2).map { z -> SurfaceCell(x, 64, z) } }
+        val route = assertNotNull(StrategicRoutePlanner.plan(open, target, strategicRules, 9))
+        assertEquals(StrategicFrontier.OPEN, route.frontier)
+        assertTrue(maxOf(kotlin.math.abs(route.route.first().x), kotlin.math.abs(route.route.first().z)) in 8..10)
+        assertTrue(maxOf(kotlin.math.abs(route.route.last().x), kotlin.math.abs(route.route.last().z)) in 2..4)
+
+        val sealed = open.map { if (it.x == 1) it.copy(passable = false) else it }
+        val defense = assertNotNull(StrategicRoutePlanner.plan(sealed, target, strategicRules, 9))
+        assertEquals(StrategicFrontier.DEFENSE, defense.frontier)
+        assertTrue(defense.route.last().x >= 2, "A sealed target must leave the materialization point outside")
+
+        val cliff = open.map { if (it.x in -1..1) it.copy(bodyY = 72) else it }
+        val cliffRoute = assertNotNull(StrategicRoutePlanner.plan(cliff, target, strategicRules, 9))
+        assertEquals(StrategicFrontier.DEFENSE, cliffRoute.frontier)
+
+        val incomplete = open.filter { it.x >= 3 }
+        assertNull(StrategicRoutePlanner.plan(incomplete, target, strategicRules, 9),
+            "Missing never-recorded terrain must block rather than be guessed")
+    }
+
+    @Test fun `immaterial travel uses fixed point speed and cadence remains an arrival window`() {
+        val travelRules = rules.copy(
+            strategicOriginMinimumBlocks = 5, strategicOriginMaximumBlocks = 6,
+            scoutStrategicMilliBlocksPerTick = 1_000,
+        )
+        val engine = InvasionDirector.create(77, InvasionRuntimeSpec.create(travelRules, roster))
+        engine.transition(playerFrame(94))
+        val invasion = track(engine).invasion!!
+        assertEquals(100, invasion.scheduledArrivalEligibleTick)
+        val points = (6 downTo 4).map { BlockPoint("minecraft:overworld", it, 64, 0) }
+        engine.transition(DirectorFrame(0, players = listOf(observation("player")), strategicRoutes = listOf(
+            StrategicRouteObservation("player", invasion.invasionId, invasion.routeTarget!!, 4, points, StrategicFrontier.OPEN),
+        )))
+        engine.transition(playerFrame(2))
+        assertEquals(points.last(), track(engine).invasion!!.strategicPosition)
+        assertEquals(InvasionPhase.APPROACHING, track(engine).invasion!!.phase,
+            "An early route arrival must wait for the authored encounter cadence")
+        val arrival = engine.transition(playerFrame(4))
+        assertTrue(arrival.effects.any { it.kind == EffectKind.MATERIALIZE })
+        assertEquals(points.first(), track(engine).invasion!!.strategicOrigin)
+    }
+
+    @Test fun `default distant origin corpus is deterministic and reaches the approach band`() {
+        val target = BlockPoint("minecraft:overworld", 0, 64, 0)
+        val recordedCorridor = (0..768).map { SurfaceCell(it, 64, 0) }
+        fun corpus() = (0L..1_023L).map { seed ->
+            assertNotNull(StrategicRoutePlanner.plan(recordedCorridor, target, InvasionRules(), seed))
+        }
+        val first = corpus()
+        assertEquals(first, corpus())
+        first.forEach { result ->
+            assertTrue(result.route.first().x in 512..768)
+            assertTrue(result.route.last().x in 48..72)
+            assertEquals(StrategicFrontier.OPEN, result.frontier)
+        }
     }
 
     @Test fun `restore is exact schema is strict and invalid inputs fail closed`() {

@@ -2,7 +2,7 @@
 
 Pillager Campaigns is a server-side Minecraft Forge mod for Minecraft 1.20.1. It supplies frequent overland scout pressure and sparse, warned pillager assaults for Survival players.
 
-Each player has independent eligible-time clocks: scouts arrive every 6–12 minutes with 3–6 members and withdraw after two active minutes; assaults arrive every 60–120 minutes, warn for two surface minutes, then deliver three progress-gated waves of 8–12 members for one player. Nearby players within 64 blocks share one scaled encounter. Pressure follows current players rather than bases.
+Each player has independent eligible-time clocks: scouts arrive every 6–12 minutes with 3–6 members and withdraw after two active minutes; assaults arrive every 60–120 minutes, warn two surface minutes before arrival, then deliver three progress-gated waves of 8–12 members for one player. Nearby players within 64 blocks share one scaled encounter. Groups dispatch early from 512–768 blocks away so those windows remain arrival windows, then move immaterially at 1.6 blocks/second for scouts or 1 block/second for assaults.
 
 ## Development
 
@@ -25,13 +25,13 @@ Export the exact available roster and scalar rules from a running instance with 
 
 ## Architecture
 
-- `invasion-core/` owns both clocks, grouping, wave budgets, roster composition, loaded-surface traversal, caps, lifecycle, persistence shapes, and the durable effect outbox.
+- `invasion-core/` owns both clocks, grouping, wave budgets, roster composition, deterministic strategic traversal, caps, lifecycle, persistence shapes, and the durable effect outbox.
 - `runner/` executes the exact compiled Core against synthetic observations and writes the hard readiness report.
-- `src/main/kotlin/com/bettercontent/pillagercampaigns/` observes loaded Minecraft terrain, executes warning/materialize/retire effects, persists the Core snapshot, and maintains native mob targeting.
+- `src/main/kotlin/com/bettercontent/pillagercampaigns/` records genuinely loaded Minecraft terrain, executes warning/materialize/retire effects, persists the Core snapshot and terrain atlas, and maintains native mob targeting.
 
-The surface graph uses a solid floor, two blocks of clearance, one-block ascent, two-block descent, and no traversal through unknown cells. Forge reads only `getChunkNow`. A route must connect from 48–72 blocks away to within 12 blocks of the target. Immediately before spawning, every chunk in the bounded route/navigation region must still be loaded and the real entity path must report `canReach()`. No chunk is loaded, generated, or ticketed on behalf of a campaign.
+The atlas stores a compact surface column for chunks that normal play has loaded. The graph requires a solid floor, two blocks of clearance, one-block ascent, two-block descent, and never traverses unknown cells. Forge reads live terrain only with `getChunkNow`; no campaign route loads, generates, or tickets a chunk. Open routes are proved from a 512–768-block origin through recorded terrain and stop in the 48–72-block materialization band. A known wall or cliff instead produces an exterior defensive frontier. Exact placement uses only connected exterior columns, and real mob navigation must agree: `canReach()` for open routes, unreachable for a defensive frontier.
 
-World saves use campaign schema 2. Schema-1 invasion state is intentionally discarded once because it cannot represent independent scout/assault clocks or waves.
+World saves use campaign schema 3. Schema-2 eligible clocks, cadence, sequence, and outcome adjustment migrate, while active schema-2 encounters are cleared because they have no distant origin or strategic position.
 
 ## Commands
 

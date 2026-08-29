@@ -1,6 +1,10 @@
 package com.bettercontent.pillagercampaigns.system
 
-import com.bettercontent.pillagercampaigns.core.RecruitRole
+import com.bettercontent.pillagercampaigns.core.*
+import com.bettercontent.pillagercampaigns.data.PillagerWorldData
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import net.minecraft.nbt.CompoundTag
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -30,5 +34,25 @@ class InvasionForgeRulesTest {
         assertEquals(0 to 0, offsets.first())
         assertEquals(25, offsets.size)
         assertEquals(9, offsets.takeWhile { maxOf(kotlin.math.abs(it.first), kotlin.math.abs(it.second)) <= 1 }.size)
+    }
+
+    @Test fun `schema two migration preserves pressure clocks but clears active legacy encounters`() {
+        val track = PlayerPressureTrack("player", eligibleTicks = 12_345, nextScoutEligibleTick = 20_000,
+            nextAssaultEligibleTick = 90_000, encounterSequence = 7, outcomeAdjustment = 2,
+            invasion = InvasionState("legacy", EncounterKind.SCOUT, "player", listOf("player"), 2,
+                listOf(WavePlan(0, 3, listOf(MemberPlan("member", "minecraft:pillager", 2))))))
+        val old = DirectorSnapshot(schemaVersion = 2, worldSeed = 41, tracks = linkedMapOf("player" to track))
+        val tag = CompoundTag().also {
+            it.putInt("schema", 2)
+            it.putString("runtimeRevision", "legacy")
+            it.putString("snapshot", Json { encodeDefaults = true }.encodeToString(old))
+        }
+        val migrated = PillagerWorldData.load(tag, 41).snapshot().tracks.getValue("player")
+        assertEquals(12_345, migrated.eligibleTicks)
+        assertEquals(20_000, migrated.nextScoutEligibleTick)
+        assertEquals(90_000, migrated.nextAssaultEligibleTick)
+        assertEquals(7, migrated.encounterSequence)
+        assertEquals(2, migrated.outcomeAdjustment)
+        assertTrue(migrated.invasion == null && migrated.joinedInvasionId == null)
     }
 }

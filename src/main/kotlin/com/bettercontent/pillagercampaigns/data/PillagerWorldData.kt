@@ -60,15 +60,27 @@ class PillagerWorldData private constructor(private var restored: DirectorSnapsh
         }
 
         internal fun load(tag: CompoundTag, worldSeed: Long): PillagerWorldData {
-            if (tag.getInt("schema") != DirectorSnapshot.CURRENT_SCHEMA_VERSION || !tag.contains("snapshot")) {
-                if (!tag.isEmpty) PillagerCampaignsMod.LOGGER.warn("Discarding schema-1 Pillager Campaigns state; independent scout and assault clocks start fresh in schema 2")
+            val schema = tag.getInt("schema")
+            if (schema !in 2..DirectorSnapshot.CURRENT_SCHEMA_VERSION || !tag.contains("snapshot")) {
+                if (!tag.isEmpty) PillagerCampaignsMod.LOGGER.warn("Discarding unsupported Pillager Campaigns state schema {}", schema)
                 return PillagerWorldData(DirectorSnapshot(worldSeed = worldSeed))
             }
-            val snapshot = runCatching { JSON.decodeFromString<DirectorSnapshot>(tag.getString("snapshot")) }
+            var snapshot = runCatching { JSON.decodeFromString<DirectorSnapshot>(tag.getString("snapshot")) }
                 .getOrElse { error ->
                     PillagerCampaignsMod.LOGGER.error("Invalid Pillager Campaigns invasion state; starting fresh", error)
                     DirectorSnapshot(worldSeed = worldSeed)
                 }
+            if (schema == 2) {
+                snapshot = snapshot.copy(schemaVersion = DirectorSnapshot.CURRENT_SCHEMA_VERSION,
+                    pendingEffects = linkedMapOf()).also { migrated ->
+                    migrated.tracks.values.forEach { track ->
+                        track.invasion = null
+                        track.joinedInvasionId = null
+                    }
+                }
+                PillagerCampaignsMod.LOGGER.warn(
+                    "Migrated Pillager Campaigns schema 2 clocks to schema 3; active near-player campaigns were cleared")
+            }
             return PillagerWorldData(snapshot).also { it.runtimeRevision = tag.getString("runtimeRevision").ifBlank { "unresolved" } }
         }
 

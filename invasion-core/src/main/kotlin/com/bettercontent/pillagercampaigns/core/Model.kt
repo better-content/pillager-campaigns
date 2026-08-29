@@ -29,6 +29,11 @@ data class InvasionRules(
     val approachMaximumBlocks: Int = 72,
     val approachTargetRadiusBlocks: Int = 12,
     val maximumSearchExpansions: Int = 4_096,
+    val strategicOriginMinimumBlocks: Int = 512,
+    val strategicOriginMaximumBlocks: Int = 768,
+    val strategicMaximumSearchExpansions: Int = 262_144,
+    val scoutStrategicMilliBlocksPerTick: Int = 80,
+    val assaultStrategicMilliBlocksPerTick: Int = 50,
     val globalCampaignMobCap: Int = 96,
     val maximumSpawnsPerTick: Int = 8,
     val maximumSpawnsPerSecond: Int = 24,
@@ -44,6 +49,9 @@ data class InvasionRules(
         require(groupRadiusBlocks > 0 && assaultWaves == 3 && waveProgressTimeoutTicks > 0)
         require(scoutActiveTicks > 0 && assaultActiveTicks > 0 && activeIdleTicks > 0 && targetUnavailableTicks > 0)
         require(approachMinimumBlocks in 1..approachMaximumBlocks && approachTargetRadiusBlocks > 0 && maximumSearchExpansions > 0)
+        require(strategicOriginMinimumBlocks > approachMaximumBlocks)
+        require(strategicOriginMinimumBlocks <= strategicOriginMaximumBlocks && strategicMaximumSearchExpansions > 0)
+        require(scoutStrategicMilliBlocksPerTick > 0 && assaultStrategicMilliBlocksPerTick > 0)
         require(globalCampaignMobCap > 0 && maximumSpawnsPerTick > 0 && maximumSpawnsPerSecond >= maximumSpawnsPerTick)
         require(normalPacketSpacingTicks > 0)
     }
@@ -68,6 +76,18 @@ data class RecruitSpec(
 data class SurfaceCell(val x: Int, val bodyY: Int, val z: Int, val passable: Boolean = true)
 
 @Serializable data class SurfaceGridObservation(val playerId: String, val cells: List<SurfaceCell>, val complete: Boolean = false)
+
+@Serializable enum class StrategicFrontier { OPEN, DEFENSE, UNKNOWN }
+
+@Serializable
+data class StrategicRouteObservation(
+    val playerId: String,
+    val invasionId: String,
+    val target: BlockPoint,
+    val atlasRevision: Long,
+    val route: List<BlockPoint>,
+    val frontier: StrategicFrontier,
+)
 
 @Serializable
 data class PlayerObservation(
@@ -118,6 +138,15 @@ data class InvasionState(
     var anchor: BlockPoint? = null,
     val usedAnchors: MutableList<BlockPoint> = mutableListOf(),
     var pendingOutcome: InvasionOutcome? = null,
+    var scheduledArrivalEligibleTick: Long = 0L,
+    var warningIssued: Boolean = false,
+    var strategicOrigin: BlockPoint? = null,
+    var strategicPosition: BlockPoint? = null,
+    var strategicRoute: MutableList<BlockPoint> = mutableListOf(),
+    var strategicRouteIndex: Int = 0,
+    var strategicTravelMilliBlocks: Long = 0L,
+    var strategicAtlasRevision: Long = -1L,
+    var strategicFrontier: StrategicFrontier = StrategicFrontier.UNKNOWN,
 ) {
     val members: List<MemberPlan> get() = waves.flatMap(WavePlan::members)
     val threatBudget: Int get() = waves.sumOf(WavePlan::budget)
@@ -145,7 +174,7 @@ data class DirectorSnapshot(
     val tracks: MutableMap<String, PlayerPressureTrack> = linkedMapOf(),
     val pendingEffects: MutableMap<String, DirectorEffect> = linkedMapOf(),
 ) {
-    companion object { const val CURRENT_SCHEMA_VERSION: Int = 2 }
+    companion object { const val CURRENT_SCHEMA_VERSION: Int = 3 }
 }
 
 @Serializable enum class EffectKind { WARN, MATERIALIZE, RETIRE }
@@ -161,6 +190,7 @@ data class DirectorEffect(
     val anchor: BlockPoint? = null,
     val members: List<MemberPlan> = emptyList(),
     val participantPlayerIds: List<String> = emptyList(),
+    val strategicFrontier: StrategicFrontier = StrategicFrontier.OPEN,
 )
 
 @Serializable data class EffectResult(val effectId: String, val successful: Boolean = true)
@@ -186,6 +216,7 @@ data class DirectorFrame(
     val commands: List<DirectorCommand> = emptyList(),
     val liveCampaignMobs: Int = 0,
     val secondSpawnCount: Int = 0,
+    val strategicRoutes: List<StrategicRouteObservation> = emptyList(),
 )
 
 data class DirectorTransition(val events: List<DirectorEvent>, val effects: List<DirectorEffect>)

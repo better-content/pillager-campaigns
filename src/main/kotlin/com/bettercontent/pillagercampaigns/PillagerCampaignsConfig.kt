@@ -34,7 +34,7 @@ object PillagerCampaignsConfig {
         enabled = b.define("enabled", true)
         disableVanillaPatrolSpawning = b.define("disable_vanilla_patrol_spawning", true)
         intervalTicks = b.defineInRange("interval_ticks", 20, 1, 1_200)
-        surfaceSampleBudget = b.comment("Loaded columns inspected per scheduler pass. This never loads or tickets a chunk.")
+        surfaceSampleBudget = b.comment("Retained compatibility key from 0.4; strategic routing now uses the persistent loaded-terrain atlas.")
             .defineInRange("surface_sample_budget", 16_384, 64, 65_536)
         b.pop()
 

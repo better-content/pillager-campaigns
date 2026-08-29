@@ -19,6 +19,7 @@ class InvasionDirector private constructor(
         applyCommands(frame.commands, events)
         applyEffectResults(frame.effectResults, events)
         mergeSurfaces(frame.surfaces)
+        mergeStrategicRoutes(frame.strategicRoutes)
         state.tick += frame.elapsedTicks
         val players = frame.players.associateBy(PlayerObservation::playerId)
         players.values.sortedBy(PlayerObservation::playerId).forEach { player ->
@@ -41,10 +42,13 @@ class InvasionDirector private constructor(
         fun candidates(kind: EncounterKind) = available.filter { player ->
             val track = track(player.playerId)
             track.invasion == null && track.joinedInvasionId == null &&
-                track.eligibleTicks >= due(track, kind) - warning(kind)
+                track.eligibleTicks >= due(track, kind) - dispatchLead(kind)
         }.sortedWith(compareBy<PlayerObservation> { due(track(it.playerId), kind) - track(it.playerId).eligibleTicks }
             .thenBy { it.playerId })
-        for (kind in listOf(EncounterKind.ASSAULT, EncounterKind.SCOUT)) {
+        val kindOrder = listOf(EncounterKind.SCOUT, EncounterKind.ASSAULT).sortedBy { kind ->
+            available.minOfOrNull { due(track(it.playerId), kind) } ?: Long.MAX_VALUE
+        }
+        for (kind in kindOrder) {
             val remaining = candidates(kind).toMutableList()
             while (remaining.isNotEmpty()) {
                 val primary = remaining.removeAt(0)
@@ -83,17 +87,16 @@ class InvasionDirector private constructor(
             invasionId = id, kind = kind, targetPlayerId = primary.playerId,
             participantPlayerIds = participants.map(PlayerObservation::playerId).sorted(),
             intensity = intensity, waves = waves,
-            phase = if (kind == EncounterKind.ASSAULT) InvasionPhase.WARNED else InvasionPhase.APPROACHING,
+            phase = InvasionPhase.APPROACHING,
             lastCombatTick = state.tick, routeTarget = primary.position,
+            scheduledArrivalEligibleTick = due(track, kind),
         )
         track.invasion = invasion
         participants.filter { it.playerId != primary.playerId }.forEach { track(it.playerId).joinedInvasionId = id }
-        if (kind == EncounterKind.ASSAULT) {
-            publish(DirectorEffect("", EffectKind.WARN, primary.playerId, id, kind,
-                participantPlayerIds = invasion.participantPlayerIds))
-            events += event("assault_warned", id, "intensity=$intensity players=${participants.size} wave_size=$size")
-        } else {
+        if (kind == EncounterKind.SCOUT) {
             events += event("scout_started", id, "intensity=$intensity players=${participants.size} members=$size")
+        } else {
+            events += event("assault_dispatched", id, "intensity=$intensity players=${participants.size} wave_size=$size")
         }
     }
 
@@ -114,19 +117,22 @@ class InvasionDirector private constructor(
             if (target?.position != null && invasion.routeTarget?.let { moved(it, target.position) } == true) {
                 invasion.routeTarget = target.position
                 invasion.anchor = null
-                invasion.observedCells.clear()
-                invasion.surfaceObservationComplete = false
-                if (invasion.phase != InvasionPhase.WARNED) invasion.phase = InvasionPhase.APPROACHING
+                invasion.strategicRoute.clear()
+                invasion.strategicRouteIndex = 0
+                invasion.strategicFrontier = StrategicFrontier.UNKNOWN
+                invasion.phase = InvasionPhase.APPROACHING
+            }
+            if (invasion.kind == EncounterKind.ASSAULT && !invasion.warningIssued && shouldWarn(track, invasion) &&
+                target?.surfaceEligible == true && available) {
+                publish(DirectorEffect("", EffectKind.WARN, invasion.targetPlayerId, invasion.invasionId, invasion.kind,
+                    participantPlayerIds = invasion.participantPlayerIds))
+                invasion.warningIssued = true
+                events += event("assault_warned", invasion.invasionId)
             }
             when (invasion.phase) {
-                InvasionPhase.WARNED -> if (target?.surfaceEligible == true && available &&
-                    state.pendingEffects.values.none { it.invasionId == invasion.invasionId && it.kind == EffectKind.WARN }) {
-                    invasion.warningSurfaceTicks += elapsed
-                    if (invasion.warningSurfaceTicks >= spec.rules.assaultWarningSurfaceTicks)
-                        invasion.phase = InvasionPhase.APPROACHING
-                }
+                InvasionPhase.WARNED -> invasion.phase = InvasionPhase.APPROACHING
                 InvasionPhase.APPROACHING, InvasionPhase.READY_TO_MATERIALIZE ->
-                    if (target?.surfaceEligible == true && available) locate(invasion, target, events)
+                    if (target?.surfaceEligible == true && available) advanceStrategic(track, invasion, elapsed, events)
                 InvasionPhase.ACTIVE -> {
                     invasion.activeTicks += elapsed
                     val hardLimit = if (invasion.kind == EncounterKind.SCOUT) spec.rules.scoutActiveTicks else spec.rules.assaultActiveTicks
@@ -139,21 +145,29 @@ class InvasionDirector private constructor(
         }
     }
 
-    private fun locate(invasion: InvasionState, target: PlayerObservation, events: MutableList<DirectorEvent>) {
-        if (invasion.anchor != null || !invasion.surfaceObservationComplete) return
-        val position = target.position ?: return
-        val unused = invasion.observedCells.values.filter { cell ->
-            invasion.usedAnchors.none { it.x == cell.x && it.z == cell.z }
+    private fun advanceStrategic(
+        track: PlayerPressureTrack,
+        invasion: InvasionState,
+        elapsed: Long,
+        events: MutableList<DirectorEvent>,
+    ) {
+        if (invasion.strategicRoute.isEmpty() || invasion.strategicFrontier == StrategicFrontier.UNKNOWN) return
+        val speed = if (invasion.kind == EncounterKind.SCOUT) spec.rules.scoutStrategicMilliBlocksPerTick
+            else spec.rules.assaultStrategicMilliBlocksPerTick
+        invasion.strategicTravelMilliBlocks += elapsed * speed
+        while (invasion.strategicTravelMilliBlocks >= 1_000L && invasion.strategicRouteIndex + 1 < invasion.strategicRoute.size) {
+            invasion.strategicTravelMilliBlocks -= 1_000L
+            invasion.strategicRouteIndex++
+            invasion.strategicPosition = invasion.strategicRoute[invasion.strategicRouteIndex]
         }
-        val seed = stableSeed(state.worldSeed, invasion.invasionId, invasion.currentWave)
-        val anchor = SurfaceApproach.choose(unused, position, spec.rules, seed)
-            ?: SurfaceApproach.choose(invasion.observedCells.values, position, spec.rules, seed)
-            ?: return
-        invasion.anchor = BlockPoint(position.dimension, anchor.x, anchor.bodyY, anchor.z)
-        invasion.usedAnchors += invasion.anchor!!
-        invasion.routeTarget = position
+        if (invasion.strategicRouteIndex + 1 < invasion.strategicRoute.size ||
+            track.eligibleTicks < invasion.scheduledArrivalEligibleTick) return
+        val anchor = invasion.strategicPosition ?: return
+        invasion.anchor = anchor
+        if (invasion.usedAnchors.none { it.x == anchor.x && it.z == anchor.z }) invasion.usedAnchors += anchor
         invasion.phase = InvasionPhase.READY_TO_MATERIALIZE
-        events += event("route_ready", invasion.invasionId, "${anchor.x},${anchor.bodyY},${anchor.z}")
+        events += event("route_ready", invasion.invasionId,
+            "${anchor.x},${anchor.y},${anchor.z} frontier=${invasion.strategicFrontier.name.lowercase()}")
     }
 
     private fun issuePackets(players: Map<String, PlayerObservation>, frame: DirectorFrame, events: MutableList<DirectorEvent>) {
@@ -180,7 +194,8 @@ class InvasionDirector private constructor(
             val spacing = spec.rules.normalPacketSpacingTicks * if (chooseTarget(invasion, players)?.lowHealth == true) 3L else 1L
             invasion.nextPacketTick = state.tick + spacing
             publish(DirectorEffect("", EffectKind.MATERIALIZE, invasion.targetPlayerId, invasion.invasionId,
-                invasion.kind, invasion.currentWave, invasion.anchor, members, invasion.participantPlayerIds))
+                invasion.kind, invasion.currentWave, invasion.anchor, members, invasion.participantPlayerIds,
+                invasion.strategicFrontier))
             capacity -= members.size
             events += event("packet_queued", invasion.invasionId, "wave=${invasion.currentWave} members=${members.size}")
         }
@@ -196,10 +211,7 @@ class InvasionDirector private constructor(
         if (!ready) return
         if (invasion.currentWave + 1 < invasion.waves.size) {
             invasion.currentWave++
-            invasion.anchor = null
-            invasion.observedCells.clear()
-            invasion.surfaceObservationComplete = false
-            invasion.phase = InvasionPhase.APPROACHING
+            invasion.phase = InvasionPhase.READY_TO_MATERIALIZE
             events += event("wave_advanced", invasion.invasionId, "wave=${invasion.currentWave}")
         }
     }
@@ -223,8 +235,9 @@ class InvasionDirector private constructor(
                     } else {
                         wave.queuedMembers = (wave.queuedMembers - effect.members.size).coerceAtLeast(wave.materializedMembers)
                         invasion.anchor = null
-                        invasion.observedCells.clear()
-                        invasion.surfaceObservationComplete = false
+                        invasion.strategicRoute.clear()
+                        invasion.strategicRouteIndex = 0
+                        invasion.strategicFrontier = StrategicFrontier.UNKNOWN
                         invasion.phase = InvasionPhase.APPROACHING
                         events += event("materialization_failed", invasion.invasionId)
                     }
@@ -241,7 +254,41 @@ class InvasionDirector private constructor(
                 if (observation.complete) invasion.observedCells.clear()
                 observation.cells.forEach { invasion.observedCells[cellKey(it.x, it.z)] = it }
                 invasion.surfaceObservationComplete = invasion.surfaceObservationComplete || observation.complete
+                // Explicit complete grids remain a compact harness input. Production supplies persisted
+                // strategic routes instead, so this cannot bypass the unloaded-terrain atlas in game.
+                if (observation.complete && invasion.strategicRoute.isEmpty()) {
+                    val target = invasion.routeTarget ?: return@let
+                    val anchor = SurfaceApproach.choose(observation.cells, target, spec.rules,
+                        stableSeed(state.worldSeed, invasion.invasionId, invasion.currentWave)) ?: return@let
+                    val point = BlockPoint(target.dimension, anchor.x, anchor.bodyY, anchor.z)
+                    invasion.strategicOrigin = point
+                    invasion.strategicPosition = point
+                    invasion.strategicRoute = mutableListOf(point)
+                    invasion.strategicFrontier = StrategicFrontier.OPEN
+                }
             }
+        }
+    }
+
+    private fun mergeStrategicRoutes(observations: List<StrategicRouteObservation>) {
+        observations.sortedBy(StrategicRouteObservation::invasionId).forEach { observation ->
+            val invasion = track(observation.playerId).invasion ?: return@forEach
+            if (invasion.invasionId != observation.invasionId || invasion.phase != InvasionPhase.APPROACHING) return@forEach
+            if (observation.target != invasion.routeTarget) return@forEach
+            if (observation.route.isEmpty()) {
+                invasion.strategicRoute.clear()
+                invasion.strategicRouteIndex = 0
+                invasion.strategicAtlasRevision = observation.atlasRevision
+                invasion.strategicFrontier = StrategicFrontier.UNKNOWN
+                return@forEach
+            }
+            invasion.strategicRoute = observation.route.toMutableList()
+            invasion.strategicRouteIndex = 0
+            if (invasion.strategicOrigin == null) invasion.strategicOrigin = observation.route.first()
+            invasion.strategicPosition = observation.route.first()
+            invasion.strategicTravelMilliBlocks = 0L
+            invasion.strategicAtlasRevision = observation.atlasRevision
+            invasion.strategicFrontier = observation.frontier
         }
     }
 
@@ -341,7 +388,20 @@ class InvasionDirector private constructor(
         if (kind == EncounterKind.SCOUT) track.nextScoutEligibleTick = due else track.nextAssaultEligibleTick = due
     }
 
-    private fun warning(kind: EncounterKind) = if (kind == EncounterKind.ASSAULT) spec.rules.assaultWarningSurfaceTicks else 0
+    private fun dispatchLead(kind: EncounterKind): Long {
+        val speed = if (kind == EncounterKind.SCOUT) spec.rules.scoutStrategicMilliBlocksPerTick
+            else spec.rules.assaultStrategicMilliBlocksPerTick
+        return (spec.rules.strategicOriginMaximumBlocks * 1_000L + speed - 1L) / speed
+    }
+    private fun shouldWarn(track: PlayerPressureTrack, invasion: InvasionState): Boolean {
+        if (invasion.strategicRoute.isEmpty() || invasion.strategicFrontier == StrategicFrontier.UNKNOWN) return false
+        val speed = spec.rules.assaultStrategicMilliBlocksPerTick
+        val remainingEdges = (invasion.strategicRoute.lastIndex - invasion.strategicRouteIndex).coerceAtLeast(0)
+        val remainingMilliBlocks = (remainingEdges * 1_000L - invasion.strategicTravelMilliBlocks).coerceAtLeast(0L)
+        val remainingTicks = (remainingMilliBlocks + speed - 1L) / speed
+        val predictedArrival = maxOf(invasion.scheduledArrivalEligibleTick, track.eligibleTicks + remainingTicks)
+        return predictedArrival - track.eligibleTicks <= spec.rules.assaultWarningSurfaceTicks
+    }
     private fun due(track: PlayerPressureTrack, kind: EncounterKind) =
         if (kind == EncounterKind.SCOUT) track.nextScoutEligibleTick else track.nextAssaultEligibleTick
     private fun track(id: String) = state.tracks.getOrPut(id) { PlayerPressureTrack(id) }

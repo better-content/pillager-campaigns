@@ -2,6 +2,7 @@ package com.bettercontent.pillagercampaigns
 
 import com.bettercontent.pillagercampaigns.core.*
 import com.bettercontent.pillagercampaigns.data.PillagerWorldData
+import com.bettercontent.pillagercampaigns.data.TerrainAtlasData
 import com.bettercontent.pillagercampaigns.system.InvasionRoster
 import com.bettercontent.pillagercampaigns.system.InvasionRuntime
 import com.bettercontent.pillagercampaigns.system.SurfaceGridSampler
@@ -26,6 +27,9 @@ import net.minecraftforge.event.entity.EntityJoinLevelEvent
 import net.minecraftforge.event.entity.living.LivingDeathEvent
 import net.minecraftforge.event.entity.living.LivingEvent
 import net.minecraftforge.event.entity.living.LivingHurtEvent
+import net.minecraftforge.event.level.BlockEvent
+import net.minecraftforge.event.level.ChunkEvent
+import net.minecraftforge.event.level.ExplosionEvent
 import net.minecraftforge.event.server.ServerStartedEvent
 import net.minecraftforge.eventbus.api.SubscribeEvent
 import java.nio.file.Files
@@ -36,6 +40,7 @@ object PillagerCampaignsEvents {
     private val defeatedMembers = ConcurrentHashMap.newKeySet<Pair<String, String>>()
     private val combatInvasions = ConcurrentHashMap.newKeySet<String>()
     private val deadTargets = ConcurrentHashMap.newKeySet<String>()
+    private val changedChunks = ConcurrentHashMap.newKeySet<Long>()
 
     @SubscribeEvent
     fun onServerStarted(event: ServerStartedEvent) {
@@ -43,13 +48,21 @@ object PillagerCampaignsEvents {
             event.server.gameRules.getRule(GameRules.RULE_DO_PATROL_SPAWNING).set(false, event.server)
         }
         PillagerWorldData.get(event.server).attach(InvasionRoster.runtimeSpec())
+        TerrainAtlasData.get(event.server)
         SurfaceGridSampler.clear()
     }
 
     @SubscribeEvent
     fun onServerTick(event: TickEvent.ServerTickEvent) {
-        if (event.phase != TickEvent.Phase.END || !PillagerCampaignsConfig.enabled.get()) return
+        if (event.phase != TickEvent.Phase.END) return
         val server = event.server
+        val atlas = TerrainAtlasData.get(server)
+        changedChunks.toList().also { changedChunks.removeAll(it.toSet()) }.forEach { packed ->
+            val chunkX = net.minecraft.world.level.ChunkPos.getX(packed)
+            val chunkZ = net.minecraft.world.level.ChunkPos.getZ(packed)
+            server.overworld().chunkSource.getChunkNow(chunkX, chunkZ)?.let { atlas.observe(server.overworld(), it) }
+        }
+        if (!PillagerCampaignsConfig.enabled.get()) return
         val now = server.overworld().gameTime
         val interval = PillagerCampaignsConfig.intervalTicks.get().toLong()
         if (now % interval != 0L) return
@@ -61,19 +74,25 @@ object PillagerCampaignsEvents {
         val spec = InvasionRoster.runtimeSpec()
         val snapshot = data.snapshot()
         val players = server.playerList.players.map(::observePlayer)
-        val approaching = snapshot.tracks.values.mapNotNull { track -> track.invasion?.takeIf {
-            it.phase in setOf(InvasionPhase.WARNED, InvasionPhase.APPROACHING, InvasionPhase.READY_TO_MATERIALIZE)
-        }?.let { track.playerId to it } }
-        val perPlayerBudget = if (approaching.isEmpty()) 0 else (PillagerCampaignsConfig.surfaceSampleBudget.get() / approaching.size).coerceAtLeast(64)
-        val surfaces = approaching.mapNotNull { (playerId, invasion) ->
-            server.playerList.players.firstOrNull { it.uuid.toString() == playerId }
-                ?.takeIf { observePlayer(it).surfaceEligible }
-                ?.let { SurfaceGridSampler.sample(it.serverLevel(), it, invasion.invasionId, spec.rules.approachMaximumBlocks, perPlayerBudget) }
+        val atlas = TerrainAtlasData.get(server)
+        val routes = snapshot.tracks.values.mapNotNull { track ->
+            val invasion = track.invasion?.takeIf { it.phase == InvasionPhase.APPROACHING } ?: return@mapNotNull null
+            val target = invasion.routeTarget ?: return@mapNotNull null
+            val needsRoute = invasion.strategicRoute.isEmpty() ||
+                (invasion.strategicFrontier == StrategicFrontier.UNKNOWN && invasion.strategicAtlasRevision != atlas.revision)
+            if (!needsRoute) return@mapNotNull null
+            val cells = atlas.cellsAround(target.x, target.z, spec.rules.strategicOriginMaximumBlocks + 16)
+            val result = StrategicRoutePlanner.plan(cells, target, spec.rules,
+                routeSeed(snapshot.worldSeed, invasion.invasionId, invasion.currentWave),
+                invasion.strategicPosition)
+            StrategicRouteObservation(track.playerId, invasion.invasionId, target, atlas.revision,
+                result?.route?.map { BlockPoint(target.dimension, it.x, it.bodyY, it.z) }.orEmpty(),
+                result?.frontier ?: StrategicFrontier.UNKNOWN)
         }
         val frame = DirectorFrame(
             elapsedTicks = elapsedTicks,
             players = players,
-            surfaces = surfaces,
+            strategicRoutes = routes,
             memberDefeats = defeatedMembers.toList().also { defeatedMembers.clear() }.map { (invasion, member) -> MemberDefeatObservation(invasion, member) },
             combat = combatInvasions.toList().also { combatInvasions.clear() }.map(::CombatObservation),
             targetDeaths = deadTargets.toList().also { deadTargets.clear() }.map(::TargetDeathObservation),
@@ -85,6 +104,43 @@ object PillagerCampaignsEvents {
         val results = InvasionRuntime.execute(server, transition.effects)
         if (results.isNotEmpty()) data.transition(DirectorFrame(0L, effectResults = results), spec)
         return transition
+    }
+
+    @SubscribeEvent
+    fun onChunkLoad(event: ChunkEvent.Load) {
+        val level = event.level as? net.minecraft.server.level.ServerLevel ?: return
+        val chunk = event.chunk as? net.minecraft.world.level.chunk.LevelChunk ?: return
+        TerrainAtlasData.get(level.server).observe(level, chunk)
+    }
+
+    @SubscribeEvent
+    fun onChunkUnload(event: ChunkEvent.Unload) {
+        val level = event.level as? net.minecraft.server.level.ServerLevel ?: return
+        val chunk = event.chunk as? net.minecraft.world.level.chunk.LevelChunk ?: return
+        TerrainAtlasData.get(level.server).observe(level, chunk)
+    }
+
+    @SubscribeEvent
+    fun onBlockPlaced(event: BlockEvent.EntityPlaceEvent) = queueChangedChunk(event.level, event.pos)
+
+    @SubscribeEvent
+    fun onBlockBroken(event: BlockEvent.BreakEvent) = queueChangedChunk(event.level, event.pos)
+
+    @SubscribeEvent
+    fun onFluidPlaced(event: BlockEvent.FluidPlaceBlockEvent) = queueChangedChunk(event.level, event.pos)
+
+    @SubscribeEvent
+    fun onExplosion(event: ExplosionEvent.Detonate) {
+        event.affectedBlocks.forEach { queueChangedChunk(event.level, it) }
+    }
+
+    private fun queueChangedChunk(levelAccessor: net.minecraft.world.level.LevelAccessor, pos: net.minecraft.core.BlockPos) {
+        val level = levelAccessor as? net.minecraft.server.level.ServerLevel ?: return
+        if (level.dimension() == Level.OVERWORLD) changedChunks += net.minecraft.world.level.ChunkPos.asLong(pos.x shr 4, pos.z shr 4)
+    }
+
+    private fun routeSeed(vararg values: Any): Long = values.fold(-3750763034362895579L) { hash, value ->
+        value.toString().fold(hash) { next, character -> (next xor character.code.toLong()) * 1099511628211L }
     }
 
     private fun observePlayer(player: ServerPlayer): PlayerObservation {
@@ -151,7 +207,7 @@ object PillagerCampaignsEvents {
         val track = PillagerWorldData.get(source.server).snapshot().tracks[player.uuid.toString()]
         val message = if (track == null) "pressure=uninitialized" else buildString {
             append("eligible_ticks=${track.eligibleTicks} next_scout=${track.nextScoutEligibleTick} next_assault=${track.nextAssaultEligibleTick} outcome_adjustment=${track.outcomeAdjustment}")
-            track.invasion?.let { append(" encounter=${it.invasionId} kind=${it.kind.name.lowercase()} phase=${it.phase.name.lowercase()} wave=${it.currentWave + 1}/${it.waves.size} intensity=${it.intensity} members=${it.members.size} observed_cells=${it.observedCells.size}") }
+            track.invasion?.let { append(" encounter=${it.invasionId} kind=${it.kind.name.lowercase()} phase=${it.phase.name.lowercase()} wave=${it.currentWave + 1}/${it.waves.size} intensity=${it.intensity} members=${it.members.size} origin=${it.strategicOrigin} position=${it.strategicPosition} frontier=${it.strategicFrontier.name.lowercase()} atlas_revision=${it.strategicAtlasRevision}") }
         }
         source.sendSuccess({ Component.literal(message) }, false)
         return Command.SINGLE_SUCCESS

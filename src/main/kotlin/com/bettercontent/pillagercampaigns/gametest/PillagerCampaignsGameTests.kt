@@ -5,12 +5,15 @@ import com.bettercontent.pillagercampaigns.core.*
 import com.bettercontent.pillagercampaigns.system.InvasionRoster
 import com.bettercontent.pillagercampaigns.system.InvasionRuntime
 import com.bettercontent.pillagercampaigns.system.SurfaceGridSampler
+import com.bettercontent.pillagercampaigns.data.TerrainAtlasData
 import net.minecraft.core.BlockPos
 import net.minecraft.gametest.framework.GameTest
 import net.minecraft.gametest.framework.GameTestHelper
 import net.minecraft.world.entity.EntityType
 import net.minecraft.world.level.GameType
+import net.minecraft.world.level.ChunkPos
 import net.minecraft.world.level.block.Blocks
+import net.minecraft.server.level.TicketType
 import net.minecraftforge.common.util.FakePlayer
 import net.minecraftforge.gametest.GameTestHolder
 import net.minecraftforge.gametest.PrefixGameTestTemplate
@@ -130,6 +133,63 @@ object PillagerCampaignsGameTests {
                 "${recruit.entityId} must be cleaned after its catalogue probe")
         }
         helper.succeed()
+    }
+
+    @JvmStatic
+    @GameTest(templateNamespace = "minecraft", template = "empty", timeoutTicks = 120)
+    fun sealedDefenseMaterializesOutsideAndDoesNotTeleportInside(helper: GameTestHelper) {
+        val base = helper.absolutePos(BlockPos(1, 2, 1))
+        buildSurface(helper, base)
+        for (z in 6..8) {
+            helper.level.setBlockAndUpdate(base.offset(7, 0, z), Blocks.STONE.defaultBlockState())
+            helper.level.setBlockAndUpdate(base.offset(7, 1, z), Blocks.STONE.defaultBlockState())
+        }
+        val fake = fake(helper, "sealed")
+        fake.setGameMode(GameType.SURVIVAL)
+        fake.moveTo(base.x + 11.5, base.y.toDouble(), base.z + 7.5)
+        val outside = base.offset(3, 0, 7)
+        val effect = DirectorEffect(
+            "sealed-effect", EffectKind.MATERIALIZE, fake.uuid.toString(), "sealed-invasion",
+            EncounterKind.ASSAULT, 0,
+            BlockPoint("minecraft:overworld", outside.x, outside.y, outside.z),
+            listOf(MemberPlan("sealed-member", "minecraft:pillager", 2)),
+            strategicFrontier = StrategicFrontier.DEFENSE,
+        )
+        helper.assertTrue(InvasionRuntime.materializeAgainst(helper.level, fake, effect),
+            "A known sealed defense must materialize on its exterior even though the real path is partial")
+        val member = InvasionRuntime.liveMembers(helper.level.server, "sealed-invasion").single()
+        helper.assertTrue(member.blockX < base.x + 7,
+            "The defensive frontier must never place a campaign member inside the wall")
+        helper.assertTrue(member.navigation.createPath(fake.blockPosition(), 0)?.canReach() != true,
+            "The real authored mob must see the sealed player as unreachable")
+        InvasionRuntime.retire(helper.level.server, "sealed-invasion")
+        helper.succeed()
+    }
+
+    @JvmStatic
+    @GameTest(templateNamespace = "minecraft", template = "empty", timeoutTicks = 300)
+    fun terrainAtlasSurvivesActualChunkUnloadWithoutReloadingIt(helper: GameTestHelper) {
+        val level = helper.level
+        val origin = helper.absolutePos(BlockPos.ZERO)
+        val chunkPos = ChunkPos((origin.x shr 4) + 40, (origin.z shr 4) + 40)
+        level.chunkSource.addRegionTicket(TicketType.UNKNOWN, chunkPos, 2, chunkPos)
+        val chunk = level.getChunk(chunkPos.x, chunkPos.z)
+        val atlas = TerrainAtlasData.get(level.server)
+        atlas.observe(level, chunk)
+        val sampleX = chunkPos.minBlockX + 8
+        val sampleZ = chunkPos.minBlockZ + 8
+        helper.assertTrue(atlas.cellsAround(sampleX, sampleZ, 1).isNotEmpty(),
+            "Loaded terrain must enter the strategic atlas")
+        level.chunkSource.removeRegionTicket(TicketType.UNKNOWN, chunkPos, 2, chunkPos)
+        helper.runAfterDelay(200) {
+            helper.assertTrue(level.chunkSource.getChunkNow(chunkPos.x, chunkPos.z) == null,
+                "The remote proof chunk must actually unload")
+            helper.assertTrue(atlas.cellsAround(sampleX, sampleZ, 1).isNotEmpty(),
+                "Atlas terrain must remain available after the source chunk unloads")
+            helper.assertTrue(level.chunkSource.getChunkNow(chunkPos.x, chunkPos.z) == null,
+                "Reading atlas terrain must not reload or ticket the chunk")
+            helper.succeed()
+        }
     }
 
     private fun buildSurface(helper: GameTestHelper, base: BlockPos) {

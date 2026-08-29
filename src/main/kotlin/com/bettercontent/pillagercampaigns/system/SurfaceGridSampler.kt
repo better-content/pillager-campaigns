@@ -54,16 +54,24 @@ object SurfaceGridSampler {
     }
 
     fun memberPositions(level: ServerLevel, anchor: BlockPos, count: Int): List<BlockPos> {
+        val first = (1 downTo -2).asSequence().map { anchor.offset(0, it, 0) }.firstOrNull { exactColumn(level, it) }
+            ?: return emptyList()
+        val queue = java.util.ArrayDeque<BlockPos>()
+        val seen = hashSetOf(first.x to first.z)
         val positions = mutableListOf<BlockPos>()
-        memberOffsets(5).forEach { (dx, dz) ->
-            if (positions.size >= count) return@forEach
-            val x = anchor.x + dx
-            val z = anchor.z + dz
-            (1 downTo -2).asSequence().map { dy -> BlockPos(x, anchor.y + dy, z) }
-                .firstOrNull { exactColumn(level, it) }
-                ?.let(positions::add)
+        queue += first
+        while (queue.isNotEmpty() && positions.size < count) {
+            val current = queue.removeFirst()
+            positions += current
+            listOf(1 to 0, 0 to 1, -1 to 0, 0 to -1).forEach { (dx, dz) ->
+                val key = current.x + dx to current.z + dz
+                if (!seen.add(key) || maxOf(abs(key.first - first.x), abs(key.second - first.z)) > 5) return@forEach
+                (1 downTo -2).asSequence().map { dy -> BlockPos(key.first, current.y + dy, key.second) }
+                    .firstOrNull { exactColumn(level, it) && it.y - current.y in -2..1 }
+                    ?.let(queue::add)
+            }
         }
-        return positions.distinct().takeIf { it.size == count }.orEmpty()
+        return positions.takeIf { it.size == count }.orEmpty()
     }
 
     private fun exactColumn(level: ServerLevel, body: BlockPos): Boolean {

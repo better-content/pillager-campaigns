@@ -4,6 +4,7 @@ import com.bettercontent.pillagercampaigns.PillagerCampaignsMod
 import com.bettercontent.pillagercampaigns.core.DirectorEffect
 import com.bettercontent.pillagercampaigns.core.EffectKind
 import com.bettercontent.pillagercampaigns.core.EffectResult
+import com.bettercontent.pillagercampaigns.core.StrategicFrontier
 import net.minecraft.core.BlockPos
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.network.chat.Component
@@ -108,16 +109,20 @@ object InvasionRuntime {
                 return false
             }
         }
-        val pathsReach = spawned.all { mob ->
+        val pathsAcceptable = spawned.all { mob ->
             // The candidate was just proven to have a solid floor; freshly added mobs have not received
             // their first physics tick yet, so expose that exact fact to GroundPathNavigation.
             mob.setOnGround(true)
-            SurfaceGridSampler.loadedRectangle(level, anchorPos, targetPos) &&
-                mob.navigation.createPath(targetPos, 0)?.canReach() == true
+            val path = mob.navigation.createPath(targetPos, 0)
+            SurfaceGridSampler.loadedRectangle(level, anchorPos, targetPos) && when (effect.strategicFrontier) {
+                StrategicFrontier.OPEN -> path?.canReach() == true
+                StrategicFrontier.DEFENSE -> path?.canReach() != true
+                StrategicFrontier.UNKNOWN -> false
+            }
         }
-        if (!pathsReach) {
-            PillagerCampaignsMod.LOGGER.warn("Rejected campaign packet {} because an added mob path was null or could not reach {}",
-                effect.invasionId, targetPos)
+        if (!pathsAcceptable) {
+            PillagerCampaignsMod.LOGGER.warn("Rejected campaign packet {} because its {} frontier did not match the real path to {}",
+                effect.invasionId, effect.strategicFrontier, targetPos)
             spawned.forEach(Entity::discard)
             return false
         }
