@@ -11,24 +11,25 @@ object StrategicRoutePlanner {
         cells: Collection<SurfaceCell>, target: BlockPoint, rules: InvasionRules, seed: Long,
         start: BlockPoint? = null,
     ): Result? {
-        val known = cells.associateBy { it.x to it.z }
-        val passable = known.values.filter(SurfaceCell::passable).associateBy { it.x to it.z }
+        val known = cells.associateBy { key(it.x, it.z) }
+        val passable = known.values.filter(SurfaceCell::passable).associateBy { key(it.x, it.z) }
         val origins = if (start != null) {
-            listOfNotNull(passable[start.x to start.z])
+            listOfNotNull(passable[key(start.x, start.z)])
         } else passable.values.filter {
             distance(it, target) in rules.strategicOriginMinimumBlocks..rules.strategicOriginMaximumBlocks
         }.sortedWith(compareBy<SurfaceCell> { stableRank(it, seed) }.thenBy { it.x }.thenBy { it.z })
+        var remainingExpansions = rules.strategicMaximumSearchExpansions
         for (origin in origins) {
+            if (remainingExpansions <= 0) break
             data class Node(val cell: SurfaceCell, val steps: Int)
             val queue = PriorityQueue(compareBy<Node> { it.steps + manhattan(it.cell, target) }
                 .thenBy { manhattan(it.cell, target) }.thenBy { stableRank(it.cell, seed) })
-            val previous = hashMapOf<Pair<Int, Int>, Pair<Int, Int>?>()
-            val originKey = origin.x to origin.z
+            val previous = hashMapOf<Long, Long?>()
+            val originKey = key(origin.x, origin.z)
             queue += Node(origin, 0)
             previous[originKey] = null
-            var expansions = 0
             var best = origin
-            while (queue.isNotEmpty() && expansions++ < rules.strategicMaximumSearchExpansions) {
+            while (queue.isNotEmpty() && remainingExpansions-- > 0) {
                 val node = queue.remove()
                 val cell = node.cell
                 if (distance(cell, target) < distance(best, target)) best = cell
@@ -38,16 +39,16 @@ object StrategicRoutePlanner {
                     if (materializationIndex >= 0) return Result(full.take(materializationIndex + 1), StrategicFrontier.OPEN)
                 }
                 CARDINALS.forEach { (dx, dz) ->
-                    val key = cell.x + dx to cell.z + dz
-                    val candidate = known[key]
+                    val candidateKey = key(cell.x + dx, cell.z + dz)
+                    val candidate = known[candidateKey]
                     if (candidate != null && candidate.passable && candidate.bodyY - cell.bodyY in -2..1 &&
-                        !previous.containsKey(key)) {
-                        previous[key] = cell.x to cell.z
+                        !previous.containsKey(candidateKey)) {
+                        previous[candidateKey] = key(cell.x, cell.z)
                         queue += Node(candidate, node.steps + 1)
                     }
                 }
             }
-            val closer = CARDINALS.map { (dx, dz) -> known[best.x + dx to best.z + dz] }
+            val closer = CARDINALS.map { (dx, dz) -> known[key(best.x + dx, best.z + dz)] }
                 .filter { it == null || distance(it, target) < distance(best, target) }
             val frontier = when {
                 closer.any { it == null } -> StrategicFrontier.UNKNOWN
@@ -63,11 +64,11 @@ object StrategicRoutePlanner {
 
     private fun reconstruct(
         end: SurfaceCell,
-        previous: Map<Pair<Int, Int>, Pair<Int, Int>?>,
-        passable: Map<Pair<Int, Int>, SurfaceCell>,
+        previous: Map<Long, Long?>,
+        passable: Map<Long, SurfaceCell>,
     ): List<SurfaceCell> {
         val result = mutableListOf<SurfaceCell>()
-        var cursor: Pair<Int, Int>? = end.x to end.z
+        var cursor: Long? = key(end.x, end.z)
         while (cursor != null) {
             result += passable.getValue(cursor)
             cursor = previous[cursor]
@@ -79,5 +80,6 @@ object StrategicRoutePlanner {
     private fun manhattan(cell: SurfaceCell, target: BlockPoint) = abs(cell.x - target.x) + abs(cell.z - target.z)
     private fun stableRank(cell: SurfaceCell, seed: Long) =
         (seed xor (cell.x.toLong() shl 32) xor cell.z.toLong()) * -7046029254386353131L
+    private fun key(x: Int, z: Int) = (x.toLong() shl 32) xor (z.toLong() and 0xffffffffL)
     private val CARDINALS = listOf(1 to 0, 0 to 1, -1 to 0, 0 to -1)
 }

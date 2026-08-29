@@ -3,6 +3,7 @@ package com.bettercontent.pillagercampaigns.core
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlin.math.ceil
+import kotlin.system.measureTimeMillis
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -293,6 +294,20 @@ class InvasionDirectorTest {
             assertTrue(result.route.last().x in 48..72)
             assertEquals(StrategicFrontier.OPEN, result.frontier)
         }
+    }
+
+    @Test fun `production scale terrain atlas routes without stalling the server tick`() {
+        val target = BlockPoint("minecraft:overworld", 0, 64, 0)
+        val recordedTerrain = (0..768).flatMap { x ->
+            (-24..23).map { z -> SurfaceCell(x, 64, z) }
+        }
+        lateinit var result: StrategicRoutePlanner.Result
+        val elapsed = measureTimeMillis {
+            result = assertNotNull(StrategicRoutePlanner.plan(recordedTerrain, target, InvasionRules(), 29L))
+        }
+        assertTrue(elapsed < 2_000, "Production-scale strategic routing took ${elapsed}ms")
+        assertTrue(result.route.first().x in 512..768)
+        assertTrue(result.route.last().x in 48..72)
     }
 
     @Test fun `restore is exact schema is strict and invalid inputs fail closed`() {
