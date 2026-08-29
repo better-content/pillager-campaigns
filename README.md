@@ -1,8 +1,8 @@
 # Pillager Campaigns
 
-Pillager Campaigns is a server-side Minecraft Forge mod for Minecraft 1.20.1. It supplies one thing: reliable, bounded, scaling pillager invasions for Survival players on the Overworld surface.
+Pillager Campaigns is a server-side Minecraft Forge mod for Minecraft 1.20.1. It supplies frequent overland scout pressure and sparse, warned pillager assaults for Survival players.
 
-Each player has an independent deterministic pressure clock. An invasion is warned, approaches over an approximate solid-surface map, materializes as a bounded squad in already-loaded terrain, and then clears or retires. Pressure follows the current player; the mod does not simulate factions, bases, officers, territory, economy, logistics, equipment production, or rewards.
+Each player has independent eligible-time clocks: scouts arrive every 6–12 minutes with 3–6 members and withdraw after two active minutes; assaults arrive every 60–120 minutes, warn for two surface minutes, then deliver three progress-gated waves of 8–12 members for one player. Nearby players within 64 blocks share one scaled encounter. Pressure follows current players rather than bases.
 
 ## Development
 
@@ -11,12 +11,13 @@ Java 17 and the checked-in Gradle wrapper are required.
 ```sh
 ./gradlew verifyFast
 ./gradlew verifyFull
+./gradlew verifyWorld
 ./gradlew invasionCoreExperiment
 ./gradlew -q :runner:run --args='example'
 ./gradlew -q :runner:run --args='mvp /path/to/invasion-runtime-spec.json build/invasion-readiness'
 ```
 
-`verifyFast` runs the Forge-facing JVM suite, the Minecraft-independent Invasion Core suite, runner tests, and both JaCoCo gates. `verifyFull` adds the headless Forge GameTests.
+`verifyFast` includes the fixed 1,024-seed policy corpus. `verifyFull` adds headless Forge GameTests, and `verifyWorld` runs those tests with the exact It Takes a Pillage and Savage & Ravage runtime dependencies.
 
 The `mvp` runner gate proves deterministic Core properties only: per-player cadence, bounded scaling, composition, effect lifecycle, and terminal resolution under authored surface observations. It does not simulate Minecraft combat, entity AI, terrain, or player behavior.
 
@@ -24,13 +25,13 @@ Export the exact available roster and scalar rules from a running instance with 
 
 ## Architecture
 
-- `invasion-core/` owns pressure clocks, scaling, roster composition, approximate surface traversal, lifecycle, persistence shapes, and the durable three-effect outbox.
+- `invasion-core/` owns both clocks, grouping, wave budgets, roster composition, loaded-surface traversal, caps, lifecycle, persistence shapes, and the durable effect outbox.
 - `runner/` executes the exact compiled Core against synthetic observations and writes the hard readiness report.
 - `src/main/kotlin/com/bettercontent/pillagercampaigns/` observes loaded Minecraft terrain, executes warning/materialize/retire effects, persists the Core snapshot, and maintains native mob targeting.
 
-The surface graph uses one block per cell, a solid floor, two blocks of body clearance, one-block ascent, two-block descent, and no traversal through unknown cells. Forge reads only `getChunkNow` chunks. A blocked or unknown approach remains immaterial and retries when terrain is naturally observed.
+The surface graph uses a solid floor, two blocks of clearance, one-block ascent, two-block descent, and no traversal through unknown cells. Forge reads only `getChunkNow`. A route must connect from 48–72 blocks away to within 12 blocks of the target. Immediately before spawning, every chunk in the bounded route/navigation region must still be loaded and the real entity path must report `canReach()`. No chunk is loaded, generated, or ticketed on behalf of a campaign.
 
-World saves use invasion schema 1. Pre-0.3 strategic state is intentionally discarded once; no warband state is migrated.
+World saves use campaign schema 2. Schema-1 invasion state is intentionally discarded once because it cannot represent independent scout/assault clocks or waves.
 
 ## Commands
 

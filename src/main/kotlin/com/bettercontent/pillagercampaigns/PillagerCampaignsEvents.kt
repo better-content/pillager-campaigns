@@ -5,6 +5,7 @@ import com.bettercontent.pillagercampaigns.data.PillagerWorldData
 import com.bettercontent.pillagercampaigns.system.InvasionRoster
 import com.bettercontent.pillagercampaigns.system.InvasionRuntime
 import com.bettercontent.pillagercampaigns.system.SurfaceGridSampler
+import com.bettercontent.pillagercampaigns.system.DownedCompat
 import com.mojang.brigadier.Command
 import com.mojang.brigadier.arguments.StringArgumentType
 import kotlinx.serialization.encodeToString
@@ -77,6 +78,8 @@ object PillagerCampaignsEvents {
             combat = combatInvasions.toList().also { combatInvasions.clear() }.map(::CombatObservation),
             targetDeaths = deadTargets.toList().also { deadTargets.clear() }.map(::TargetDeathObservation),
             commands = commands,
+            liveCampaignMobs = InvasionRuntime.liveCampaignPopulation(server),
+            secondSpawnCount = InvasionRuntime.spawnsLastSecond(server.overworld().gameTime),
         )
         val transition = data.transition(frame, spec)
         val results = InvasionRuntime.execute(server, transition.effects)
@@ -91,6 +94,8 @@ object PillagerCampaignsEvents {
             eligible && SurfaceGridSampler.isNearSurface(player),
             physicallyAvailable = player.isAlive,
             position = BlockPoint(player.serverLevel().dimension().location().toString(), player.blockX, player.blockY, player.blockZ),
+            lowHealth = player.health / player.maxHealth.coerceAtLeast(1.0f) < 0.35f,
+            downed = DownedCompat.isDowned(player),
         )
     }
 
@@ -145,8 +150,8 @@ object PillagerCampaignsEvents {
         }
         val track = PillagerWorldData.get(source.server).snapshot().tracks[player.uuid.toString()]
         val message = if (track == null) "pressure=uninitialized" else buildString {
-            append("eligible_ticks=${track.eligibleTicks} next_due=${track.nextDueEligibleTick} outcome_adjustment=${track.outcomeAdjustment}")
-            track.invasion?.let { append(" invasion=${it.invasionId} phase=${it.phase.name.lowercase()} intensity=${it.intensity} members=${it.members.size} observed_cells=${it.observedCells.size}") }
+            append("eligible_ticks=${track.eligibleTicks} next_scout=${track.nextScoutEligibleTick} next_assault=${track.nextAssaultEligibleTick} outcome_adjustment=${track.outcomeAdjustment}")
+            track.invasion?.let { append(" encounter=${it.invasionId} kind=${it.kind.name.lowercase()} phase=${it.phase.name.lowercase()} wave=${it.currentWave + 1}/${it.waves.size} intensity=${it.intensity} members=${it.members.size} observed_cells=${it.observedCells.size}") }
         }
         source.sendSuccess({ Component.literal(message) }, false)
         return Command.SINGLE_SUCCESS
@@ -156,7 +161,7 @@ object PillagerCampaignsEvents {
         val player = target(source, name)
         if (player == null) { source.sendFailure(Component.literal("Player is not online")); return 0 }
         advance(source.server, 0L, listOf(DirectorCommand.Force(player.uuid.toString())))
-        source.sendSuccess({ Component.literal("Forced invasion pressure for ${player.scoreboardName}") }, true)
+        source.sendSuccess({ Component.literal("Forced assault pressure for ${player.scoreboardName}") }, true)
         return Command.SINGLE_SUCCESS
     }
 

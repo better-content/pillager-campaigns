@@ -34,8 +34,8 @@ object InvasionExperiment {
         var now = 0L
         val stepTicks = 200L
         fun record(transition: DirectorTransition) {
-            warnings += transition.events.count { it.type == "warned" }
-            materializations += transition.events.count { it.type == "materialized" }
+            warnings += transition.events.count { it.type == "assault_warned" }
+            materializations += transition.events.count { it.type == "packet_materialized" }
             resolutions += transition.events.count { it.type == "resolved" }
         }
         while (now < durationTicks) {
@@ -67,11 +67,15 @@ object InvasionExperiment {
         val checks = linkedMapOf(
             "every-player-warned" to (snapshot.tracks.keys.containsAll(players) && warnings >= playerCount),
             "every-player-materialized" to (materializations >= playerCount),
-            "every-materialized-invasion-resolves" to (resolutions >= materializations - playerCount),
+            "encounters-resolve-after-materialization" to (resolutions >= playerCount),
             "one-active-per-player" to (snapshot.tracks.values.all { it.invasion == null || it.invasion!!.targetPlayerId == it.playerId }),
             "bounded-intensity" to (intensities.all { it in 0..spec.rules.maximumIntensity }),
-            "bounded-squads" to (snapshot.tracks.values.mapNotNull { it.invasion }.all { it.members.size in spec.rules.minimumMembers..spec.rules.maximumMembers }),
-            "no-unresolved-effects" to (snapshot.pendingEffects.isEmpty()),
+            "bounded-squads" to (snapshot.tracks.values.mapNotNull { it.invasion }.all {
+                it.waves.all { wave -> wave.members.size in spec.rules.scoutMinimumMembers..spec.rules.assaultGroupCap }
+            }),
+            "durable-effects-reference-live-encounters" to snapshot.pendingEffects.values.all { effect ->
+                snapshot.tracks.values.any { it.invasion?.invasionId == effect.invasionId }
+            },
         )
         return ReadinessReport(
             spec.revision, checks.values.all { it }, playerCount, warnings, materializations, resolutions,
@@ -83,6 +87,7 @@ object InvasionExperiment {
         playerId,
         ((-72..72).map { dx -> SurfaceCell(centerX + dx, 64, 0) } +
             (-72..72).map { z -> SurfaceCell(centerX, 64, z) }).distinctBy { it.x to it.z },
+        complete = true,
     )
 }
 

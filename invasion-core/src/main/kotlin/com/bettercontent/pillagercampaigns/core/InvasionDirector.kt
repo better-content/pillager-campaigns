@@ -2,6 +2,8 @@ package com.bettercontent.pillagercampaigns.core
 
 import java.util.ArrayDeque
 import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.roundToInt
 import kotlin.random.Random
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -18,129 +20,253 @@ class InvasionDirector private constructor(
         applyEffectResults(frame.effectResults, events)
         mergeSurfaces(frame.surfaces)
         state.tick += frame.elapsedTicks
-        applyCombat(frame, events)
-
         val players = frame.players.associateBy(PlayerObservation::playerId)
-        players.values.sortedBy(PlayerObservation::playerId).forEach { player -> advancePlayer(player, frame.elapsedTicks, events) }
-        state.tracks.values.filter { it.playerId !in players }.forEach { track ->
-            track.invasion?.takeIf { it.phase == InvasionPhase.ACTIVE }?.let { invasion ->
-                invasion.targetUnavailableTicks += frame.elapsedTicks
-                if (invasion.targetUnavailableTicks >= spec.rules.targetUnavailableTicks) requestRetire(track, InvasionOutcome.RETIRED, events)
-            }
+        players.values.sortedBy(PlayerObservation::playerId).forEach { player ->
+            val track = track(player.playerId)
+            if (track.nextScoutEligibleTick < 0L) schedule(track, EncounterKind.SCOUT)
+            if (track.nextAssaultEligibleTick < 0L) schedule(track, EncounterKind.ASSAULT)
+            if (player.eligible) track.eligibleTicks += frame.elapsedTicks
         }
+        applyCombat(frame, players, events)
+        advanceExisting(players, frame.elapsedTicks, events)
+        beginDueEncounters(players, events)
+        issuePackets(players, frame, events)
         return DirectorTransition(events, state.pendingEffects.values.map(::copyEffect))
     }
 
     fun snapshot(): DirectorSnapshot = copy(state)
 
-    private fun advancePlayer(player: PlayerObservation, elapsed: Long, events: MutableList<DirectorEvent>) {
-        val track = state.tracks.getOrPut(player.playerId) { PlayerPressureTrack(player.playerId) }
-        if (track.nextDueEligibleTick < 0L) schedule(track, first = true)
-        if (player.eligible) track.eligibleTicks += elapsed
-        var invasion = track.invasion
-
-        if (invasion == null && player.eligible && player.surfaceEligible &&
-            track.eligibleTicks >= track.nextDueEligibleTick - spec.rules.warningSurfaceTicks) {
-            beginInvasion(track, player, events)
-            return
-        }
-        invasion ?: return
-
-        when (invasion.phase) {
-            InvasionPhase.WARNED, InvasionPhase.APPROACHING, InvasionPhase.READY_TO_MATERIALIZE -> {
-                if (player.eligible && player.surfaceEligible && player.physicallyAvailable) {
-                    invasion.warningSurfaceTicks += elapsed
-                    if (invasion.warningSurfaceTicks >= spec.rules.warningSurfaceTicks &&
-                        state.pendingEffects.values.none { it.invasionId == invasion.invasionId && it.kind == EffectKind.WARN }) {
-                        invasion.phase = InvasionPhase.APPROACHING
-                        val position = player.position
-                        if (position != null && state.pendingEffects.values.none {
-                                it.invasionId == invasion.invasionId && it.kind == EffectKind.MATERIALIZE
-                            }) {
-                            val anchor = SurfaceApproach.choose(
-                                invasion.observedCells.values, position, spec.rules,
-                                stableSeed(state.worldSeed, track.playerId, track.invasionSequence),
-                            )
-                            if (anchor != null) {
-                                invasion.anchor = BlockPoint(position.dimension, anchor.x, anchor.bodyY, anchor.z)
-                                invasion.phase = InvasionPhase.READY_TO_MATERIALIZE
-                                publish(DirectorEffect("", EffectKind.MATERIALIZE, track.playerId, invasion.invasionId, invasion.anchor, invasion.members))
-                                events += event("materialization_requested", invasion.invasionId, "${anchor.x},${anchor.bodyY},${anchor.z}")
-                            }
-                        }
-                    }
+    private fun beginDueEncounters(players: Map<String, PlayerObservation>, events: MutableList<DirectorEvent>) {
+        val available = players.values.filter { it.eligible && it.surfaceEligible && it.physicallyAvailable && !it.downed }
+        fun candidates(kind: EncounterKind) = available.filter { player ->
+            val track = track(player.playerId)
+            track.invasion == null && track.joinedInvasionId == null &&
+                track.eligibleTicks >= due(track, kind) - warning(kind)
+        }.sortedWith(compareBy<PlayerObservation> { due(track(it.playerId), kind) - track(it.playerId).eligibleTicks }
+            .thenBy { it.playerId })
+        for (kind in listOf(EncounterKind.ASSAULT, EncounterKind.SCOUT)) {
+            val remaining = candidates(kind).toMutableList()
+            while (remaining.isNotEmpty()) {
+                val primary = remaining.removeAt(0)
+                if (track(primary.playerId).invasion != null || track(primary.playerId).joinedInvasionId != null) continue
+                if (kind == EncounterKind.SCOUT && participantInAssault(primary.playerId)) continue
+                val group = buildList {
+                    add(primary)
+                    remaining.filterTo(this) { close(primary, it, spec.rules.groupRadiusBlocks) }
                 }
+                remaining.removeAll(group.toSet())
+                beginEncounter(kind, primary, group, events)
             }
-            InvasionPhase.ACTIVE -> {
-                invasion.targetUnavailableTicks = if (player.eligible && player.physicallyAvailable) 0L else invasion.targetUnavailableTicks + elapsed
-                if (invasion.targetUnavailableTicks >= spec.rules.targetUnavailableTicks ||
-                    state.tick - invasion.lastCombatTick >= spec.rules.activeIdleTicks) {
-                    requestRetire(track, InvasionOutcome.RETIRED, events)
-                }
-            }
-            InvasionPhase.RETIRING -> Unit
         }
     }
 
-    private fun beginInvasion(track: PlayerPressureTrack, player: PlayerObservation, events: MutableList<DirectorEvent>): InvasionState {
-        track.invasionSequence += 1L
+    private fun beginEncounter(
+        kind: EncounterKind,
+        primary: PlayerObservation,
+        participants: List<PlayerObservation>,
+        events: MutableList<DirectorEvent>,
+    ) {
+        val track = track(primary.playerId)
+        track.encounterSequence++
         val timeTier = (track.eligibleTicks / spec.rules.timeTierTicks).toInt()
         val intensity = (timeTier + track.outcomeAdjustment).coerceIn(0, spec.rules.maximumIntensity)
-        val budget = spec.rules.threatBudgets[intensity]
-        val invasionId = "invasion:${track.playerId}:${track.invasionSequence}"
-        val members = RosterPlanner.plan(spec.recruits, intensity, budget, spec.rules, stableSeed(state.worldSeed, invasionId))
-        val invasion = InvasionState(invasionId, track.playerId, intensity, budget, members, lastCombatTick = state.tick)
+        val id = "${kind.name.lowercase()}:${primary.playerId}:${track.encounterSequence}"
+        val size = EncounterPolicy.memberCount(kind, intensity, participants.size, spec.rules)
+        val waves = if (kind == EncounterKind.SCOUT) {
+            listOf(RosterPlanner.planWave(spec.recruits, kind, intensity, 0, size, id, state.worldSeed))
+        } else {
+            (0 until spec.rules.assaultWaves).map { wave ->
+                RosterPlanner.planWave(spec.recruits, kind, intensity, wave, size, id, state.worldSeed)
+            }
+        }
+        val invasion = InvasionState(
+            invasionId = id, kind = kind, targetPlayerId = primary.playerId,
+            participantPlayerIds = participants.map(PlayerObservation::playerId).sorted(),
+            intensity = intensity, waves = waves,
+            phase = if (kind == EncounterKind.ASSAULT) InvasionPhase.WARNED else InvasionPhase.APPROACHING,
+            lastCombatTick = state.tick, routeTarget = primary.position,
+        )
         track.invasion = invasion
-        publish(DirectorEffect("", EffectKind.WARN, track.playerId, invasionId))
-        events += event("warned", invasionId, "intensity=$intensity budget=$budget surface=${player.surfaceEligible}")
-        return invasion
+        participants.filter { it.playerId != primary.playerId }.forEach { track(it.playerId).joinedInvasionId = id }
+        if (kind == EncounterKind.ASSAULT) {
+            publish(DirectorEffect("", EffectKind.WARN, primary.playerId, id, kind,
+                participantPlayerIds = invasion.participantPlayerIds))
+            events += event("assault_warned", id, "intensity=$intensity players=${participants.size} wave_size=$size")
+        } else {
+            events += event("scout_started", id, "intensity=$intensity players=${participants.size} members=$size")
+        }
+    }
+
+    private fun advanceExisting(players: Map<String, PlayerObservation>, elapsed: Long, events: MutableList<DirectorEvent>) {
+        primaryTracks().forEach { track ->
+            val invasion = track.invasion ?: return@forEach
+            val target = chooseTarget(invasion, players)
+            if (target?.downed == true || invasion.participantPlayerIds.any { players[it]?.downed == true }) {
+                requestRetire(track, InvasionOutcome.TARGET_DIED, events)
+                return@forEach
+            }
+            val available = target?.let { it.eligible && it.physicallyAvailable } == true
+            invasion.targetUnavailableTicks = if (available) 0L else invasion.targetUnavailableTicks + elapsed
+            if (invasion.targetUnavailableTicks >= spec.rules.targetUnavailableTicks) {
+                requestRetire(track, InvasionOutcome.RETIRED, events)
+                return@forEach
+            }
+            if (target?.position != null && invasion.routeTarget?.let { moved(it, target.position) } == true) {
+                invasion.routeTarget = target.position
+                invasion.anchor = null
+                invasion.observedCells.clear()
+                invasion.surfaceObservationComplete = false
+                if (invasion.phase != InvasionPhase.WARNED) invasion.phase = InvasionPhase.APPROACHING
+            }
+            when (invasion.phase) {
+                InvasionPhase.WARNED -> if (target?.surfaceEligible == true && available &&
+                    state.pendingEffects.values.none { it.invasionId == invasion.invasionId && it.kind == EffectKind.WARN }) {
+                    invasion.warningSurfaceTicks += elapsed
+                    if (invasion.warningSurfaceTicks >= spec.rules.assaultWarningSurfaceTicks)
+                        invasion.phase = InvasionPhase.APPROACHING
+                }
+                InvasionPhase.APPROACHING, InvasionPhase.READY_TO_MATERIALIZE ->
+                    if (target?.surfaceEligible == true && available) locate(invasion, target, events)
+                InvasionPhase.ACTIVE -> {
+                    invasion.activeTicks += elapsed
+                    val hardLimit = if (invasion.kind == EncounterKind.SCOUT) spec.rules.scoutActiveTicks else spec.rules.assaultActiveTicks
+                    if (invasion.activeTicks >= hardLimit || state.tick - invasion.lastCombatTick >= spec.rules.activeIdleTicks) {
+                        requestRetire(track, InvasionOutcome.RETIRED, events)
+                    } else if (invasion.kind == EncounterKind.ASSAULT) advanceWave(invasion, events)
+                }
+                InvasionPhase.RETIRING -> Unit
+            }
+        }
+    }
+
+    private fun locate(invasion: InvasionState, target: PlayerObservation, events: MutableList<DirectorEvent>) {
+        if (invasion.anchor != null || !invasion.surfaceObservationComplete) return
+        val position = target.position ?: return
+        val unused = invasion.observedCells.values.filter { cell ->
+            invasion.usedAnchors.none { it.x == cell.x && it.z == cell.z }
+        }
+        val seed = stableSeed(state.worldSeed, invasion.invasionId, invasion.currentWave)
+        val anchor = SurfaceApproach.choose(unused, position, spec.rules, seed)
+            ?: SurfaceApproach.choose(invasion.observedCells.values, position, spec.rules, seed)
+            ?: return
+        invasion.anchor = BlockPoint(position.dimension, anchor.x, anchor.bodyY, anchor.z)
+        invasion.usedAnchors += invasion.anchor!!
+        invasion.routeTarget = position
+        invasion.phase = InvasionPhase.READY_TO_MATERIALIZE
+        events += event("route_ready", invasion.invasionId, "${anchor.x},${anchor.bodyY},${anchor.z}")
+    }
+
+    private fun issuePackets(players: Map<String, PlayerObservation>, frame: DirectorFrame, events: MutableList<DirectorEvent>) {
+        var capacity = minOf(
+            spec.rules.maximumSpawnsPerTick,
+            (spec.rules.maximumSpawnsPerSecond - frame.secondSpawnCount).coerceAtLeast(0),
+            (spec.rules.globalCampaignMobCap - maxOf(frame.liveCampaignMobs, trackedLivePopulation())).coerceAtLeast(0),
+        )
+        if (capacity == 0) return
+        val ready = primaryTracks().mapNotNull(PlayerPressureTrack::invasion).filter { invasion ->
+            invasion.phase in setOf(InvasionPhase.READY_TO_MATERIALIZE, InvasionPhase.ACTIVE) &&
+                invasion.anchor != null && state.tick >= invasion.nextPacketTick &&
+                state.pendingEffects.values.none { it.invasionId == invasion.invasionId && it.kind == EffectKind.MATERIALIZE } &&
+                invasion.waves[invasion.currentWave].queuedMembers < invasion.waves[invasion.currentWave].members.size
+        }.sortedBy(InvasionState::invasionId)
+        if (ready.isEmpty()) return
+        rotate(ready, state.fairServiceCursor % ready.size).forEach { invasion ->
+            if (capacity <= 0) return@forEach
+            val wave = invasion.waves[invasion.currentWave]
+            val packetLimit = minOf(capacity, 6 * invasion.participantPlayerIds.size)
+            val members = wave.members.drop(wave.queuedMembers).take(packetLimit)
+            if (members.isEmpty()) return@forEach
+            wave.queuedMembers += members.size
+            val spacing = spec.rules.normalPacketSpacingTicks * if (chooseTarget(invasion, players)?.lowHealth == true) 3L else 1L
+            invasion.nextPacketTick = state.tick + spacing
+            publish(DirectorEffect("", EffectKind.MATERIALIZE, invasion.targetPlayerId, invasion.invasionId,
+                invasion.kind, invasion.currentWave, invasion.anchor, members, invasion.participantPlayerIds))
+            capacity -= members.size
+            events += event("packet_queued", invasion.invasionId, "wave=${invasion.currentWave} members=${members.size}")
+        }
+        state.fairServiceCursor = (state.fairServiceCursor + 1) % ready.size
+    }
+
+    private fun advanceWave(invasion: InvasionState, events: MutableList<DirectorEvent>) {
+        val wave = invasion.waves[invasion.currentWave]
+        if (wave.materializedMembers < wave.members.size || wave.startedTick < 0) return
+        val defeated = wave.members.count { it.memberId in invasion.defeatedMemberIds }
+        val ready = defeated >= ceil(wave.members.size / 2.0).toInt() ||
+            state.tick - wave.startedTick >= spec.rules.waveProgressTimeoutTicks
+        if (!ready) return
+        if (invasion.currentWave + 1 < invasion.waves.size) {
+            invasion.currentWave++
+            invasion.anchor = null
+            invasion.observedCells.clear()
+            invasion.surfaceObservationComplete = false
+            invasion.phase = InvasionPhase.APPROACHING
+            events += event("wave_advanced", invasion.invasionId, "wave=${invasion.currentWave}")
+        }
     }
 
     private fun applyEffectResults(results: List<EffectResult>, events: MutableList<DirectorEvent>) {
         results.distinctBy(EffectResult::effectId).forEach { result ->
             val effect = state.pendingEffects.remove(result.effectId) ?: return@forEach
-            val track = state.tracks[effect.playerId] ?: return@forEach
-            val invasion = track.invasion?.takeIf { it.invasionId == effect.invasionId } ?: return@forEach
+            val track = primaryTracks().firstOrNull { it.invasion?.invasionId == effect.invasionId } ?: return@forEach
+            val invasion = track.invasion ?: return@forEach
             when (effect.kind) {
-                EffectKind.WARN -> if (result.successful) invasion.phase = InvasionPhase.APPROACHING
-                EffectKind.MATERIALIZE -> if (result.successful) {
-                    invasion.phase = InvasionPhase.ACTIVE
-                    invasion.lastCombatTick = state.tick
-                    events += event("materialized", invasion.invasionId, "members=${invasion.members.size}")
-                } else {
-                    invasion.phase = InvasionPhase.APPROACHING
-                    invasion.anchor = null
-                    invasion.observedCells.clear()
-                    events += event("materialization_failed", invasion.invasionId)
+                EffectKind.WARN -> if (!result.successful) publish(effect.copy(effectId = ""))
+                EffectKind.MATERIALIZE -> {
+                    val wave = invasion.waves[effect.waveIndex]
+                    if (result.successful) {
+                        wave.materializedMembers += effect.members.size
+                        if (wave.startedTick < 0) wave.startedTick = state.tick
+                        invasion.phase = InvasionPhase.ACTIVE
+                        invasion.lastCombatTick = state.tick
+                        events += event("packet_materialized", invasion.invasionId,
+                            "wave=${effect.waveIndex} members=${effect.members.size}")
+                    } else {
+                        wave.queuedMembers = (wave.queuedMembers - effect.members.size).coerceAtLeast(wave.materializedMembers)
+                        invasion.anchor = null
+                        invasion.observedCells.clear()
+                        invasion.surfaceObservationComplete = false
+                        invasion.phase = InvasionPhase.APPROACHING
+                        events += event("materialization_failed", invasion.invasionId)
+                    }
                 }
-                EffectKind.RETIRE -> if (result.successful) resolve(track, invasion.pendingOutcome ?: InvasionOutcome.RETIRED, events)
+                EffectKind.RETIRE -> if (result.successful)
+                    resolve(track, invasion.pendingOutcome ?: InvasionOutcome.RETIRED, events)
             }
         }
     }
 
     private fun mergeSurfaces(observations: List<SurfaceGridObservation>) {
         observations.forEach { observation ->
-            state.tracks[observation.playerId]?.invasion?.let { invasion ->
-                observation.cells.forEach { cell -> invasion.observedCells[cellKey(cell.x, cell.z)] = cell }
+            track(observation.playerId).invasion?.let { invasion ->
+                if (observation.complete) invasion.observedCells.clear()
+                observation.cells.forEach { invasion.observedCells[cellKey(it.x, it.z)] = it }
+                invasion.surfaceObservationComplete = invasion.surfaceObservationComplete || observation.complete
             }
         }
     }
 
-    private fun applyCombat(frame: DirectorFrame, events: MutableList<DirectorEvent>) {
-        frame.combat.map(CombatObservation::invasionId).toSet().forEach { id -> find(id)?.lastCombatTick = state.tick }
+    private fun applyCombat(frame: DirectorFrame, players: Map<String, PlayerObservation>, events: MutableList<DirectorEvent>) {
+        frame.combat.map(CombatObservation::invasionId).toSet().forEach { find(it)?.lastCombatTick = state.tick }
         frame.memberDefeats.distinctBy { it.invasionId to it.memberId }.forEach { defeat ->
             val invasion = find(defeat.invasionId) ?: return@forEach
             if (invasion.members.none { it.memberId == defeat.memberId }) return@forEach
             invasion.defeatedMemberIds += defeat.memberId
             invasion.lastCombatTick = state.tick
             if (invasion.defeatedMemberIds.size == invasion.members.size) {
-                val track = state.tracks[invasion.targetPlayerId] ?: return@forEach
-                resolve(track, InvasionOutcome.CLEARED, events)
+                primaryTracks().firstOrNull { it.invasion?.invasionId == invasion.invasionId }?.let {
+                    resolve(it, InvasionOutcome.CLEARED, events)
+                }
             }
         }
         frame.targetDeaths.map(TargetDeathObservation::playerId).toSet().forEach { playerId ->
-            val track = state.tracks[playerId] ?: return@forEach
-            if (track.invasion?.phase == InvasionPhase.ACTIVE) requestRetire(track, InvasionOutcome.TARGET_DIED, events)
+            primaryTracks().firstOrNull { playerId in (it.invasion?.participantPlayerIds ?: emptyList()) }?.let {
+                requestRetire(it, InvasionOutcome.TARGET_DIED, events)
+            }
+        }
+        players.values.filter(PlayerObservation::downed).forEach { player ->
+            primaryTracks().firstOrNull { player.playerId in (it.invasion?.participantPlayerIds ?: emptyList()) }?.let {
+                requestRetire(it, InvasionOutcome.TARGET_DIED, events)
+            }
         }
     }
 
@@ -149,58 +275,102 @@ class InvasionDirector private constructor(
         if (invasion.phase == InvasionPhase.RETIRING) return
         invasion.phase = InvasionPhase.RETIRING
         invasion.pendingOutcome = outcome
-        publish(DirectorEffect("", EffectKind.RETIRE, track.playerId, invasion.invasionId))
+        state.pendingEffects.entries.removeIf { it.value.invasionId == invasion.invasionId }
+        publish(DirectorEffect("", EffectKind.RETIRE, invasion.targetPlayerId, invasion.invasionId, invasion.kind,
+            participantPlayerIds = invasion.participantPlayerIds))
         events += event("retire_requested", invasion.invasionId, outcome.name.lowercase())
     }
 
     private fun resolve(track: PlayerPressureTrack, outcome: InvasionOutcome, events: MutableList<DirectorEvent>) {
         val invasion = track.invasion ?: return
-        when (outcome) {
-            InvasionOutcome.CLEARED -> track.outcomeAdjustment = (track.outcomeAdjustment + 1).coerceAtMost(2)
-            InvasionOutcome.TARGET_DIED -> track.outcomeAdjustment = (track.outcomeAdjustment - 1).coerceAtLeast(-2)
-            InvasionOutcome.RETIRED -> track.outcomeAdjustment += -track.outcomeAdjustment.sign()
+        invasion.participantPlayerIds.forEach { id ->
+            val participant = track(id)
+            if (invasion.kind == EncounterKind.ASSAULT) {
+                when (outcome) {
+                    InvasionOutcome.CLEARED ->
+                        participant.outcomeAdjustment = (participant.outcomeAdjustment + 1).coerceAtMost(2)
+                    InvasionOutcome.TARGET_DIED ->
+                        participant.outcomeAdjustment = (participant.outcomeAdjustment - 1).coerceAtLeast(-2)
+                    InvasionOutcome.RETIRED -> Unit
+                }
+            }
+            participant.joinedInvasionId = null
+            schedule(participant, invasion.kind, if (outcome == InvasionOutcome.TARGET_DIED) spec.rules.deathGraceTicks else 0)
+            if (invasion.kind == EncounterKind.ASSAULT) schedule(participant, EncounterKind.SCOUT)
         }
         track.invasion = null
         state.pendingEffects.entries.removeIf { it.value.invasionId == invasion.invasionId }
-        schedule(track, first = false, grace = if (outcome == InvasionOutcome.TARGET_DIED) spec.rules.deathGraceTicks else 0L)
         events += event("resolved", invasion.invasionId, outcome.name.lowercase())
     }
 
-    private fun schedule(track: PlayerPressureTrack, first: Boolean, grace: Long = 0L) {
-        val min = if (first) spec.rules.firstWindowMinTicks else spec.rules.repeatWindowMinTicks
-        val max = if (first) spec.rules.firstWindowMaxTicks else spec.rules.repeatWindowMaxTicks
-        val random = Random(stableSeed(state.worldSeed, track.playerId, track.invasionSequence, if (first) "first" else "repeat"))
-        val delay = if (max == min) min else random.nextLong(min, max + 1L)
-        track.nextDueEligibleTick = track.eligibleTicks + maxOf(grace, delay)
+    private fun applyCommands(commands: List<DirectorCommand>, events: MutableList<DirectorEvent>) {
+        commands.forEach { command ->
+            when (command) {
+                is DirectorCommand.Force -> track(command.playerId).let {
+                    if (command.kind == EncounterKind.SCOUT) it.nextScoutEligibleTick = it.eligibleTicks
+                    else it.nextAssaultEligibleTick = it.eligibleTicks
+                    events += event("forced", command.playerId, command.kind.name.lowercase())
+                }
+                is DirectorCommand.Reset -> if (command.playerId == null) {
+                    state.tracks.clear()
+                    state.pendingEffects.clear()
+                    events += event("reset", "all")
+                } else {
+                    val id = state.tracks[command.playerId]?.invasion?.invasionId ?: state.tracks[command.playerId]?.joinedInvasionId
+                    if (id != null) {
+                        primaryTracks().firstOrNull { it.invasion?.invasionId == id }?.invasion?.participantPlayerIds?.forEach {
+                            state.tracks[it]?.joinedInvasionId = null
+                            state.tracks[it]?.invasion = null
+                        }
+                        state.pendingEffects.entries.removeIf { it.value.invasionId == id }
+                    }
+                    state.tracks.remove(command.playerId)
+                    events += event("reset", command.playerId)
+                }
+            }
+        }
     }
 
-    private fun applyCommands(commands: List<DirectorCommand>, events: MutableList<DirectorEvent>) {
-        commands.forEach { command -> when (command) {
-            is DirectorCommand.Force -> state.tracks.getOrPut(command.playerId) { PlayerPressureTrack(command.playerId) }.let {
-                it.nextDueEligibleTick = it.eligibleTicks
-                events += event("forced", command.playerId)
-            }
-            is DirectorCommand.Reset -> if (command.playerId == null) {
-                state.tracks.clear(); state.pendingEffects.clear(); events += event("reset", "all")
-            } else {
-                state.tracks.remove(command.playerId); state.pendingEffects.entries.removeIf { it.value.playerId == command.playerId }
-                events += event("reset", command.playerId)
-            }
-        } }
+    private fun schedule(track: PlayerPressureTrack, kind: EncounterKind, grace: Long = 0L) {
+        val (min, max) = if (kind == EncounterKind.SCOUT)
+            spec.rules.scoutWindowMinTicks to spec.rules.scoutWindowMaxTicks
+        else spec.rules.assaultWindowMinTicks to spec.rules.assaultWindowMaxTicks
+        val random = Random(stableSeed(state.worldSeed, track.playerId, track.encounterSequence, kind))
+        val delay = if (min == max) min else random.nextLong(min, max + 1)
+        val due = track.eligibleTicks + maxOf(grace, delay)
+        if (kind == EncounterKind.SCOUT) track.nextScoutEligibleTick = due else track.nextAssaultEligibleTick = due
     }
+
+    private fun warning(kind: EncounterKind) = if (kind == EncounterKind.ASSAULT) spec.rules.assaultWarningSurfaceTicks else 0
+    private fun due(track: PlayerPressureTrack, kind: EncounterKind) =
+        if (kind == EncounterKind.SCOUT) track.nextScoutEligibleTick else track.nextAssaultEligibleTick
+    private fun track(id: String) = state.tracks.getOrPut(id) { PlayerPressureTrack(id) }
+    private fun primaryTracks() = state.tracks.values.filter { it.invasion != null }
+    private fun trackedLivePopulation() = primaryTracks().sumOf { track ->
+        track.invasion!!.waves.sumOf { it.materializedMembers } - track.invasion!!.defeatedMemberIds.size
+    }
+    private fun find(id: String) = primaryTracks().firstNotNullOfOrNull {
+        it.invasion?.takeIf { invasion -> invasion.invasionId == id }
+    }
+    private fun participantInAssault(id: String) = primaryTracks().any {
+        it.invasion?.kind == EncounterKind.ASSAULT && id in it.invasion!!.participantPlayerIds
+    }
+    private fun chooseTarget(invasion: InvasionState, players: Map<String, PlayerObservation>): PlayerObservation? =
+        players[invasion.targetPlayerId]?.takeIf { it.eligible && it.physicallyAvailable }
+            ?: invasion.participantPlayerIds.asSequence().mapNotNull(players::get)
+                .filter { it.eligible && it.physicallyAvailable }
+                .minWithOrNull(compareBy<PlayerObservation> { distanceSquared(it.position, invasion.routeTarget) }
+                    .thenBy { it.playerId })
 
     private fun publish(effect: DirectorEffect) {
-        state.effectSequence += 1L
-        val id = "effect:${state.effectSequence}"
+        val id = "effect:${++state.effectSequence}"
         state.pendingEffects[id] = effect.copy(effectId = id)
     }
-
-    private fun find(invasionId: String): InvasionState? = state.tracks.values.firstNotNullOfOrNull { it.invasion?.takeIf { invasion -> invasion.invasionId == invasionId } }
     private fun event(type: String, subject: String, detail: String = "") = DirectorEvent(state.tick, type, subject, detail)
 
     companion object {
         private val JSON = Json { encodeDefaults = true }
-        fun create(worldSeed: Long, spec: InvasionRuntimeSpec): InvasionDirector = restore(DirectorSnapshot(worldSeed = worldSeed), spec)
+        fun create(worldSeed: Long, spec: InvasionRuntimeSpec) = restore(DirectorSnapshot(worldSeed = worldSeed), spec)
         fun restore(snapshot: DirectorSnapshot, spec: InvasionRuntimeSpec): InvasionDirector {
             spec.requireValid()
             require(snapshot.schemaVersion == DirectorSnapshot.CURRENT_SCHEMA_VERSION)
@@ -208,53 +378,104 @@ class InvasionDirector private constructor(
         }
         private fun copy(snapshot: DirectorSnapshot): DirectorSnapshot = JSON.decodeFromString(JSON.encodeToString(snapshot))
         private fun copy(spec: InvasionRuntimeSpec): InvasionRuntimeSpec = JSON.decodeFromString(JSON.encodeToString(spec))
-        private fun copyEffect(effect: DirectorEffect): DirectorEffect = effect.copy(members = effect.members.toList())
-        private fun stableSeed(vararg values: Any): Long = values.fold(-3750763034362895579L) { hash, value ->
+        private fun copyEffect(effect: DirectorEffect) = effect.copy(
+            members = effect.members.toList(), participantPlayerIds = effect.participantPlayerIds.toList())
+        internal fun stableSeed(vararg values: Any): Long = values.fold(-3750763034362895579L) { hash, value ->
             value.toString().fold(hash) { next, character -> (next xor character.code.toLong()) * 1099511628211L }
         }
-        private fun Int.sign(): Int = when { this > 0 -> 1; this < 0 -> -1; else -> 0 }
         private fun cellKey(x: Int, z: Int) = "$x:$z"
+        private fun moved(a: BlockPoint, b: BlockPoint) =
+            a.dimension != b.dimension || maxOf(abs(a.x - b.x), abs(a.z - b.z)) > 16
+        private fun close(a: PlayerObservation, b: PlayerObservation, radius: Int): Boolean {
+            val pa = a.position ?: return false
+            val pb = b.position ?: return false
+            return pa.dimension == pb.dimension && distanceSquared(pa, pb) <= radius.toLong() * radius
+        }
+        private fun distanceSquared(a: BlockPoint?, b: BlockPoint?): Long {
+            if (a == null || b == null || a.dimension != b.dimension) return Long.MAX_VALUE
+            val dx = (a.x - b.x).toLong()
+            val dz = (a.z - b.z).toLong()
+            return dx * dx + dz * dz
+        }
+        private fun <T> rotate(values: List<T>, offset: Int) = values.drop(offset) + values.take(offset)
     }
 }
 
+object EncounterPolicy {
+    fun memberCount(kind: EncounterKind, intensity: Int, players: Int, rules: InvasionRules): Int {
+        require(players > 0)
+        return when (kind) {
+            EncounterKind.SCOUT -> (3 + 3 * intensity / rules.maximumIntensity.coerceAtLeast(1) +
+                2 * (players - 1)).coerceAtMost(rules.scoutGroupCap)
+            EncounterKind.ASSAULT -> {
+                val base = 8 + 4 * intensity / rules.maximumIntensity.coerceAtLeast(1)
+                ceil(base * (1.0 + 0.5 * (players - 1))).toInt().coerceAtMost(rules.assaultGroupCap)
+            }
+        }
+    }
+    fun waveBudget(size: Int, intensity: Int, waveIndex: Int) =
+        (size * (2.25 + 0.25 * intensity + 0.25 * waveIndex)).roundToInt()
+}
+
 object RosterPlanner {
-    fun plan(recruits: List<RecruitSpec>, intensity: Int, budget: Int, rules: InvasionRules, seed: Long): List<MemberPlan> {
-        val available = recruits.filter { it.unlockIntensity <= intensity }.sortedBy(RecruitSpec::entityId)
-        require(available.isNotEmpty())
-        val random = Random(seed)
+    fun planWave(
+        recruits: List<RecruitSpec>, kind: EncounterKind, intensity: Int, waveIndex: Int,
+        memberCount: Int, encounterId: String, worldSeed: Long,
+    ): WavePlan {
+        val eligible = recruits.filter { it.unlockIntensity <= intensity }.sortedBy(RecruitSpec::entityId)
+        require(eligible.isNotEmpty())
+        val allowedRoles = when {
+            kind == EncounterKind.SCOUT -> setOf(RecruitRole.LINE, RecruitRole.RANGED)
+            waveIndex == 0 -> setOf(RecruitRole.LINE, RecruitRole.RANGED)
+            else -> RecruitRole.entries.toSet()
+        }
+        val available = eligible.filter { it.role in allowedRoles }
+        require(available.isNotEmpty()) { "no eligible recruits for $kind wave $waveIndex" }
+        val budget = if (kind == EncounterKind.SCOUT) memberCount * 3
+            else EncounterPolicy.waveBudget(memberCount, intensity, waveIndex)
+        val random = Random(InvasionDirector.stableSeed(worldSeed, encounterId, waveIndex))
         val chosen = mutableListOf<RecruitSpec>()
         var remaining = budget
-
-        fun addFrom(role: RecruitRole): Boolean {
-            val candidates = available.filter { it.role == role && it.cost <= remaining && chosen.count { prior -> prior.entityId == it.entityId } < it.maximumPerSquad }
-            if (candidates.isEmpty()) return false
-            val selected = weighted(candidates, random)
-            chosen += selected; remaining -= selected.cost
+        fun add(candidates: List<RecruitSpec>): Boolean {
+            val cheapest = available.minOf(RecruitSpec::cost)
+            val slotsAfter = memberCount - chosen.size - 1
+            val usable = candidates.filter { recruit ->
+                recruit.cost + cheapest * slotsAfter <= remaining &&
+                    chosen.count { it.entityId == recruit.entityId } < recruit.maximumPerSquad
+            }
+            if (usable.isEmpty()) return false
+            val selected = weighted(usable, random)
+            chosen += selected
+            remaining -= selected.cost
             return true
         }
-
-        addFrom(RecruitRole.RANGED)
-        if (intensity >= 1) addFrom(RecruitRole.FRONTLINE)
-        while (chosen.size < rules.maximumMembers) {
+        if (kind == EncounterKind.ASSAULT && waveIndex == 2 && intensity >= 3)
+            add(available.filter { it.role == RecruitRole.ELITE && (it.entityId != "minecraft:ravager" || intensity >= 5) })
+        if (kind == EncounterKind.ASSAULT && waveIndex >= 1)
+            add(available.filter { it.role == RecruitRole.FRONTLINE })
+        if (waveIndex == 1) add(available.filter { it.role == RecruitRole.SUPPORT })
+        while (chosen.size < memberCount) {
             val candidates = available.filter { candidate ->
-                candidate.cost <= remaining && chosen.count { it.entityId == candidate.entityId } < candidate.maximumPerSquad &&
-                    (candidate.role !in setOf(RecruitRole.SUPPORT, RecruitRole.ELITE) || chosen.none { it.role == candidate.role })
+                (candidate.role != RecruitRole.SUPPORT || chosen.none { it.role == RecruitRole.SUPPORT }) &&
+                    (candidate.role != RecruitRole.ELITE || chosen.none { it.role == RecruitRole.ELITE }) &&
+                    (candidate.entityId != "minecraft:ravager" || intensity >= 5)
             }
-            if (candidates.isEmpty()) break
-            val selected = weighted(candidates, random)
-            chosen += selected; remaining -= selected.cost
+            if (!add(candidates)) break
         }
-        val cheapest = available.minWith(compareBy<RecruitSpec> { it.cost }.thenBy { it.entityId })
-        while (chosen.size < rules.minimumMembers && chosen.size < rules.maximumMembers && cheapest.cost <= remaining) {
-            chosen += cheapest; remaining -= cheapest.cost
+        require(chosen.size == memberCount) { "budget $budget cannot form $memberCount-member $kind wave $waveIndex" }
+        val members = chosen.mapIndexed { index, recruit ->
+            MemberPlan("wave:$waveIndex:member:${index + 1}", recruit.entityId, recruit.cost, waveIndex)
         }
-        require(chosen.size >= rules.minimumMembers) { "budget $budget cannot form minimum invasion squad" }
-        return chosen.mapIndexed { index, recruit -> MemberPlan("member:${index + 1}", recruit.entityId, recruit.cost) }
+        require(members.sumOf(MemberPlan::cost) <= budget)
+        return WavePlan(waveIndex, budget, members)
     }
 
     private fun weighted(candidates: List<RecruitSpec>, random: Random): RecruitSpec {
         var cursor = random.nextInt(candidates.sumOf(RecruitSpec::weight))
-        candidates.forEach { candidate -> cursor -= candidate.weight; if (cursor < 0) return candidate }
+        candidates.forEach { candidate ->
+            cursor -= candidate.weight
+            if (cursor < 0) return candidate
+        }
         return candidates.last()
     }
 }
@@ -262,34 +483,33 @@ object RosterPlanner {
 object SurfaceApproach {
     fun choose(cells: Collection<SurfaceCell>, target: BlockPoint, rules: InvasionRules, seed: Long): SurfaceCell? {
         val passable = cells.filter(SurfaceCell::passable).associateBy { it.x to it.z }
-        val origins = passable.values.filter { cell ->
-            maxOf(abs(cell.x - target.x), abs(cell.z - target.z)) in rules.approachMinimumBlocks..rules.approachMaximumBlocks
-        }.sortedWith(
-            compareByDescending<SurfaceCell> { maxOf(abs(it.x - target.x), abs(it.z - target.z)) }
-                .thenBy { stableRank(it, seed) }.thenBy { it.x }.thenBy { it.z },
-        )
-        if (origins.isEmpty()) return null
+        val origins = passable.values.filter {
+            chebyshev(it, target) in rules.approachMinimumBlocks..rules.approachMaximumBlocks
+        }.sortedWith(compareByDescending<SurfaceCell> { chebyshev(it, target) }
+            .thenBy { stableRank(it, seed) }.thenBy { it.x }.thenBy { it.z })
         data class Node(val cell: SurfaceCell, val origin: SurfaceCell)
-        val queue = ArrayDeque<Node>()
-        val seen = hashSetOf<Pair<Int, Int>>()
-        val origin = origins.first()
-        seen += origin.x to origin.z
-        queue += Node(origin, origin)
-        var best = queue.first()
-        var expansions = 0
-        while (queue.isNotEmpty() && expansions < rules.maximumSearchExpansions) {
-            val node = queue.removeFirst(); expansions++
-            if (distance(node.cell, target) < distance(best.cell, target)) best = node
-            listOf(1 to 0, -1 to 0, 0 to 1, 0 to -1).forEach { (dx, dz) ->
-                val next = passable[node.cell.x + dx to node.cell.z + dz] ?: return@forEach
-                val rise = next.bodyY - node.cell.bodyY
-                if (rise > 1 || rise < -2 || !seen.add(next.x to next.z)) return@forEach
-                queue += Node(next, node.origin)
+        origins.forEach originLoop@ { origin ->
+            val queue = ArrayDeque<Node>()
+            val seen = hashSetOf(origin.x to origin.z)
+            queue += Node(origin, origin)
+            var expansions = 0
+            while (queue.isNotEmpty() && expansions < rules.maximumSearchExpansions) {
+                expansions++
+                val node = queue.removeFirst()
+                if (chebyshev(node.cell, target) <= rules.approachTargetRadiusBlocks) return node.origin
+                CARDINALS.forEach neighbors@ { (dx, dz) ->
+                    val next = passable[node.cell.x + dx to node.cell.z + dz] ?: return@neighbors
+                    val rise = next.bodyY - node.cell.bodyY
+                    if (rise > 1 || rise < -2 || !seen.add(next.x to next.z)) return@neighbors
+                    queue += Node(next, origin)
+                }
             }
         }
-        return best.origin
+        return null
     }
-
-    private fun distance(cell: SurfaceCell, target: BlockPoint) = abs(cell.x - target.x) + abs(cell.z - target.z)
-    private fun stableRank(cell: SurfaceCell, seed: Long): Long = (seed xor (cell.x.toLong() shl 32) xor cell.z.toLong()) * -7046029254386353131L
+    private val CARDINALS = listOf(1 to 0, -1 to 0, 0 to 1, 0 to -1)
+    private fun chebyshev(cell: SurfaceCell, target: BlockPoint) =
+        maxOf(abs(cell.x - target.x), abs(cell.z - target.z))
+    private fun stableRank(cell: SurfaceCell, seed: Long) =
+        (seed xor (cell.x.toLong() shl 32) xor cell.z.toLong()) * -7046029254386353131L
 }

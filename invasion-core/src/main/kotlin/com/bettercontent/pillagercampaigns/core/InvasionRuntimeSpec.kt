@@ -23,11 +23,11 @@ data class InvasionRuntimeSpec(
         require(revision == computedRevision())
         require(recruits.isNotEmpty() && recruits.map(RecruitSpec::entityId).distinct().size == recruits.size)
         require(recruits.all { it.entityId.contains(':') && it.cost > 0 && it.unlockIntensity in 0..rules.maximumIntensity && it.weight > 0 && it.maximumPerSquad > 0 })
-        require(recruits.any { !it.optional && it.unlockIntensity == 0 && it.cost <= rules.threatBudgets.first() })
+        require(recruits.any { !it.optional && it.unlockIntensity == 0 && it.role in setOf(RecruitRole.LINE, RecruitRole.RANGED) })
     }
 
     companion object {
-        const val CURRENT_SCHEMA_VERSION: Int = 1
+        const val CURRENT_SCHEMA_VERSION: Int = 2
         private val JSON = Json { encodeDefaults = true }
 
         fun create(rules: InvasionRules, recruits: List<RecruitSpec>): InvasionRuntimeSpec =

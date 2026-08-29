@@ -13,22 +13,38 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 
 object SurfaceGridSampler {
-    private data class Cursor(val invasionId: String, var index: Int = 0)
+    private data class Cursor(
+        val invasionId: String,
+        var centerX: Int,
+        var centerZ: Int,
+        var index: Int = 0,
+        val cells: MutableMap<Pair<Int, Int>, SurfaceCell> = linkedMapOf(),
+    )
     private val cursors = ConcurrentHashMap<UUID, Cursor>()
     private val offsetCache = ConcurrentHashMap<Int, List<Pair<Int, Int>>>()
 
     fun sample(level: ServerLevel, player: ServerPlayer, invasionId: String, radius: Int, budget: Int): SurfaceGridObservation {
-        val cursor = cursors.compute(player.uuid) { _, existing -> existing?.takeIf { it.invasionId == invasionId } ?: Cursor(invasionId) }!!
+        val cursor = cursors.compute(player.uuid) { _, existing ->
+            existing?.takeIf {
+                it.invasionId == invasionId && abs(it.centerX - player.blockX) <= 16 && abs(it.centerZ - player.blockZ) <= 16
+            } ?: Cursor(invasionId, player.blockX, player.blockZ)
+        }!!
         val offsets = offsetCache.computeIfAbsent(radius.coerceAtLeast(1), ::orderedOffsets)
-        val cells = ArrayList<SurfaceCell>(budget.coerceAtMost(offsets.size))
         var inspected = 0
         while (inspected < budget && cursor.index < offsets.size) {
             val (dx, dz) = offsets[cursor.index++]
             inspected++
-            surfaceCell(level, player.blockX + dx, player.blockZ + dz)?.let(cells::add)
+            val x = cursor.centerX + dx
+            val z = cursor.centerZ + dz
+            val key = x to z
+            val cell = surfaceCell(level, x, z)
+            if (cell == null) cursor.cells.remove(key) else cursor.cells[key] = cell
         }
-        if (cursor.index >= offsets.size) cursor.index = 0
-        return SurfaceGridObservation(player.uuid.toString(), cells)
+        if (cursor.index < offsets.size) return SurfaceGridObservation(player.uuid.toString(), emptyList(), complete = false)
+        val complete = cursor.cells.values.toList()
+        cursor.index = 0
+        cursor.cells.clear()
+        return SurfaceGridObservation(player.uuid.toString(), complete, complete = true)
     }
 
     fun isNearSurface(player: ServerPlayer): Boolean {
@@ -41,11 +57,34 @@ object SurfaceGridSampler {
         val positions = mutableListOf<BlockPos>()
         memberOffsets(5).forEach { (dx, dz) ->
             if (positions.size >= count) return@forEach
-            surfaceCell(level, anchor.x + dx, anchor.z + dz)?.takeIf(SurfaceCell::passable)?.let { cell ->
-                positions += BlockPos(cell.x, cell.bodyY, cell.z)
-            }
+            val x = anchor.x + dx
+            val z = anchor.z + dz
+            (1 downTo -2).asSequence().map { dy -> BlockPos(x, anchor.y + dy, z) }
+                .firstOrNull { exactColumn(level, it) }
+                ?.let(positions::add)
         }
         return positions.distinct().takeIf { it.size == count }.orEmpty()
+    }
+
+    private fun exactColumn(level: ServerLevel, body: BlockPos): Boolean {
+        if (level.chunkSource.getChunkNow(body.x shr 4, body.z shr 4) == null) return false
+        val floor = body.below()
+        val floorState = level.getBlockState(floor)
+        return floorState.fluidState.isEmpty && floorState.isSolidRender(level, floor) &&
+            level.getFluidState(body).isEmpty && level.getFluidState(body.above()).isEmpty &&
+            level.getBlockState(body).getCollisionShape(level, body).isEmpty &&
+            level.getBlockState(body.above()).getCollisionShape(level, body.above()).isEmpty
+    }
+
+    fun loadedRectangle(level: ServerLevel, first: BlockPos, second: BlockPos, margin: Int = 6): Boolean {
+        val minChunkX = (minOf(first.x, second.x) - margin) shr 4
+        val maxChunkX = (maxOf(first.x, second.x) + margin) shr 4
+        val minChunkZ = (minOf(first.z, second.z) - margin) shr 4
+        val maxChunkZ = (maxOf(first.z, second.z) + margin) shr 4
+        for (chunkX in minChunkX..maxChunkX) for (chunkZ in minChunkZ..maxChunkZ) {
+            if (level.chunkSource.getChunkNow(chunkX, chunkZ) == null) return false
+        }
+        return true
     }
 
     internal fun surfaceCell(level: ServerLevel, x: Int, z: Int): SurfaceCell? {

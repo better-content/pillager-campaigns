@@ -1,6 +1,6 @@
 # Pillager Campaigns Testing
 
-`./gradlew verifyFast --no-daemon` runs Core, runner, Forge-facing unit tests, and the 90% line-coverage gates. `./gradlew verifyFull --no-daemon` adds the headless Forge GameTests.
+`./gradlew verifyFast --no-daemon` runs the fixed 1,024-seed Core corpus, runner, Forge-facing unit tests, and the Core 90% line-coverage gate. `./gradlew verifyFull --no-daemon` adds headless Forge GameTests. `./gradlew verifyWorld --no-daemon` runs the Forge lane with the exact authored roster mods.
 
 ## Deterministic Core gate
 
@@ -16,15 +16,17 @@ For the installed pack roster, run `/pillager_campaigns export_runtime_spec` aft
 ## Required live validation
 
 - Use Survival in the Overworld with view and simulation distance four.
-- Verify the first warning and materialization occur within 24,000–36,000 eligible ticks on viable surface terrain.
-- Resolve the invasion and verify the next arrives within 24,000–48,000 eligible ticks.
-- Go underground before a due invasion; verify it remains queued, warns on returning to the surface, and receives the full 600 surface-tick warning.
+- Verify silent scouts arrive within 7,200–14,400 eligible ticks and contain 3–6 ranged/line recruits.
+- Verify assaults arrive within 72,000–144,000 eligible ticks and receive the full 2,400 surface-tick warning.
+- Verify each assault has three 8–12-member waves and advances after half the prior wave falls or after 1,500 ticks.
+- Go underground before delivery; verify both clocks continue for an eligible Overworld Survival player but delivery waits for viable surface terrain.
 - Build a known two-block wall between an approach edge and the player; verify the solid-surface model does not traverse it and the squad appears on the outer frontier.
 - Verify sampling does not load or generate a remote chunk.
 - Travel away from a bed or base and verify pressure follows the current player rather than attacking the empty home.
 - Clear successive invasions and verify intensity rises within `0..5`; die to one and verify intensity pressure falls and the death grace applies.
-- Verify squads contain 3–8 members, optional recruits appear only when installed/unlocked, and support/elite recruits remain capped.
+- Verify support and elite recruits remain capped at one per wave, a final-wave elite appears at intensity 3+, and ravagers appear only at intensity 5.
+- Verify no tick exceeds 8 spawns, no rolling second exceeds 24, and tracked campaign population never exceeds 96.
 - Ignore or leave an invasion and verify remaining tagged entities retire within the configured idle/unavailable limits.
 - Load a pre-0.3 world copy and verify the old strategic state is discarded with one explicit warning and the new player pressure track starts cleanly.
 
-Forge GameTests specifically guard runtime roster revision, loaded-chunk-only observation, and the height-field wall model. Native combat feel remains a live playtest requirement.
+Forge GameTests create a real Survival dummy player at an explicit Y, exercise open and closed navigation gates with `Path.canReach()`, reject solid/fluid occupation, prove remote chunks remain unloaded, and verify EVENT spawn targeting/provenance/cleanup. Native combat feel remains a live playtest requirement.

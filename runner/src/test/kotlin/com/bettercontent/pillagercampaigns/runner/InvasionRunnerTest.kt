@@ -10,7 +10,10 @@ import kotlin.test.assertTrue
 
 class InvasionRunnerTest {
     private val spec = InvasionRuntimeSpec.create(
-        InvasionRules(firstWindowMinTicks = 100, firstWindowMaxTicks = 100, repeatWindowMinTicks = 200, repeatWindowMaxTicks = 200, warningSurfaceTicks = 20, timeTierTicks = 1_000),
+        InvasionRules(scoutWindowMinTicks = 100, scoutWindowMaxTicks = 100,
+            assaultWindowMinTicks = 1_000, assaultWindowMaxTicks = 1_000,
+            assaultWarningSurfaceTicks = 20, timeTierTicks = 1_000,
+            approachMinimumBlocks = 48, approachMaximumBlocks = 72),
         listOf(
             RecruitSpec("minecraft:pillager", 2, 0, RecruitRole.RANGED, 4),
             RecruitSpec("minecraft:vindicator", 3, 1, RecruitRole.FRONTLINE, 3),

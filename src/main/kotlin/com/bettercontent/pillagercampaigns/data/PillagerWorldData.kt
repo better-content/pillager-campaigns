@@ -61,7 +61,7 @@ class PillagerWorldData private constructor(private var restored: DirectorSnapsh
 
         internal fun load(tag: CompoundTag, worldSeed: Long): PillagerWorldData {
             if (tag.getInt("schema") != DirectorSnapshot.CURRENT_SCHEMA_VERSION || !tag.contains("snapshot")) {
-                if (!tag.isEmpty) PillagerCampaignsMod.LOGGER.warn("Discarding pre-0.3 Pillager Campaigns strategic state; the invasion director starts fresh")
+                if (!tag.isEmpty) PillagerCampaignsMod.LOGGER.warn("Discarding schema-1 Pillager Campaigns state; independent scout and assault clocks start fresh in schema 2")
                 return PillagerWorldData(DirectorSnapshot(worldSeed = worldSeed))
             }
             val snapshot = runCatching { JSON.decodeFromString<DirectorSnapshot>(tag.getString("snapshot")) }
