@@ -227,9 +227,29 @@ object PillagerCampaignsEvents {
     private fun force(source: CommandSourceStack, name: String?, kind: EncounterKind): Int {
         val player = target(source, name)
         if (player == null) { source.sendFailure(Component.literal("Player is not online")); return 0 }
+        val refreshedChunks = refreshLoadedTerrain(player)
         advance(source.server, 0L, listOf(DirectorCommand.Force(player.uuid.toString(), kind, expediteTravel = true)))
-        source.sendSuccess({ Component.literal("Forced immediate ${kind.name.lowercase()} pressure for ${player.scoreboardName}; recorded distant routing is still required") }, true)
+        source.sendSuccess({ Component.literal("Forced immediate ${kind.name.lowercase()} pressure for ${player.scoreboardName}; refreshed $refreshedChunks loaded terrain chunks and recorded distant routing is still required") }, true)
         return Command.SINGLE_SUCCESS
+    }
+
+    private fun refreshLoadedTerrain(player: ServerPlayer): Int {
+        val level = player.serverLevel()
+        if (level.dimension() != Level.OVERWORLD) return 0
+        val radius = PillagerCampaignsConfig.rules().strategicOriginMaximumBlocks + 16
+        val minChunkX = (player.blockX - radius) shr 4
+        val maxChunkX = (player.blockX + radius) shr 4
+        val minChunkZ = (player.blockZ - radius) shr 4
+        val maxChunkZ = (player.blockZ + radius) shr 4
+        val atlas = TerrainAtlasData.get(level.server)
+        var refreshed = 0
+        for (chunkZ in minChunkZ..maxChunkZ) for (chunkX in minChunkX..maxChunkX) {
+            level.chunkSource.getChunkNow(chunkX, chunkZ)?.let {
+                atlas.observe(level, it)
+                refreshed++
+            }
+        }
+        return refreshed
     }
 
     private fun inspect(source: CommandSourceStack, name: String?): Int {
