@@ -108,6 +108,33 @@ class InvasionDirectorTest {
         assertEquals(2, track(engine).invasion!!.currentWave)
     }
 
+    @Test fun `grouped assault warns every participant at the full lead and cannot arrive early`() {
+        val warningRules = rules.copy(
+            scoutWindowMinTicks = 10_000, scoutWindowMaxTicks = 10_000,
+            assaultWindowMinTicks = 1_000, assaultWindowMaxTicks = 1_000,
+            assaultWarningSurfaceTicks = 20,
+        )
+        val engine = InvasionDirector.create(31, InvasionRuntimeSpec.create(warningRules, roster))
+        val players = listOf(observation("a", 0), observation("b", 20))
+        engine.transition(DirectorFrame(0, players = players))
+        engine.transition(DirectorFrame(979, players = players,
+            surfaces = listOf(grid("a", 0))))
+        val beforeWarning = engine.snapshot().pendingEffects.values
+        assertTrue(beforeWarning.none { it.kind == EffectKind.WARN || it.kind == EffectKind.MATERIALIZE })
+
+        val warned = engine.transition(DirectorFrame(1, players = players))
+        val warning = warned.effects.single { it.kind == EffectKind.WARN }
+        assertEquals(listOf("a", "b"), warning.participantPlayerIds)
+        assertTrue(warned.effects.none { it.kind == EffectKind.MATERIALIZE },
+            "The warning must precede arrival by the configured 20 eligible ticks")
+        acknowledge(engine, warned)
+
+        val stillApproaching = engine.transition(DirectorFrame(19, players = players))
+        assertTrue(stillApproaching.effects.none { it.kind == EffectKind.MATERIALIZE })
+        val arrival = engine.transition(DirectorFrame(1, players = players))
+        assertTrue(arrival.effects.any { it.kind == EffectKind.MATERIALIZE })
+    }
+
     @Test fun `group scaling shares one encounter and exact provisional sizes`() {
         assertEquals(listOf(3, 3, 4, 4, 5, 6), (0..5).map {
             EncounterPolicy.memberCount(EncounterKind.SCOUT, it, 1, InvasionRules())

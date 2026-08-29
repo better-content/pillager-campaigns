@@ -36,6 +36,14 @@ class InvasionForgeRulesTest {
         assertEquals(9, offsets.takeWhile { maxOf(kotlin.math.abs(it.first), kotlin.math.abs(it.second)) <= 1 }.size)
     }
 
+    @Test fun `assault warning reaches the primary and every grouped participant once`() {
+        val effect = DirectorEffect(
+            "warning", EffectKind.WARN, "primary", "assault:group", EncounterKind.ASSAULT,
+            participantPlayerIds = listOf("nearby-b", "primary", "nearby-a", "nearby-b"),
+        )
+        assertEquals(listOf("primary", "nearby-b", "nearby-a"), InvasionRuntime.warningPlayerIds(effect))
+    }
+
     @Test fun `schema two migration preserves pressure clocks but clears active legacy encounters`() {
         val track = PlayerPressureTrack("player", eligibleTicks = 12_345, nextScoutEligibleTick = 20_000,
             nextAssaultEligibleTick = 90_000, encounterSequence = 7, outcomeAdjustment = 2,

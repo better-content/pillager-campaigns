@@ -41,11 +41,16 @@ object InvasionRuntime {
     }
 
     private fun warn(server: MinecraftServer, effect: DirectorEffect): Boolean {
-        val player = player(server, effect.playerId) ?: return false
-        player.playNotifySound(SoundEvents.RAID_HORN.get(), SoundSource.HOSTILE, 1.1f, 0.85f)
-        player.displayClientMessage(Component.literal("A pillager assault is forming. You have two minutes."), true)
-        return true
+        val recipients = warningPlayerIds(effect).mapNotNull { player(server, it) }
+        recipients.forEach { player ->
+            player.playNotifySound(SoundEvents.RAID_HORN.get(), SoundSource.HOSTILE, 1.1f, 0.85f)
+            player.displayClientMessage(Component.literal("A pillager assault is forming. You have two minutes."), true)
+        }
+        return recipients.isNotEmpty()
     }
+
+    internal fun warningPlayerIds(effect: DirectorEffect): List<String> =
+        (listOf(effect.playerId) + effect.participantPlayerIds).distinct()
 
     internal fun materialize(server: MinecraftServer, effect: DirectorEffect): Boolean {
         val intended = player(server, effect.playerId) ?: return false
