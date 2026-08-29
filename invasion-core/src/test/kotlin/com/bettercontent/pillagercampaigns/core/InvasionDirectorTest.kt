@@ -257,6 +257,61 @@ class InvasionDirectorTest {
             "Missing never-recorded terrain must block rather than be guessed")
     }
 
+    @Test fun `failed exact approach is excluded and deterministic routing selects another side`() {
+        val retryRules = rules.copy(
+            strategicOriginMinimumBlocks = 8, strategicOriginMaximumBlocks = 10,
+            strategicMaximumSearchExpansions = 8_000,
+        )
+        val target = BlockPoint("minecraft:overworld", 0, 64, 0)
+        val north = (1..10).flatMap { x -> (-5..-3).map { z -> SurfaceCell(x, 64, z) } }
+        val south = (1..10).flatMap { x -> (3..5).map { z -> SurfaceCell(x, 64, z) } }
+        val joins = (-5..5).flatMap { z -> (0..1).map { x -> SurfaceCell(x, 64, z) } }
+        val cells = (north + south + joins).distinctBy { it.x to it.z }
+        val first = assertNotNull(StrategicRoutePlanner.plan(cells, target, retryRules, 41L))
+        val failed = BlockPoint(target.dimension, first.route.last().x, first.route.last().bodyY, first.route.last().z)
+        val second = assertNotNull(StrategicRoutePlanner.plan(
+            cells, target, retryRules, 42L, excludedApproaches = listOf(failed),
+        ))
+        val separation = maxOf(kotlin.math.abs(second.route.last().x - failed.x),
+            kotlin.math.abs(second.route.last().z - failed.z))
+        assertTrue(separation > minOf(16, retryRules.approachMinimumBlocks),
+            "Retry anchor ${second.route.last()} must leave the rejected approach zone around $failed")
+        assertEquals(second, StrategicRoutePlanner.plan(
+            cells, target, retryRules, 42L, excludedApproaches = listOf(failed),
+        ))
+    }
+
+    @Test fun `failed materialization immediately retries a different proven route`() {
+        val travelRules = rules.copy(
+            strategicOriginMinimumBlocks = 5, strategicOriginMaximumBlocks = 6,
+            scoutStrategicMilliBlocksPerTick = 1_000,
+        )
+        val engine = InvasionDirector.create(79, InvasionRuntimeSpec.create(travelRules, roster))
+        engine.transition(DirectorFrame(0, commands = listOf(
+            DirectorCommand.Force("player", EncounterKind.SCOUT, expediteTravel = true),
+        )))
+        engine.transition(playerFrame(0))
+        var invasion = track(engine).invasion!!
+        val firstRoute = (6 downTo 4).map { BlockPoint("minecraft:overworld", it, 64, 0) }
+        val first = engine.transition(DirectorFrame(0, players = listOf(observation("player")), strategicRoutes = listOf(
+            StrategicRouteObservation("player", invasion.invasionId, invasion.routeTarget!!, 10, firstRoute, StrategicFrontier.OPEN),
+        )))
+        val failedEffect = first.effects.single { it.kind == EffectKind.MATERIALIZE }
+        engine.transition(DirectorFrame(0, effectResults = listOf(EffectResult(failedEffect.effectId, false))))
+        invasion = track(engine).invasion!!
+        assertEquals(firstRoute.last(), invasion.usedAnchors.single())
+        assertEquals(InvasionPhase.APPROACHING, invasion.phase)
+
+        val alternateRoute = (6 downTo 4).map { BlockPoint("minecraft:overworld", it, 64, 4) }
+        val retry = engine.transition(DirectorFrame(travelRules.normalPacketSpacingTicks,
+            players = listOf(observation("player")), strategicRoutes = listOf(
+            StrategicRouteObservation("player", invasion.invasionId, invasion.routeTarget!!, 10, alternateRoute, StrategicFrontier.OPEN),
+        )))
+        val retryEffect = retry.effects.single { it.kind == EffectKind.MATERIALIZE }
+        assertEquals(alternateRoute.last(), retryEffect.anchor)
+        assertEquals(2, track(engine).invasion!!.usedAnchors.size)
+    }
+
     @Test fun `immaterial travel uses fixed point speed and cadence remains an arrival window`() {
         val travelRules = rules.copy(
             strategicOriginMinimumBlocks = 5, strategicOriginMaximumBlocks = 6,

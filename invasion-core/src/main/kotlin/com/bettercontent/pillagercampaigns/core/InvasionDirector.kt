@@ -119,6 +119,9 @@ class InvasionDirector private constructor(
             if (target?.position != null && invasion.routeTarget?.let { moved(it, target.position) } == true) {
                 invasion.routeTarget = target.position
                 invasion.anchor = null
+                invasion.usedAnchors.clear()
+                invasion.strategicOrigin = null
+                invasion.strategicPosition = null
                 invasion.strategicRoute.clear()
                 invasion.strategicRouteIndex = 0
                 invasion.strategicFrontier = StrategicFrontier.UNKNOWN
@@ -156,7 +159,7 @@ class InvasionDirector private constructor(
         if (invasion.strategicRoute.isEmpty() || invasion.strategicFrontier == StrategicFrontier.UNKNOWN) return
         val speed = if (invasion.kind == EncounterKind.SCOUT) spec.rules.scoutStrategicMilliBlocksPerTick
             else spec.rules.assaultStrategicMilliBlocksPerTick
-        if (invasion.adminExpedited) {
+        if (invasion.adminExpedited || invasion.usedAnchors.isNotEmpty()) {
             invasion.strategicRouteIndex = invasion.strategicRoute.lastIndex
             invasion.strategicPosition = invasion.strategicRoute.last()
             invasion.scheduledArrivalEligibleTick = track.eligibleTicks

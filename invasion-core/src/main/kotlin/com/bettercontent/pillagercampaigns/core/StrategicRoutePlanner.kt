@@ -9,13 +9,17 @@ object StrategicRoutePlanner {
 
     fun plan(
         cells: Collection<SurfaceCell>, target: BlockPoint, rules: InvasionRules, seed: Long,
-        start: BlockPoint? = null,
+        start: BlockPoint? = null, excludedApproaches: Collection<BlockPoint> = emptyList(),
     ): Result? {
         val known = cells.associateBy { key(it.x, it.z) }
         val passable = known.values.filter(SurfaceCell::passable).associateBy { key(it.x, it.z) }
+        val retrySeparation = minOf(16, rules.approachMinimumBlocks)
+        fun excluded(cell: SurfaceCell) = excludedApproaches.any {
+            maxOf(abs(cell.x - it.x), abs(cell.z - it.z)) <= retrySeparation
+        }
         val origins = if (start != null) {
             listOfNotNull(passable[key(start.x, start.z)])
-        } else passable.values.filter {
+        } else passable.values.filter { !excluded(it) &&
             distance(it, target) in rules.strategicOriginMinimumBlocks..rules.strategicOriginMaximumBlocks
         }.sortedWith(compareBy<SurfaceCell> { stableRank(it, seed) }.thenBy { it.x }.thenBy { it.z })
         var remainingExpansions = rules.strategicMaximumSearchExpansions
@@ -41,7 +45,8 @@ object StrategicRoutePlanner {
                 CARDINALS.forEach { (dx, dz) ->
                     val candidateKey = key(cell.x + dx, cell.z + dz)
                     val candidate = known[candidateKey]
-                    if (candidate != null && candidate.passable && candidate.bodyY - cell.bodyY in -2..1 &&
+                    if (candidate != null && candidate.passable && !excluded(candidate) &&
+                        candidate.bodyY - cell.bodyY in -2..1 &&
                         !previous.containsKey(candidateKey)) {
                         previous[candidateKey] = key(cell.x, cell.z)
                         queue += Node(candidate, node.steps + 1)

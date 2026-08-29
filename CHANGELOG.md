@@ -5,6 +5,7 @@
 - Add permission-gated immediate scout and assault commands for client/server validation without waiting through the authored cadence.
 - Keep forced encounters gated by recorded distant-terrain routing and normal materialization checks.
 - Add structured live encounter inspection for route, wave, roster, targeting, and provenance verification.
+- Replan around exact-pathfinding failures instead of retrying one deterministic approach anchor forever.
 
 ## 0.5.0
 

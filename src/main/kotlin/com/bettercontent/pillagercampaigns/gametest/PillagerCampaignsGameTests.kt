@@ -167,6 +167,66 @@ object PillagerCampaignsGameTests {
     }
 
     @JvmStatic
+    @GameTest(templateNamespace = "minecraft", template = "empty", timeoutTicks = 160)
+    fun failedOpenApproachRetriesAtReachableAnchorWithoutCrossingDefense(helper: GameTestHelper) {
+        val base = helper.absolutePos(BlockPos(1, 2, 1))
+        buildSurface(helper, base)
+        for (z in 6..8) {
+            helper.level.setBlockAndUpdate(base.offset(7, 0, z), Blocks.STONE.defaultBlockState())
+            helper.level.setBlockAndUpdate(base.offset(7, 1, z), Blocks.STONE.defaultBlockState())
+        }
+        val fake = fake(helper, "retry")
+        fake.setGameMode(GameType.SURVIVAL)
+        fake.moveTo(base.x + 11.5, base.y.toDouble(), base.z + 7.5)
+        val playerId = fake.uuid.toString()
+        val target = BlockPoint("minecraft:overworld", fake.blockX, fake.blockY, fake.blockZ)
+        val rules = InvasionRules(
+            scoutWindowMinTicks = 0, scoutWindowMaxTicks = 0,
+            approachMinimumBlocks = 2, approachMaximumBlocks = 4, approachTargetRadiusBlocks = 1,
+            strategicOriginMinimumBlocks = 5, strategicOriginMaximumBlocks = 6,
+        )
+        val director = InvasionDirector.create(83, InvasionRuntimeSpec.create(rules,
+            listOf(RecruitSpec("minecraft:pillager", 2, 0, RecruitRole.RANGED))))
+        director.transition(DirectorFrame(0, commands = listOf(
+            DirectorCommand.Force(playerId, EncounterKind.SCOUT, expediteTravel = true),
+        )))
+        val player = PlayerObservation(playerId, true, true, true, target)
+        director.transition(DirectorFrame(0, players = listOf(player)))
+        var invasion = director.snapshot().tracks.getValue(playerId).invasion!!
+
+        val outside = base.offset(3, 0, 7)
+        val rejected = director.transition(DirectorFrame(0, players = listOf(player), strategicRoutes = listOf(
+            StrategicRouteObservation(playerId, invasion.invasionId, target, 1,
+                listOf(BlockPoint(target.dimension, outside.x - 3, outside.y, outside.z),
+                    BlockPoint(target.dimension, outside.x, outside.y, outside.z)), StrategicFrontier.OPEN),
+        ))).effects.single { it.kind == EffectKind.MATERIALIZE }
+        helper.assertTrue(!InvasionRuntime.materializeAgainst(helper.level, fake, rejected),
+            "The exact pathfinder must reject the atlas-open approach outside the closed defense")
+        director.transition(DirectorFrame(0, effectResults = listOf(EffectResult(rejected.effectId, false))))
+        invasion = director.snapshot().tracks.getValue(playerId).invasion!!
+        helper.assertTrue(invasion.usedAnchors.single() == rejected.anchor,
+            "The rejected exact approach must be retained as a retry exclusion")
+
+        val reachable = base.offset(9, 0, 7)
+        val retried = director.transition(DirectorFrame(rules.normalPacketSpacingTicks, players = listOf(player),
+            strategicRoutes = listOf(StrategicRouteObservation(playerId, invasion.invasionId, target, 2,
+                listOf(BlockPoint(target.dimension, reachable.x + 3, reachable.y, reachable.z),
+                    BlockPoint(target.dimension, reachable.x, reachable.y, reachable.z)), StrategicFrontier.OPEN),
+            ))).effects.single { it.kind == EffectKind.MATERIALIZE }
+        helper.assertTrue(retried.anchor == BlockPoint(target.dimension, reachable.x, reachable.y, reachable.z),
+            "Retry must advance to the alternate anchor instead of recycling the rejected one")
+        helper.assertTrue(InvasionRuntime.materializeAgainst(helper.level, fake, retried),
+            "The alternate same-side approach must pass exact navigation")
+        val members = InvasionRuntime.liveMembers(helper.level.server, invasion.invasionId)
+        helper.assertTrue(members.size == 3 && members.all { it.target === fake },
+            "The complete scout must arrive and target the dummy player after one rejected approach")
+        helper.assertTrue(members.all { it.blockX > base.x + 7 },
+            "Retry materialization must stay on the player's reachable side, never cross the wall")
+        InvasionRuntime.retire(helper.level.server, invasion.invasionId)
+        helper.succeed()
+    }
+
+    @JvmStatic
     @GameTest(templateNamespace = "minecraft", template = "empty", timeoutTicks = 300)
     fun terrainAtlasSurvivesActualChunkUnloadWithoutReloadingIt(helper: GameTestHelper) {
         val level = helper.level

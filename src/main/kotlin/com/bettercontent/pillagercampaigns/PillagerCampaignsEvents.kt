@@ -83,8 +83,9 @@ object PillagerCampaignsEvents {
             if (!needsRoute) return@mapNotNull null
             val cells = atlas.cellsAround(target.x, target.z, spec.rules.strategicOriginMaximumBlocks + 16)
             val result = StrategicRoutePlanner.plan(cells, target, spec.rules,
-                routeSeed(snapshot.worldSeed, invasion.invasionId, invasion.currentWave),
-                invasion.strategicPosition)
+                routeSeed(snapshot.worldSeed, invasion.invasionId, invasion.currentWave, invasion.usedAnchors.size),
+                if (invasion.usedAnchors.isEmpty()) invasion.strategicPosition else invasion.strategicOrigin,
+                invasion.usedAnchors)
             StrategicRouteObservation(track.playerId, invasion.invasionId, target, atlas.revision,
                 result?.route?.map { BlockPoint(target.dimension, it.x, it.bodyY, it.z) }.orEmpty(),
                 result?.frontier ?: StrategicFrontier.UNKNOWN)
