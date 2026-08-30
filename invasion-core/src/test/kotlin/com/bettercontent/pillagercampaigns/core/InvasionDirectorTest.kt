@@ -392,6 +392,20 @@ class InvasionDirectorTest {
         assertTrue(result.route.last().x in 48..72)
     }
 
+    @Test fun `connected recorded approach wins before an unrelated explored island exhausts the search budget`() {
+        val target = BlockPoint("minecraft:overworld", 0, 64, 0)
+        val connected = (0..540).flatMap { x -> (-2..2).map { z -> SurfaceCell(x, 64, z) } }
+        val unrelated = (512..620).flatMap { x -> (300..408).map { z -> SurfaceCell(x, 64, z) } }
+        val constrained = InvasionRules(strategicMaximumSearchExpansions = 700)
+
+        val result = assertNotNull(StrategicRoutePlanner.plan(unrelated + connected, target, constrained, 8665659058770451541L))
+
+        assertTrue(result.route.first().x in 512..540)
+        assertTrue(result.route.first().z in -2..2)
+        assertEquals(StrategicFrontier.OPEN, result.frontier)
+        assertTrue(result.route.last().x in 48..72)
+    }
+
     @Test fun `restore is exact schema is strict and invalid inputs fail closed`() {
         spec.requireValid()
         assertEquals(spec.revision, spec.computedRevision())

@@ -21,7 +21,8 @@ object StrategicRoutePlanner {
             listOfNotNull(passable[key(start.x, start.z)])
         } else passable.values.filter { !excluded(it) &&
             distance(it, target) in rules.strategicOriginMinimumBlocks..rules.strategicOriginMaximumBlocks
-        }.sortedWith(compareBy<SurfaceCell> { stableRank(it, seed) }.thenBy { it.x }.thenBy { it.z })
+        }.sortedWith(compareBy<SurfaceCell> { missingLineSamples(it, target, known) }
+            .thenBy { stableRank(it, seed) }.thenBy { it.x }.thenBy { it.z })
         var remainingExpansions = rules.strategicMaximumSearchExpansions
         for (origin in origins) {
             if (remainingExpansions <= 0) break
@@ -85,6 +86,29 @@ object StrategicRoutePlanner {
     private fun manhattan(cell: SurfaceCell, target: BlockPoint) = abs(cell.x - target.x) + abs(cell.z - target.z)
     private fun stableRank(cell: SurfaceCell, seed: Long) =
         (seed xor (cell.x.toLong() shl 32) xor cell.z.toLong()) * -7046029254386353131L
+
+    /**
+     * Prefer distant origins with a recorded-terrain chain toward the target. This is only an
+     * ordering hint: A* still proves every traversed block and enforces the global expansion cap.
+     * Sampling at chunk scale prevents an unrelated explored island from consuming the whole
+     * search budget before a connected approach corridor is tried.
+     */
+    private fun missingLineSamples(origin: SurfaceCell, target: BlockPoint, known: Map<Long, SurfaceCell>): Int {
+        val dx = target.x - origin.x
+        val dz = target.z - origin.z
+        val length = maxOf(abs(dx), abs(dz)).coerceAtLeast(1)
+        var missing = 0
+        var step = 0
+        while (step <= length) {
+            val x = origin.x + dx * step / length
+            val z = origin.z + dz * step / length
+            if (!known.containsKey(key(x, z))) missing++
+            step += 16
+        }
+        if (length % 16 != 0 && !known.containsKey(key(target.x, target.z))) missing++
+        return missing
+    }
+
     private fun key(x: Int, z: Int) = (x.toLong() shl 32) xor (z.toLong() and 0xffffffffL)
     private val CARDINALS = listOf(1 to 0, 0 to 1, -1 to 0, 0 to -1)
 }
