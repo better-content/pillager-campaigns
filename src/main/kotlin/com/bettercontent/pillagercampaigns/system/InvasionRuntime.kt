@@ -126,7 +126,7 @@ object InvasionRuntime {
             }
         }
         if (!pathsAcceptable) {
-            PillagerCampaignsMod.LOGGER.warn("Rejected campaign packet {} because its {} frontier did not match the real path to {}",
+            PillagerCampaignsMod.LOGGER.info("Rejected campaign packet {} because its {} frontier did not match the real path to {}",
                 effect.invasionId, effect.strategicFrontier, targetPos)
             spawned.forEach(Entity::discard)
             return false
