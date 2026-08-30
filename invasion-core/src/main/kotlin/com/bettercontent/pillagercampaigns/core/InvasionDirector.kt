@@ -479,7 +479,9 @@ object EncounterPolicy {
             EncounterKind.SCOUT -> (3 + 3 * intensity / rules.maximumIntensity.coerceAtLeast(1) +
                 2 * (players - 1)).coerceAtMost(rules.scoutGroupCap)
             EncounterKind.ASSAULT -> {
-                val base = 8 + 4 * intensity / rules.maximumIntensity.coerceAtLeast(1)
+                val base = rules.assaultMinimumMembers +
+                    (rules.assaultMaximumMembers - rules.assaultMinimumMembers) * intensity /
+                    rules.maximumIntensity.coerceAtLeast(1)
                 ceil(base * (1.0 + 0.5 * (players - 1))).toInt().coerceAtMost(rules.assaultGroupCap)
             }
         }

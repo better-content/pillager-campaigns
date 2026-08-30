@@ -139,11 +139,11 @@ class InvasionDirectorTest {
         assertEquals(listOf(3, 3, 4, 4, 5, 6), (0..5).map {
             EncounterPolicy.memberCount(EncounterKind.SCOUT, it, 1, InvasionRules())
         })
-        assertEquals(listOf(8, 8, 9, 10, 11, 12), (0..5).map {
+        assertEquals(listOf(16, 17, 19, 20, 22, 24), (0..5).map {
             EncounterPolicy.memberCount(EncounterKind.ASSAULT, it, 1, InvasionRules())
         })
-        assertEquals(18, EncounterPolicy.memberCount(EncounterKind.ASSAULT, 5, 2, InvasionRules()))
-        assertEquals(24, EncounterPolicy.memberCount(EncounterKind.ASSAULT, 5, 4, InvasionRules()))
+        assertEquals(36, EncounterPolicy.memberCount(EncounterKind.ASSAULT, 5, 2, InvasionRules()))
+        assertEquals(48, EncounterPolicy.memberCount(EncounterKind.ASSAULT, 5, 4, InvasionRules()))
         val engine = InvasionDirector.create(4, fixedSpec())
         engine.transition(DirectorFrame(0, commands = listOf(
             DirectorCommand.Force("a", EncounterKind.ASSAULT), DirectorCommand.Force("b", EncounterKind.ASSAULT),
@@ -152,7 +152,7 @@ class InvasionDirectorTest {
         val primaries = engine.snapshot().tracks.values.mapNotNull(PlayerPressureTrack::invasion)
         assertEquals(1, primaries.size)
         assertEquals(listOf("a", "b"), primaries.single().participantPlayerIds)
-        assertEquals(12, primaries.single().waves.first().members.size)
+        assertEquals(24, primaries.single().waves.first().members.size)
     }
 
     @Test fun `wave rosters obey roles budgets optional eligibility and elite rules`() {

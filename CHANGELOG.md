@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.2
+
+- Double assault waves from 8–12 to 16–24 members for one player and raise the grouped per-wave ceiling from 24 to 48.
+- Preserve scout sizing, three-wave progression, packet pacing, and all global spawn safety caps.
+
 ## 0.5.1
 
 - Add permission-gated immediate scout and assault commands for client/server validation without waiting through the authored cadence.
