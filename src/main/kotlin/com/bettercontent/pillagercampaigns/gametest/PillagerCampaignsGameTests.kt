@@ -58,6 +58,9 @@ object PillagerCampaignsGameTests {
         val fake = fake(helper, "route")
         fake.setGameMode(GameType.SURVIVAL)
         fake.moveTo(base.x + 11.5, base.y.toDouble(), base.z + 7.5)
+        val immediate = SurfaceGridSampler.immediateAnchor(helper.level, fake.blockPosition(), 6, 8, 3)
+        helper.assertTrue(immediate != null && SurfaceGridSampler.loadedRectangle(helper.level, immediate, fake.blockPosition()),
+            "Harness arrival must select a complete loaded-only anchor in the requested band")
         val zombie = EntityType.ZOMBIE.create(helper.level)!!
         zombie.moveTo(base.x + 3.5, base.y.toDouble(), base.z + 7.5)
         helper.assertTrue(InvasionRuntime.exactCandidate(helper.level, zombie, zombie.blockPosition()),
@@ -132,6 +135,48 @@ object PillagerCampaignsGameTests {
             helper.assertTrue(InvasionRuntime.liveMembers(helper.level.server, invasionId).isEmpty(),
                 "${recruit.entityId} must be cleaned after its catalogue probe")
         }
+        helper.succeed()
+    }
+
+    @JvmStatic
+    @GameTest(templateNamespace = "minecraft", template = "empty", timeoutTicks = 100)
+    fun campaignApproachUsesOneLeadPathThenLeavesNavigationToVanilla(helper: GameTestHelper) {
+        val base = helper.absolutePos(BlockPos(1, 2, 1))
+        buildSurface(helper, base)
+        val fake = fake(helper, "single-path")
+        fake.setGameMode(GameType.SURVIVAL)
+        fake.moveTo(base.x + 11.5, base.y.toDouble(), base.z + 7.5)
+        val members = (1..6).map { MemberPlan("lead-proof-$it", "minecraft:pillager", 2) }
+        var pathQueries = 0
+        val firstAnchor = base.offset(3, 0, 7)
+        val first = DirectorEffect(
+            "lead-proof-first", EffectKind.MATERIALIZE, fake.uuid.toString(), "lead-proof-invasion",
+            EncounterKind.ASSAULT, 0,
+            BlockPoint("minecraft:overworld", firstAnchor.x, firstAnchor.y, firstAnchor.z), members,
+            validateApproach = true,
+        )
+        helper.assertTrue(InvasionRuntime.materializeAgainst(helper.level, fake, first) { _, _, _ ->
+            pathQueries++
+            true
+        }, "A complete packet must materialize after its lead path is accepted")
+        helper.assertTrue(pathQueries == 1,
+            "A six-member packet must run exactly one campaign-owned navigation query, got $pathQueries")
+        InvasionRuntime.retire(helper.level.server, first.invasionId)
+
+        val laterAnchor = base.offset(3, 0, 11)
+        val later = first.copy(
+            effectId = "lead-proof-later",
+            anchor = BlockPoint("minecraft:overworld", laterAnchor.x, laterAnchor.y, laterAnchor.z),
+            members = (7..12).map { MemberPlan("lead-proof-$it", "minecraft:pillager", 2) },
+            validateApproach = false,
+        )
+        helper.assertTrue(InvasionRuntime.materializeAgainst(helper.level, fake, later) { _, _, _ ->
+            pathQueries++
+            true
+        }, "A later packet at a validated approach must materialize under vanilla navigation")
+        helper.assertTrue(pathQueries == 1,
+            "Later packets must not run another campaign-owned navigation query")
+        InvasionRuntime.retire(helper.level.server, later.invasionId)
         helper.succeed()
     }
 

@@ -73,7 +73,8 @@ class InvasionDirector private constructor(
         val track = track(primary.playerId)
         track.encounterSequence++
         val timeTier = (track.eligibleTicks / spec.rules.timeTierTicks).toInt()
-        val intensity = (timeTier + track.outcomeAdjustment).coerceIn(0, spec.rules.maximumIntensity)
+        val intensity = track.forcedIntensity?.also { track.forcedIntensity = null }
+            ?: (timeTier + track.outcomeAdjustment).coerceIn(0, spec.rules.maximumIntensity)
         val id = "${kind.name.lowercase()}:${primary.playerId}:${track.encounterSequence}"
         val size = EncounterPolicy.memberCount(kind, intensity, participants.size, spec.rules)
         val waves = if (kind == EncounterKind.SCOUT) {
@@ -125,6 +126,7 @@ class InvasionDirector private constructor(
                 invasion.strategicRoute.clear()
                 invasion.strategicRouteIndex = 0
                 invasion.strategicFrontier = StrategicFrontier.UNKNOWN
+                invasion.validatedAnchor = null
                 invasion.phase = InvasionPhase.APPROACHING
             }
             if (invasion.kind == EncounterKind.ASSAULT && !invasion.warningIssued && shouldWarn(track, invasion) &&
@@ -205,7 +207,7 @@ class InvasionDirector private constructor(
             invasion.nextPacketTick = state.tick + spacing
             publish(DirectorEffect("", EffectKind.MATERIALIZE, invasion.targetPlayerId, invasion.invasionId,
                 invasion.kind, invasion.currentWave, invasion.anchor, members, invasion.participantPlayerIds,
-                invasion.strategicFrontier))
+                invasion.strategicFrontier, validateApproach = invasion.validatedAnchor != invasion.anchor))
             capacity -= members.size
             events += event("packet_queued", invasion.invasionId, "wave=${invasion.currentWave} members=${members.size}")
         }
@@ -237,6 +239,7 @@ class InvasionDirector private constructor(
                     val wave = invasion.waves[effect.waveIndex]
                     if (result.successful) {
                         wave.materializedMembers += effect.members.size
+                        if (effect.validateApproach) invasion.validatedAnchor = effect.anchor
                         if (wave.startedTick < 0) wave.startedTick = state.tick
                         invasion.phase = InvasionPhase.ACTIVE
                         invasion.lastCombatTick = state.tick
@@ -248,6 +251,7 @@ class InvasionDirector private constructor(
                         invasion.strategicRoute.clear()
                         invasion.strategicRouteIndex = 0
                         invasion.strategicFrontier = StrategicFrontier.UNKNOWN
+                        invasion.validatedAnchor = null
                         invasion.phase = InvasionPhase.APPROACHING
                         events += event("materialization_failed", invasion.invasionId)
                     }
@@ -364,9 +368,11 @@ class InvasionDirector private constructor(
         commands.forEach { command ->
             when (command) {
                 is DirectorCommand.Force -> track(command.playerId).let {
+                    require(command.intensity == null || command.intensity in 0..spec.rules.maximumIntensity)
                     if (command.kind == EncounterKind.SCOUT) it.nextScoutEligibleTick = it.eligibleTicks
                     else it.nextAssaultEligibleTick = it.eligibleTicks
                     if (command.expediteTravel) it.expediteNextEncounter = command.kind
+                    if (command.intensity != null) it.forcedIntensity = command.intensity
                     events += event("forced", command.playerId, command.kind.name.lowercase())
                 }
                 is DirectorCommand.Reset -> if (command.playerId == null) {

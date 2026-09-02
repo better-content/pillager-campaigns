@@ -69,14 +69,22 @@ object PillagerCampaignsEvents {
         advance(server, interval)
     }
 
-    private fun advance(server: MinecraftServer, elapsedTicks: Long, commands: List<DirectorCommand> = emptyList()): DirectorTransition {
+    internal fun advance(
+        server: MinecraftServer,
+        elapsedTicks: Long,
+        commands: List<DirectorCommand> = emptyList(),
+        strategicRoutes: List<StrategicRouteObservation> = emptyList(),
+        injectedDefeats: List<MemberDefeatObservation> = emptyList(),
+    ): DirectorTransition {
         val data = PillagerWorldData.get(server)
         val spec = InvasionRoster.runtimeSpec()
         val snapshot = data.snapshot()
         val players = server.playerList.players.map(::observePlayer)
         val atlas = TerrainAtlasData.get(server)
+        val overriddenInvasions = strategicRoutes.map(StrategicRouteObservation::invasionId).toSet()
         val routes = snapshot.tracks.values.mapNotNull { track ->
             val invasion = track.invasion?.takeIf { it.phase == InvasionPhase.APPROACHING } ?: return@mapNotNull null
+            if (invasion.invasionId in overriddenInvasions) return@mapNotNull null
             val target = invasion.routeTarget ?: return@mapNotNull null
             val needsRoute = invasion.strategicRoute.isEmpty() ||
                 (invasion.strategicFrontier == StrategicFrontier.UNKNOWN && invasion.strategicAtlasRevision != atlas.revision)
@@ -93,8 +101,9 @@ object PillagerCampaignsEvents {
         val frame = DirectorFrame(
             elapsedTicks = elapsedTicks,
             players = players,
-            strategicRoutes = routes,
-            memberDefeats = defeatedMembers.toList().also { defeatedMembers.clear() }.map { (invasion, member) -> MemberDefeatObservation(invasion, member) },
+            strategicRoutes = routes + strategicRoutes,
+            memberDefeats = defeatedMembers.toList().also { defeatedMembers.clear() }
+                .map { (invasion, member) -> MemberDefeatObservation(invasion, member) } + injectedDefeats,
             combat = combatInvasions.toList().also { combatInvasions.clear() }.map(::CombatObservation),
             targetDeaths = deadTargets.toList().also { deadTargets.clear() }.map(::TargetDeathObservation),
             commands = commands,
@@ -208,6 +217,7 @@ object PillagerCampaignsEvents {
                 .executes { reset(it.source, null) }
                 .then(Commands.argument("player", StringArgumentType.word()).executes { reset(it.source, StringArgumentType.getString(it, "player")) }))
             .then(Commands.literal("export_runtime_spec").requires { it.hasPermission(2) }.executes { exportSpec(it.source) })
+        if (CampaignHarnessCommands.enabled()) root.then(CampaignHarnessCommands.register())
         event.dispatcher.register(root)
     }
 
@@ -234,7 +244,7 @@ object PillagerCampaignsEvents {
         return Command.SINGLE_SUCCESS
     }
 
-    private fun refreshLoadedTerrain(player: ServerPlayer): Int {
+    internal fun refreshLoadedTerrain(player: ServerPlayer): Int {
         val level = player.serverLevel()
         if (level.dimension() != Level.OVERWORLD) return 0
         val radius = PillagerCampaignsConfig.rules().strategicOriginMaximumBlocks + 16
@@ -271,7 +281,7 @@ object PillagerCampaignsEvents {
         val provenanced = live.count { it.persistentData.getString(InvasionRuntime.INVASION_TAG) == invasion.invasionId &&
             it.persistentData.getString(InvasionRuntime.MEMBER_TAG).isNotBlank() }
         source.sendSuccess({ Component.literal(
-            "campaign_inspect player=${player.scoreboardName} encounter=${invasion.invasionId} kind=${invasion.kind.name.lowercase()} phase=${invasion.phase.name.lowercase()} wave=${invasion.currentWave + 1}/${invasion.waves.size} planned=${invasion.waves[invasion.currentWave].members.size} queued=${invasion.waves[invasion.currentWave].queuedMembers} materialized=${invasion.waves[invasion.currentWave].materializedMembers} live=${live.size} targeted=$targeted provenanced=$provenanced frontier=${invasion.strategicFrontier.name.lowercase()} origin=${invasion.strategicOrigin} anchor=${invasion.anchor} roster=[$roster]") }, false)
+            "campaign_inspect player=${player.scoreboardName} encounter=${invasion.invasionId} kind=${invasion.kind.name.lowercase()} phase=${invasion.phase.name.lowercase()} wave=${invasion.currentWave + 1}/${invasion.waves.size} planned=${invasion.waves[invasion.currentWave].members.size} queued=${invasion.waves[invasion.currentWave].queuedMembers} materialized=${invasion.waves[invasion.currentWave].materializedMembers} live=${live.size} targeted=$targeted provenanced=$provenanced frontier=${invasion.strategicFrontier.name.lowercase()} origin=${invasion.strategicOrigin} anchor=${invasion.anchor} validated_anchor=${invasion.validatedAnchor} path_proof_pending=${invasion.anchor != invasion.validatedAnchor} roster=[$roster]") }, false)
         return Command.SINGLE_SUCCESS
     }
 

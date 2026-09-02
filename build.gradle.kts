@@ -57,8 +57,18 @@ minecraft {
                 }
             }
         }
-        create("client")
-        create("server") { arg("--nogui") }
+        create("client") {
+            workingDirectory(project.file("run/campaign-harness-client"))
+            property("mixin.env.remapRefMap", "true")
+            property("mixin.env.refMapRemappingFile", file("build/createSrgToMcp/output.srg").absolutePath)
+        }
+        create("server") {
+            workingDirectory(project.file("run/campaign-harness-server"))
+            property("pillager_campaigns.harness", "true")
+            property("mixin.env.remapRefMap", "true")
+            property("mixin.env.refMapRemappingFile", file("build/createSrgToMcp/output.srg").absolutePath)
+            arg("--nogui")
+        }
         create("gameTestServer") {
             property("mixin.env.remapRefMap", "true")
             property("mixin.env.refMapRemappingFile", file("build/createSrgToMcp/output.srg").absolutePath)
@@ -123,10 +133,39 @@ val cleanGameTestWorld by tasks.registering(Delete::class) {
     delete(layout.projectDirectory.dir("run/world"))
 }
 
+val prepareCampaignHarness by tasks.registering(Copy::class) {
+    group = "campaign harness"
+    description = "Prepares the isolated lightweight campaign server without deleting its world."
+    from(layout.projectDirectory.file("harness/server.properties"))
+    into(layout.projectDirectory.dir("run/campaign-harness-server"))
+}
+
+tasks.register<Delete>("resetCampaignHarnessWorld") {
+    group = "campaign harness"
+    description = "Deletes only the generated campaign harness world; the next run creates a fresh flat world."
+    delete(layout.projectDirectory.dir("run/campaign-harness-server/world"))
+}
+
 tasks.withType<JavaExec>().configureEach {
     if (name == "runGameTestServer") {
         dependsOn(cleanGameTestWorld, syncGameTestStructures)
     }
+    if (name == "runServer") {
+        dependsOn(prepareCampaignHarness)
+        standardInput = System.`in`
+    }
+}
+
+tasks.register("runCampaignHarnessServer") {
+    group = "campaign harness"
+    description = "Runs the isolated lightweight authored-roster campaign server."
+    dependsOn(tasks.named("runServer"))
+}
+
+tasks.register("runCampaignHarnessClient") {
+    group = "campaign harness"
+    description = "Runs the matching lightweight client for the campaign harness server."
+    dependsOn(tasks.named("runClient"))
 }
 
 val stageRuntimeJar by tasks.registering(Copy::class) {

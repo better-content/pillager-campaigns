@@ -18,7 +18,7 @@ For the installed pack roster, run `/pillager_campaigns export_runtime_spec` aft
 - Use Survival in the Overworld with view and simulation distance four.
 - Verify silent scouts arrive within 7,200–14,400 eligible ticks and contain 3–6 ranged/line recruits.
 - Verify assaults arrive within 72,000–144,000 eligible ticks and receive the full 2,400 surface-tick warning.
-- Verify each assault has three 8–12-member waves and advances after half the prior wave falls or after 1,500 ticks.
+- Verify each assault has three 16–24-member waves and advances after half the prior wave falls or after 1,500 ticks.
 - Go underground before delivery; verify both clocks continue for an eligible Overworld Survival player but delivery waits for viable surface terrain.
 - Explore at least 768 blocks around a base so its atlas is known, build a sealed two-block wall, and verify the squad appears outside and merely attempts ordinary navigation without breaking blocks.
 - Verify a route stalls at never-generated or never-recorded terrain, and that querying the atlas neither loads nor generates a remote chunk.
@@ -30,3 +30,20 @@ For the installed pack roster, run `/pillager_campaigns export_runtime_spec` aft
 - Load a schema-2 world copy and verify clocks/outcome pressure survive while an active legacy encounter is cleared with one explicit warning.
 
 Forge GameTests create a real Survival dummy player at an explicit Y, exercise open and closed navigation gates with `Path.canReach()`, materialize a real pillager outside a sealed defense, reject solid/fluid occupation, prove atlas data survives an actual remote chunk unload without reloading it, and verify every authored EVENT spawn's targeting/provenance/cleanup. Native combat feel remains a live playtest requirement.
+
+## Short interactive server check
+
+Run `./gradlew runCampaignHarnessServer --no-daemon`, complete the standard first-run EULA acknowledgement if needed, and rerun it. In another shell run `./gradlew runCampaignHarnessClient --no-daemon`, join `127.0.0.1:25566`, and use the server console:
+
+```text
+pillager_campaigns harness spawn scout immediate <player> 5
+pillager_campaigns inspect <player>
+pillager_campaigns reset <player>
+pillager_campaigns harness spawn assault immediate <player> 5
+pillager_campaigns inspect <player>
+pillager_campaigns harness next_wave <player>
+pillager_campaigns harness next_wave <player>
+pillager_campaigns reset <player>
+```
+
+This is a manual bounded exercise, not a soak or timing gate. The immediate form bypasses only distant atlas travel. Use the `routed` form after exploring recorded terrain when the production strategic path is the subject of the check. The harness loads the authored optional roster but no Better Content modpack, retains its world between runs, and binds only to localhost. `./gradlew resetCampaignHarnessWorld` deletes only that generated world when a fresh one is explicitly desired.

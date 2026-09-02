@@ -206,6 +206,42 @@ class InvasionDirectorTest {
         assertTrue(track(engine, "a").invasion!!.nextPacketTick >= engine.snapshot().tick)
     }
 
+    @Test fun `only the first packet at an anchor requests native path validation`() {
+        val engine = InvasionDirector.create(51, fixedSpec())
+        engine.transition(DirectorFrame(0, commands = listOf(
+            DirectorCommand.Force("player", EncounterKind.ASSAULT, intensity = 5),
+        )))
+        engine.transition(playerFrame(0))
+        val first = engine.transition(playerFrame(20, surfaces = listOf(grid())))
+        val firstPacket = first.effects.single { it.kind == EffectKind.MATERIALIZE }
+        assertTrue(firstPacket.validateApproach)
+        acknowledge(engine, first)
+        assertEquals(firstPacket.anchor, track(engine).invasion!!.validatedAnchor)
+
+        val second = engine.transition(playerFrame(20, surfaces = listOf(grid())))
+        val secondPacket = second.effects.single { it.kind == EffectKind.MATERIALIZE }
+        assertFalse(secondPacket.validateApproach)
+        assertEquals(firstPacket.anchor, secondPacket.anchor)
+    }
+
+    @Test fun `forced intensity is exact bounded and consumed by one encounter`() {
+        val engine = InvasionDirector.create(52, fixedSpec())
+        engine.transition(DirectorFrame(0, commands = listOf(
+            DirectorCommand.Force("player", EncounterKind.ASSAULT, intensity = 5),
+        )))
+        engine.transition(playerFrame(0))
+        val invasion = track(engine).invasion!!
+        assertEquals(5, invasion.intensity)
+        assertEquals(24, invasion.waves.first().members.size)
+        assertNull(track(engine).forcedIntensity)
+
+        assertFailsWith<IllegalArgumentException> {
+            engine.transition(DirectorFrame(0, commands = listOf(
+                DirectorCommand.Force("other", EncounterKind.SCOUT, intensity = 6),
+            )))
+        }
+    }
+
     @Test fun `downed retirement clears queued work death grace and assault clear adjusts only assaults`() {
         val engine = InvasionDirector.create(6, fixedSpec())
         engine.transition(DirectorFrame(0, commands = listOf(DirectorCommand.Force("player", EncounterKind.ASSAULT))))
@@ -297,9 +333,11 @@ class InvasionDirectorTest {
             StrategicRouteObservation("player", invasion.invasionId, invasion.routeTarget!!, 10, firstRoute, StrategicFrontier.OPEN),
         )))
         val failedEffect = first.effects.single { it.kind == EffectKind.MATERIALIZE }
+        assertTrue(failedEffect.validateApproach)
         engine.transition(DirectorFrame(0, effectResults = listOf(EffectResult(failedEffect.effectId, false))))
         invasion = track(engine).invasion!!
         assertEquals(firstRoute.last(), invasion.usedAnchors.single())
+        assertNull(invasion.validatedAnchor)
         assertEquals(InvasionPhase.APPROACHING, invasion.phase)
 
         val alternateRoute = (6 downTo 4).map { BlockPoint("minecraft:overworld", it, 64, 4) }
@@ -308,6 +346,7 @@ class InvasionDirectorTest {
             StrategicRouteObservation("player", invasion.invasionId, invasion.routeTarget!!, 10, alternateRoute, StrategicFrontier.OPEN),
         )))
         val retryEffect = retry.effects.single { it.kind == EffectKind.MATERIALIZE }
+        assertTrue(retryEffect.validateApproach)
         assertEquals(alternateRoute.last(), retryEffect.anchor)
         assertEquals(2, track(engine).invasion!!.usedAnchors.size)
     }

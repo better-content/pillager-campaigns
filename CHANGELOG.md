@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.3
+
+- Validate a campaign approach with one real lead-mob path, then leave every materialized member to ordinary vanilla navigation.
+- Reuse that proof across packets and waves at the same anchor, while requiring a fresh proof after rerouting.
+- Add an isolated authored-roster Forge server/client harness with dev-only console controls for immediate and production-routed campaigns.
+
 ## 0.5.2
 
 - Double assault waves from 8–12 to 16–24 members for one player and raise the grouped per-wave ceiling from 24 to 48.

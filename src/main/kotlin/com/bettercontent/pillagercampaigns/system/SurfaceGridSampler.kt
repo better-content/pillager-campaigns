@@ -74,6 +74,29 @@ object SurfaceGridSampler {
         return positions.takeIf { it.size == count }.orEmpty()
     }
 
+    fun immediateAnchor(
+        level: ServerLevel,
+        target: BlockPos,
+        minimumBlocks: Int,
+        maximumBlocks: Int,
+        packetSize: Int,
+    ): BlockPos? {
+        require(minimumBlocks in 1..maximumBlocks)
+        return orderedOffsets(maximumBlocks).asSequence()
+            .filter { (dx, dz) -> maxOf(abs(dx), abs(dz)) in minimumBlocks..maximumBlocks }
+            .flatMap { (dx, dz) ->
+                val x = target.x + dx
+                val z = target.z + dz
+                sequenceOf(
+                    level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z),
+                    target.y,
+                ).distinct().map { y -> BlockPos(x, y, z) }
+            }
+            .firstOrNull { anchor ->
+                loadedRectangle(level, anchor, target) && memberPositions(level, anchor, packetSize).size == packetSize
+            }
+    }
+
     private fun exactColumn(level: ServerLevel, body: BlockPos): Boolean {
         if (level.chunkSource.getChunkNow(body.x shr 4, body.z shr 4) == null) return false
         val floor = body.below()

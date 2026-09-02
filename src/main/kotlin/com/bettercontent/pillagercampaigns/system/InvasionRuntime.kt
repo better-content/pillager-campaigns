@@ -61,7 +61,12 @@ object InvasionRuntime {
         return materializeAgainst(level, target, effect)
     }
 
-    internal fun materializeAgainst(level: ServerLevel, target: ServerPlayer, effect: DirectorEffect): Boolean {
+    internal fun materializeAgainst(
+        level: ServerLevel,
+        target: ServerPlayer,
+        effect: DirectorEffect,
+        pathValidator: (Mob, BlockPos, StrategicFrontier) -> Boolean = ::pathMatchesFrontier,
+    ): Boolean {
         val server = level.server
         val anchor = effect.anchor?.takeIf { it.dimension == level.dimension().location().toString() } ?: return false
         val anchorPos = BlockPos(anchor.x, anchor.y, anchor.z)
@@ -106,7 +111,27 @@ object InvasionRuntime {
             return false
         }
         val spawned = mutableListOf<Mob>()
-        prepared.forEach { mob ->
+        val validationLead = prepared.firstOrNull().takeIf { effect.validateApproach }
+        if (validationLead != null) {
+            if (!level.addFreshEntity(validationLead)) {
+                prepared.forEach(Entity::discard)
+                return false
+            }
+            spawned += validationLead
+            // The candidate was just proven to have a solid floor; a freshly added mob has not
+            // received its first physics tick yet, so expose that fact to GroundPathNavigation.
+            validationLead.setOnGround(true)
+            if (!SurfaceGridSampler.loadedRectangle(level, anchorPos, targetPos) ||
+                !pathValidator(validationLead, targetPos, effect.strategicFrontier)) {
+                PillagerCampaignsMod.LOGGER.info(
+                    "Rejected campaign packet {} because its {} frontier did not match the lead path to {}",
+                    effect.invasionId, effect.strategicFrontier, targetPos,
+                )
+                prepared.forEach(Entity::discard)
+                return false
+            }
+        }
+        prepared.asSequence().filter { it !== validationLead }.forEach { mob ->
             if (level.addFreshEntity(mob)) spawned += mob
             else {
                 spawned.forEach(Entity::discard)
@@ -114,20 +139,7 @@ object InvasionRuntime {
                 return false
             }
         }
-        val pathsAcceptable = spawned.all { mob ->
-            // The candidate was just proven to have a solid floor; freshly added mobs have not received
-            // their first physics tick yet, so expose that exact fact to GroundPathNavigation.
-            mob.setOnGround(true)
-            val path = mob.navigation.createPath(targetPos, 0)
-            SurfaceGridSampler.loadedRectangle(level, anchorPos, targetPos) && when (effect.strategicFrontier) {
-                StrategicFrontier.OPEN -> path?.canReach() == true
-                StrategicFrontier.DEFENSE -> path?.canReach() != true
-                StrategicFrontier.UNKNOWN -> false
-            }
-        }
-        if (!pathsAcceptable) {
-            PillagerCampaignsMod.LOGGER.info("Rejected campaign packet {} because its {} frontier did not match the real path to {}",
-                effect.invasionId, effect.strategicFrontier, targetPos)
+        if (!SurfaceGridSampler.loadedRectangle(level, anchorPos, targetPos)) {
             spawned.forEach(Entity::discard)
             return false
         }
@@ -135,6 +147,15 @@ object InvasionRuntime {
         PillagerCampaignsMod.LOGGER.info("Materialized {} {} wave {} packet with {} members for {}",
             effect.encounterKind.name.lowercase(), effect.invasionId, effect.waveIndex, spawned.size, target.scoreboardName)
         return true
+    }
+
+    private fun pathMatchesFrontier(mob: Mob, target: BlockPos, frontier: StrategicFrontier): Boolean {
+        val path = mob.navigation.createPath(target, 0)
+        return when (frontier) {
+            StrategicFrontier.OPEN -> path?.canReach() == true
+            StrategicFrontier.DEFENSE -> path?.canReach() != true
+            StrategicFrontier.UNKNOWN -> false
+        }
     }
 
     internal fun exactCandidate(level: ServerLevel, mob: Mob, pos: BlockPos): Boolean {

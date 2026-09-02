@@ -1,5 +1,6 @@
 package com.bettercontent.pillagercampaigns.system
 
+import com.bettercontent.pillagercampaigns.CampaignHarnessCommands
 import com.bettercontent.pillagercampaigns.core.*
 import com.bettercontent.pillagercampaigns.data.PillagerWorldData
 import kotlinx.serialization.encodeToString
@@ -7,9 +8,14 @@ import kotlinx.serialization.json.Json
 import net.minecraft.nbt.CompoundTag
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class InvasionForgeRulesTest {
+    @Test fun `interactive harness commands are absent from ordinary launches`() {
+        assertFalse(CampaignHarnessCommands.enabled())
+    }
+
     @Test fun `authored roster has bounded explicit progression and vanilla fallback`() {
         val roster = InvasionRoster.authored()
         assertTrue(roster.any { it.entityId == "minecraft:pillager" && !it.optional && it.unlockIntensity == 0 })
