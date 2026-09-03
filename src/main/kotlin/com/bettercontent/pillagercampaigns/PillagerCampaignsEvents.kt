@@ -37,6 +37,8 @@ import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
 
 object PillagerCampaignsEvents {
+    private const val STRATEGIC_ROUTE_RETRY_TICKS = 1_200L
+    private val nextStrategicRouteAttempt = mutableMapOf<String, Long>()
     private val defeatedMembers = ConcurrentHashMap.newKeySet<Pair<String, String>>()
     private val combatInvasions = ConcurrentHashMap.newKeySet<String>()
     private val deadTargets = ConcurrentHashMap.newKeySet<String>()
@@ -50,6 +52,7 @@ object PillagerCampaignsEvents {
         PillagerWorldData.get(event.server).attach(InvasionRoster.runtimeSpec())
         TerrainAtlasData.get(event.server)
         SurfaceGridSampler.clear()
+        nextStrategicRouteAttempt.clear()
     }
 
     @SubscribeEvent
@@ -79,6 +82,9 @@ object PillagerCampaignsEvents {
         val data = PillagerWorldData.get(server)
         val spec = InvasionRoster.runtimeSpec()
         val snapshot = data.snapshot()
+        val now = server.overworld().gameTime
+        val liveInvasions = snapshot.tracks.values.mapNotNull { it.invasion?.invasionId }.toSet()
+        nextStrategicRouteAttempt.keys.retainAll(liveInvasions)
         val players = server.playerList.players.map(::observePlayer)
         val atlas = TerrainAtlasData.get(server)
         val overriddenInvasions = strategicRoutes.map(StrategicRouteObservation::invasionId).toSet()
@@ -89,6 +95,8 @@ object PillagerCampaignsEvents {
             val needsRoute = invasion.strategicRoute.isEmpty() ||
                 (invasion.strategicFrontier == StrategicFrontier.UNKNOWN && invasion.strategicAtlasRevision != atlas.revision)
             if (!needsRoute) return@mapNotNull null
+            if (now < nextStrategicRouteAttempt.getOrDefault(invasion.invasionId, Long.MIN_VALUE)) return@mapNotNull null
+            nextStrategicRouteAttempt[invasion.invasionId] = now + STRATEGIC_ROUTE_RETRY_TICKS
             val cells = atlas.cellsAround(target.x, target.z, spec.rules.strategicOriginMaximumBlocks + 16)
             val result = StrategicRoutePlanner.plan(cells, target, spec.rules,
                 routeSeed(snapshot.worldSeed, invasion.invasionId, invasion.currentWave, invasion.usedAnchors.size),

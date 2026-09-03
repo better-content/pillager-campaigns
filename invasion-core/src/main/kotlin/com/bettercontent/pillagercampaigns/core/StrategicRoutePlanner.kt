@@ -19,10 +19,15 @@ object StrategicRoutePlanner {
         }
         val origins = if (start != null) {
             listOfNotNull(passable[key(start.x, start.z)])
-        } else passable.values.filter { !excluded(it) &&
-            distance(it, target) in rules.strategicOriginMinimumBlocks..rules.strategicOriginMaximumBlocks
-        }.sortedWith(compareBy<SurfaceCell> { missingLineSamples(it, target, known) }
-            .thenBy { stableRank(it, seed) }.thenBy { it.x }.thenBy { it.z })
+        } else {
+            data class ScoredOrigin(val cell: SurfaceCell, val missingLineSamples: Int, val stableRank: Long)
+            passable.values.asSequence().filter { !excluded(it) &&
+                distance(it, target) in rules.strategicOriginMinimumBlocks..rules.strategicOriginMaximumBlocks
+            }.map { ScoredOrigin(it, missingLineSamples(it, target, known), stableRank(it, seed)) }
+                .sortedWith(compareBy<ScoredOrigin> { it.missingLineSamples }
+                    .thenBy { it.stableRank }.thenBy { it.cell.x }.thenBy { it.cell.z })
+                .map(ScoredOrigin::cell).toList()
+        }
         var remainingExpansions = rules.strategicMaximumSearchExpansions
         for (origin in origins) {
             if (remainingExpansions <= 0) break
