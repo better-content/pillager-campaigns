@@ -29,6 +29,8 @@ data class InvasionRules(
     val approachMaximumBlocks: Int = 72,
     val approachTargetRadiusBlocks: Int = 12,
     val maximumSearchExpansions: Int = 4_096,
+    val localApproachRetryTicks: Long = 100L,
+    val localApproachTimeoutTicks: Long = 2_400L,
     val strategicOriginMinimumBlocks: Int = 512,
     val strategicOriginMaximumBlocks: Int = 768,
     val strategicMaximumSearchExpansions: Int = 262_144,
@@ -49,6 +51,7 @@ data class InvasionRules(
         require(groupRadiusBlocks > 0 && assaultWaves == 3 && waveProgressTimeoutTicks > 0)
         require(scoutActiveTicks > 0 && assaultActiveTicks > 0 && activeIdleTicks > 0 && targetUnavailableTicks > 0)
         require(approachMinimumBlocks in 1..approachMaximumBlocks && approachTargetRadiusBlocks > 0 && maximumSearchExpansions > 0)
+        require(localApproachRetryTicks > 0 && localApproachTimeoutTicks > 0)
         require(strategicOriginMinimumBlocks > approachMaximumBlocks)
         require(strategicOriginMinimumBlocks <= strategicOriginMaximumBlocks && strategicMaximumSearchExpansions > 0)
         require(scoutStrategicMilliBlocksPerTick > 0 && assaultStrategicMilliBlocksPerTick > 0)
@@ -145,6 +148,9 @@ data class InvasionState(
     var strategicRoute: MutableList<BlockPoint> = mutableListOf(),
     var strategicRouteIndex: Int = 0,
     var strategicTravelMilliBlocks: Long = 0L,
+    var strategicJourneyTotalMilliBlocks: Long = 0L,
+    var localApproachTicks: Long = 0L,
+    var lastRouteFailure: String = "none",
     var strategicAtlasRevision: Long = -1L,
     var strategicFrontier: StrategicFrontier = StrategicFrontier.UNKNOWN,
     var validatedAnchor: BlockPoint? = null,
@@ -178,7 +184,7 @@ data class DirectorSnapshot(
     val tracks: MutableMap<String, PlayerPressureTrack> = linkedMapOf(),
     val pendingEffects: MutableMap<String, DirectorEffect> = linkedMapOf(),
 ) {
-    companion object { const val CURRENT_SCHEMA_VERSION: Int = 3 }
+    companion object { const val CURRENT_SCHEMA_VERSION: Int = 4 }
 }
 
 @Serializable enum class EffectKind { WARN, MATERIALIZE, RETIRE }
@@ -196,6 +202,7 @@ data class DirectorEffect(
     val participantPlayerIds: List<String> = emptyList(),
     val strategicFrontier: StrategicFrontier = StrategicFrontier.OPEN,
     val validateApproach: Boolean = true,
+    val announceWave: Boolean = false,
 )
 
 @Serializable data class EffectResult(val effectId: String, val successful: Boolean = true)

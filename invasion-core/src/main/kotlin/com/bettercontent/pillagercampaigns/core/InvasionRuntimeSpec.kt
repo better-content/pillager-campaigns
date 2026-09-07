@@ -27,7 +27,7 @@ data class InvasionRuntimeSpec(
     }
 
     companion object {
-        const val CURRENT_SCHEMA_VERSION: Int = 2
+        const val CURRENT_SCHEMA_VERSION: Int = 3
         private val JSON = Json { encodeDefaults = true }
 
         fun create(rules: InvasionRules, recruits: List<RecruitSpec>): InvasionRuntimeSpec =

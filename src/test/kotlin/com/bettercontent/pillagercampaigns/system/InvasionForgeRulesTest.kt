@@ -69,4 +69,32 @@ class InvasionForgeRulesTest {
         assertEquals(2, migrated.outcomeAdjustment)
         assertTrue(migrated.invasion == null && migrated.joinedInvasionId == null)
     }
+
+    @Test fun `schema three migration retains campaign roster but resets retired distant route`() {
+        val invasion = InvasionState("legacy", EncounterKind.ASSAULT, "player", listOf("player"), 2,
+            listOf(WavePlan(0, 6, listOf(MemberPlan("member", "minecraft:pillager", 2)))),
+            phase = InvasionPhase.ACTIVE,
+            routeTarget = BlockPoint("minecraft:overworld", 0, 64, 0),
+            anchor = BlockPoint("minecraft:overworld", 64, 64, 0),
+            strategicOrigin = BlockPoint("minecraft:overworld", 600, 64, 0),
+            strategicPosition = BlockPoint("minecraft:overworld", 64, 64, 0),
+            strategicRoute = mutableListOf(BlockPoint("minecraft:overworld", 600, 64, 0)),
+            strategicTravelMilliBlocks = 1234,
+            strategicFrontier = StrategicFrontier.OPEN,
+            validatedAnchor = BlockPoint("minecraft:overworld", 64, 64, 0))
+        val old = DirectorSnapshot(schemaVersion = 3, worldSeed = 42,
+            tracks = linkedMapOf("player" to PlayerPressureTrack("player", invasion = invasion)))
+        val tag = CompoundTag().also {
+            it.putInt("schema", 3)
+            it.putString("runtimeRevision", "legacy")
+            it.putString("snapshot", Json { encodeDefaults = true }.encodeToString(old))
+        }
+
+        val migrated = PillagerWorldData.load(tag, 42).snapshot().tracks.getValue("player").invasion!!
+        assertEquals(InvasionPhase.APPROACHING, migrated.phase)
+        assertEquals("migrated_schema_3", migrated.lastRouteFailure)
+        assertTrue(migrated.strategicRoute.isEmpty())
+        assertTrue(migrated.anchor == null && migrated.validatedAnchor == null)
+        assertEquals(1, migrated.waves.single().members.size)
+    }
 }

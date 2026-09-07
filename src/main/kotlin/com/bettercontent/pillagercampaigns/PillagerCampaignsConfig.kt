@@ -24,6 +24,8 @@ object PillagerCampaignsConfig {
     private val approachMin: ForgeConfigSpec.IntValue
     private val approachMax: ForgeConfigSpec.IntValue
     private val searchExpansions: ForgeConfigSpec.IntValue
+    private val localRetry: ForgeConfigSpec.IntValue
+    private val localTimeout: ForgeConfigSpec.IntValue
     private val activeIdle: ForgeConfigSpec.IntValue
     private val targetUnavailable: ForgeConfigSpec.IntValue
     private val deathGrace: ForgeConfigSpec.IntValue
@@ -70,6 +72,8 @@ object PillagerCampaignsConfig {
         approachMin = b.defineInRange("minimum_blocks", 48, 8, 256)
         approachMax = b.defineInRange("maximum_blocks", 72, 8, 384)
         searchExpansions = b.defineInRange("maximum_search_expansions", 4_096, 64, 65_536)
+        localRetry = b.defineInRange("local_retry_ticks", 100, 20, 1_200)
+        localTimeout = b.defineInRange("local_timeout_ticks", 2_400, 200, 24_000)
         b.pop()
 
         b.push("cleanup")
@@ -93,6 +97,8 @@ object PillagerCampaignsConfig {
         approachMinimumBlocks = minOf(approachMin.get(), approachMax.get()),
         approachMaximumBlocks = maxOf(approachMin.get(), approachMax.get()),
         maximumSearchExpansions = searchExpansions.get(),
+        localApproachRetryTicks = localRetry.get().toLong(),
+        localApproachTimeoutTicks = localTimeout.get().toLong(),
         activeIdleTicks = activeIdle.get().toLong(),
         targetUnavailableTicks = targetUnavailable.get().toLong(),
         globalCampaignMobCap = globalCap.get(),

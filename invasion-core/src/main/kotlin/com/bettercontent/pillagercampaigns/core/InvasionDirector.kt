@@ -3,7 +3,10 @@ package com.bettercontent.pillagercampaigns.core
 import java.util.ArrayDeque
 import kotlin.math.abs
 import kotlin.math.ceil
+import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlin.random.Random
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -93,6 +96,7 @@ class InvasionDirector private constructor(
             scheduledArrivalEligibleTick = due(track, kind),
             adminExpedited = track.expediteNextEncounter == kind,
         )
+        initializeVirtualJourney(invasion, track)
         if (invasion.adminExpedited) track.expediteNextEncounter = null
         track.invasion = invasion
         participants.filter { it.playerId != primary.playerId }.forEach { track(it.playerId).joinedInvasionId = id }
@@ -118,16 +122,22 @@ class InvasionDirector private constructor(
                 return@forEach
             }
             if (target?.position != null && invasion.routeTarget?.let { moved(it, target.position) } == true) {
+                val previousTarget = invasion.routeTarget
                 invasion.routeTarget = target.position
                 invasion.anchor = null
                 invasion.usedAnchors.clear()
-                invasion.strategicOrigin = null
-                invasion.strategicPosition = null
                 invasion.strategicRoute.clear()
                 invasion.strategicRouteIndex = 0
+                invasion.localApproachTicks = 0L
                 invasion.strategicFrontier = StrategicFrontier.UNKNOWN
                 invasion.validatedAnchor = null
+                invasion.lastRouteFailure = "target_moved"
                 invasion.phase = InvasionPhase.APPROACHING
+                if (previousTarget != null) invasion.strategicOrigin = invasion.strategicOrigin?.let { origin ->
+                    BlockPoint(target.position.dimension, target.position.x + origin.x - previousTarget.x,
+                        target.position.y, target.position.z + origin.z - previousTarget.z)
+                }
+                updateVirtualPosition(invasion)
             }
             if (invasion.kind == EncounterKind.ASSAULT && !invasion.warningIssued && shouldWarn(track, invasion) &&
                 target?.surfaceEligible == true && available) {
@@ -139,7 +149,17 @@ class InvasionDirector private constructor(
             when (invasion.phase) {
                 InvasionPhase.WARNED -> invasion.phase = InvasionPhase.APPROACHING
                 InvasionPhase.APPROACHING, InvasionPhase.READY_TO_MATERIALIZE ->
-                    if (target?.surfaceEligible == true && available) advanceStrategic(track, invasion, elapsed, events)
+                    if (target?.surfaceEligible == true && available) {
+                        advanceStrategic(track, invasion, elapsed, events)
+                        if (invasion.phase == InvasionPhase.APPROACHING && virtualJourneyComplete(invasion)
+                            && track.eligibleTicks >= invasion.scheduledArrivalEligibleTick) {
+                            invasion.localApproachTicks += elapsed
+                            if (invasion.localApproachTicks >= spec.rules.localApproachTimeoutTicks) {
+                                invasion.lastRouteFailure = "local_approach_timeout"
+                                requestRetire(track, InvasionOutcome.RETIRED, events)
+                            }
+                        }
+                    }
                 InvasionPhase.ACTIVE -> {
                     invasion.activeTicks += elapsed
                     val hardLimit = if (invasion.kind == EncounterKind.SCOUT) spec.rules.scoutActiveTicks else spec.rules.assaultActiveTicks
@@ -158,23 +178,25 @@ class InvasionDirector private constructor(
         elapsed: Long,
         events: MutableList<DirectorEvent>,
     ) {
-        if (invasion.strategicRoute.isEmpty() || invasion.strategicFrontier == StrategicFrontier.UNKNOWN) return
+        initializeVirtualJourney(invasion, track)
         val speed = if (invasion.kind == EncounterKind.SCOUT) spec.rules.scoutStrategicMilliBlocksPerTick
             else spec.rules.assaultStrategicMilliBlocksPerTick
-        if (invasion.adminExpedited || invasion.usedAnchors.isNotEmpty()) {
-            invasion.strategicRouteIndex = invasion.strategicRoute.lastIndex
-            invasion.strategicPosition = invasion.strategicRoute.last()
+        if (invasion.adminExpedited) {
+            invasion.strategicTravelMilliBlocks = invasion.strategicJourneyTotalMilliBlocks
+            invasion.strategicPosition = invasion.routeTarget
             invasion.scheduledArrivalEligibleTick = track.eligibleTicks
         }
-        invasion.strategicTravelMilliBlocks += elapsed * speed
-        while (invasion.strategicTravelMilliBlocks >= 1_000L && invasion.strategicRouteIndex + 1 < invasion.strategicRoute.size) {
-            invasion.strategicTravelMilliBlocks -= 1_000L
-            invasion.strategicRouteIndex++
-            invasion.strategicPosition = invasion.strategicRoute[invasion.strategicRouteIndex]
+        if (!virtualJourneyComplete(invasion)) {
+            invasion.strategicTravelMilliBlocks = minOf(
+                invasion.strategicJourneyTotalMilliBlocks,
+                invasion.strategicTravelMilliBlocks + elapsed * speed,
+            )
+            updateVirtualPosition(invasion)
         }
-        if (invasion.strategicRouteIndex + 1 < invasion.strategicRoute.size ||
-            track.eligibleTicks < invasion.scheduledArrivalEligibleTick) return
-        val anchor = invasion.strategicPosition ?: return
+        if (!virtualJourneyComplete(invasion) || track.eligibleTicks < localSearchEligibleTick(invasion)) return
+        if (invasion.strategicRoute.isEmpty() || invasion.strategicFrontier == StrategicFrontier.UNKNOWN) return
+        if (track.eligibleTicks < invasion.scheduledArrivalEligibleTick) return
+        val anchor = invasion.strategicRoute.last()
         invasion.anchor = anchor
         if (invasion.usedAnchors.none { it.x == anchor.x && it.z == anchor.z }) invasion.usedAnchors += anchor
         invasion.phase = InvasionPhase.READY_TO_MATERIALIZE
@@ -202,12 +224,14 @@ class InvasionDirector private constructor(
             val packetLimit = minOf(capacity, 6 * invasion.participantPlayerIds.size)
             val members = wave.members.drop(wave.queuedMembers).take(packetLimit)
             if (members.isEmpty()) return@forEach
+            val announceWave = wave.queuedMembers == 0
             wave.queuedMembers += members.size
             val spacing = spec.rules.normalPacketSpacingTicks * if (chooseTarget(invasion, players)?.lowHealth == true) 3L else 1L
             invasion.nextPacketTick = state.tick + spacing
             publish(DirectorEffect("", EffectKind.MATERIALIZE, invasion.targetPlayerId, invasion.invasionId,
                 invasion.kind, invasion.currentWave, invasion.anchor, members, invasion.participantPlayerIds,
-                invasion.strategicFrontier, validateApproach = invasion.validatedAnchor != invasion.anchor))
+                invasion.strategicFrontier, validateApproach = invasion.validatedAnchor != invasion.anchor,
+                announceWave = announceWave))
             capacity -= members.size
             events += event("packet_queued", invasion.invasionId, "wave=${invasion.currentWave} members=${members.size}")
         }
@@ -253,6 +277,7 @@ class InvasionDirector private constructor(
                         invasion.strategicFrontier = StrategicFrontier.UNKNOWN
                         invasion.validatedAnchor = null
                         invasion.phase = InvasionPhase.APPROACHING
+                        invasion.lastRouteFailure = "materialization_rejected"
                         events += event("materialization_failed", invasion.invasionId)
                     }
                 }
@@ -268,17 +293,16 @@ class InvasionDirector private constructor(
                 if (observation.complete) invasion.observedCells.clear()
                 observation.cells.forEach { invasion.observedCells[cellKey(it.x, it.z)] = it }
                 invasion.surfaceObservationComplete = invasion.surfaceObservationComplete || observation.complete
-                // Explicit complete grids remain a compact harness input. Production supplies persisted
-                // strategic routes instead, so this cannot bypass the unloaded-terrain atlas in game.
+                // Explicit complete grids remain a compact harness input. Production supplies a
+                // loaded-terrain local approach after virtual strategic travel.
                 if (observation.complete && invasion.strategicRoute.isEmpty()) {
                     val target = invasion.routeTarget ?: return@let
                     val anchor = SurfaceApproach.choose(observation.cells, target, spec.rules,
                         stableSeed(state.worldSeed, invasion.invasionId, invasion.currentWave)) ?: return@let
                     val point = BlockPoint(target.dimension, anchor.x, anchor.bodyY, anchor.z)
-                    invasion.strategicOrigin = point
-                    invasion.strategicPosition = point
                     invasion.strategicRoute = mutableListOf(point)
                     invasion.strategicFrontier = StrategicFrontier.OPEN
+                    invasion.lastRouteFailure = "none"
                 }
             }
         }
@@ -294,15 +318,14 @@ class InvasionDirector private constructor(
                 invasion.strategicRouteIndex = 0
                 invasion.strategicAtlasRevision = observation.atlasRevision
                 invasion.strategicFrontier = StrategicFrontier.UNKNOWN
+                invasion.lastRouteFailure = "no_loaded_local_route"
                 return@forEach
             }
             invasion.strategicRoute = observation.route.toMutableList()
             invasion.strategicRouteIndex = 0
-            if (invasion.strategicOrigin == null) invasion.strategicOrigin = observation.route.first()
-            invasion.strategicPosition = observation.route.first()
-            invasion.strategicTravelMilliBlocks = 0L
             invasion.strategicAtlasRevision = observation.atlasRevision
             invasion.strategicFrontier = observation.frontier
+            invasion.lastRouteFailure = "none"
         }
     }
 
@@ -412,13 +435,64 @@ class InvasionDirector private constructor(
     }
     private fun shouldWarn(track: PlayerPressureTrack, invasion: InvasionState): Boolean {
         if (invasion.strategicRoute.isEmpty() || invasion.strategicFrontier == StrategicFrontier.UNKNOWN) return false
-        val speed = spec.rules.assaultStrategicMilliBlocksPerTick
-        val remainingEdges = (invasion.strategicRoute.lastIndex - invasion.strategicRouteIndex).coerceAtLeast(0)
-        val remainingMilliBlocks = (remainingEdges * 1_000L - invasion.strategicTravelMilliBlocks).coerceAtLeast(0L)
-        val remainingTicks = (remainingMilliBlocks + speed - 1L) / speed
-        val predictedArrival = maxOf(invasion.scheduledArrivalEligibleTick, track.eligibleTicks + remainingTicks)
-        return predictedArrival - track.eligibleTicks <= spec.rules.assaultWarningSurfaceTicks
+        return invasion.scheduledArrivalEligibleTick - track.eligibleTicks <= spec.rules.assaultWarningSurfaceTicks
     }
+
+    private fun initializeVirtualJourney(invasion: InvasionState, track: PlayerPressureTrack) {
+        if (invasion.strategicJourneyTotalMilliBlocks > 0L) return
+        val target = invasion.routeTarget ?: return
+        val random = Random(stableSeed(state.worldSeed, invasion.invasionId, "virtual_origin"))
+        val distance = random.nextInt(
+            spec.rules.strategicOriginMinimumBlocks,
+            spec.rules.strategicOriginMaximumBlocks + 1,
+        )
+        val angle = random.nextDouble() * Math.PI * 2.0
+        val origin = BlockPoint(
+            target.dimension,
+            target.x + (cos(angle) * distance).roundToInt(),
+            target.y,
+            target.z + (sin(angle) * distance).roundToInt(),
+        )
+        invasion.strategicOrigin = origin
+        invasion.strategicPosition = origin
+        invasion.strategicJourneyTotalMilliBlocks = maxOf(
+            1_000L,
+            (hypot((target.x - origin.x).toDouble(), (target.z - origin.z).toDouble()) * 1_000.0).roundToInt().toLong(),
+        )
+        val speed = if (invasion.kind == EncounterKind.SCOUT) spec.rules.scoutStrategicMilliBlocksPerTick
+            else spec.rules.assaultStrategicMilliBlocksPerTick
+        val remainingToLocalSearch = (localSearchEligibleTick(invasion) - track.eligibleTicks).coerceAtLeast(0L)
+        invasion.strategicTravelMilliBlocks = (
+            invasion.strategicJourneyTotalMilliBlocks - remainingToLocalSearch * speed
+        ).coerceAtLeast(0L)
+        updateVirtualPosition(invasion)
+        if (remainingToLocalSearch == 0L || invasion.adminExpedited) {
+            invasion.strategicTravelMilliBlocks = invasion.strategicJourneyTotalMilliBlocks
+            invasion.strategicPosition = target
+        }
+    }
+
+    private fun updateVirtualPosition(invasion: InvasionState) {
+        val origin = invasion.strategicOrigin ?: return
+        val target = invasion.routeTarget ?: return
+        val total = invasion.strategicJourneyTotalMilliBlocks.coerceAtLeast(1L)
+        val fraction = invasion.strategicTravelMilliBlocks.toDouble() / total.toDouble()
+        invasion.strategicPosition = BlockPoint(
+            target.dimension,
+            (origin.x + (target.x - origin.x) * fraction).roundToInt(),
+            target.y,
+            (origin.z + (target.z - origin.z) * fraction).roundToInt(),
+        )
+    }
+
+    private fun virtualJourneyComplete(invasion: InvasionState): Boolean =
+        invasion.strategicJourneyTotalMilliBlocks > 0L &&
+            invasion.strategicTravelMilliBlocks >= invasion.strategicJourneyTotalMilliBlocks
+
+    private fun localSearchEligibleTick(invasion: InvasionState): Long =
+        if (invasion.kind == EncounterKind.ASSAULT)
+            (invasion.scheduledArrivalEligibleTick - spec.rules.assaultWarningSurfaceTicks).coerceAtLeast(0L)
+        else invasion.scheduledArrivalEligibleTick
     private fun due(track: PlayerPressureTrack, kind: EncounterKind) =
         if (kind == EncounterKind.SCOUT) track.nextScoutEligibleTick else track.nextAssaultEligibleTick
     private fun track(id: String) = state.tracks.getOrPut(id) { PlayerPressureTrack(id) }

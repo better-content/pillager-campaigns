@@ -77,7 +77,7 @@ object CampaignHarnessCommands {
             ))
             source.sendSuccess({ Component.literal(
                 "Harness started routed ${kind.name.lowercase()} for ${player.scoreboardName}" +
-                    " intensity=${intensity ?: "policy"}; refreshed=$refreshed loaded chunks; recorded 512-768 block routing is required",
+                    " intensity=${intensity ?: "policy"}; refreshed=$refreshed loaded chunks; virtual travel is expedited and local routing remains required",
             ) }, true)
             return Command.SINGLE_SUCCESS
         }

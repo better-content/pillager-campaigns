@@ -90,7 +90,7 @@ class InvasionDirectorTest {
             "An assault with no known route must not warn and then stall indefinitely")
         val arrived = engine.transition(playerFrame(19, surfaces = listOf(grid())))
         assertTrue(arrived.effects.any { it.kind == EffectKind.WARN })
-        assertTrue(arrived.effects.any { it.kind == EffectKind.MATERIALIZE })
+        assertTrue(arrived.effects.any { it.kind == EffectKind.MATERIALIZE && it.announceWave })
         acknowledge(engine, arrived)
         drainWave(engine)
         var invasion = track(engine).invasion!!
@@ -364,13 +364,17 @@ class InvasionDirectorTest {
         engine.transition(DirectorFrame(0, players = listOf(observation("player")), strategicRoutes = listOf(
             StrategicRouteObservation("player", invasion.invasionId, invasion.routeTarget!!, 4, points, StrategicFrontier.OPEN),
         )))
+        val journeyOrigin = track(engine).invasion!!.strategicOrigin
+        val progressBefore = track(engine).invasion!!.strategicTravelMilliBlocks
         engine.transition(playerFrame(2))
-        assertEquals(points.last(), track(engine).invasion!!.strategicPosition)
-        assertEquals(InvasionPhase.APPROACHING, track(engine).invasion!!.phase,
+        val travelling = track(engine).invasion!!
+        assertEquals(progressBefore + 2_000, travelling.strategicTravelMilliBlocks)
+        assertTrue(travelling.strategicPosition != journeyOrigin)
+        assertEquals(InvasionPhase.APPROACHING, travelling.phase,
             "An early route arrival must wait for the authored encounter cadence")
         val arrival = engine.transition(playerFrame(4))
         assertTrue(arrival.effects.any { it.kind == EffectKind.MATERIALIZE })
-        assertEquals(points.first(), track(engine).invasion!!.strategicOrigin)
+        assertEquals(journeyOrigin, track(engine).invasion!!.strategicOrigin)
     }
 
     @Test fun `expedited admin encounters still require a known route and preserve its distant origin`() {
@@ -384,6 +388,7 @@ class InvasionDirectorTest {
         )))
         engine.transition(playerFrame(0))
         val invasion = track(engine).invasion!!
+        val journeyOrigin = invasion.strategicOrigin
 
         val unknown = engine.transition(playerFrame(10))
         assertEquals(InvasionPhase.APPROACHING, track(engine).invasion!!.phase)
@@ -396,10 +401,47 @@ class InvasionDirectorTest {
         )))
         assertTrue(routed.effects.any { it.kind == EffectKind.MATERIALIZE })
         val expedited = track(engine).invasion!!
-        assertEquals(points.first(), expedited.strategicOrigin)
+        assertEquals(journeyOrigin, expedited.strategicOrigin)
+        assertEquals(expedited.strategicJourneyTotalMilliBlocks, expedited.strategicTravelMilliBlocks)
         assertEquals(points.last(), expedited.anchor)
-        assertEquals(points.lastIndex, expedited.strategicRouteIndex)
+        assertEquals(0, expedited.strategicRouteIndex)
         assertEquals(StrategicFrontier.OPEN, expedited.strategicFrontier)
+    }
+
+    @Test fun `completed virtual journey retires after bounded local approach failures`() {
+        val timeoutRules = rules.copy(localApproachTimeoutTicks = 40)
+        val engine = InvasionDirector.create(80, InvasionRuntimeSpec.create(timeoutRules, roster))
+        engine.transition(DirectorFrame(0, commands = listOf(
+            DirectorCommand.Force("player", EncounterKind.SCOUT, expediteTravel = true),
+        )))
+        engine.transition(playerFrame(0))
+
+        val retiring = engine.transition(playerFrame(40))
+        assertTrue(retiring.effects.any { it.kind == EffectKind.RETIRE })
+        val invasion = track(engine).invasion!!
+        assertEquals(InvasionPhase.RETIRING, invasion.phase)
+        assertEquals("local_approach_timeout", invasion.lastRouteFailure)
+
+        acknowledge(engine, retiring)
+        val resolved = track(engine)
+        assertNull(resolved.invasion)
+        assertTrue(resolved.nextScoutEligibleTick > resolved.eligibleTicks)
+    }
+
+    @Test fun `moving target relocates virtual corridor without resetting travel progress`() {
+        val engine = InvasionDirector.create(81, fixedSpec())
+        engine.transition(playerFrame(94))
+        val before = track(engine).invasion!!
+        val originOffset = before.strategicOrigin!!.x - before.routeTarget!!.x to
+            (before.strategicOrigin!!.z - before.routeTarget!!.z)
+        val progress = before.strategicTravelMilliBlocks
+
+        engine.transition(DirectorFrame(0, players = listOf(observation("player", 20))))
+        val moved = track(engine).invasion!!
+        assertEquals(progress, moved.strategicTravelMilliBlocks)
+        assertEquals(20 + originOffset.first, moved.strategicOrigin!!.x)
+        assertEquals(originOffset.second, moved.strategicOrigin!!.z)
+        assertEquals("target_moved", moved.lastRouteFailure)
     }
 
     @Test fun `default distant origin corpus is deterministic and reaches the approach band`() {

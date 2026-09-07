@@ -37,7 +37,6 @@ import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
 
 object PillagerCampaignsEvents {
-    private const val STRATEGIC_ROUTE_RETRY_TICKS = 1_200L
     private val nextStrategicRouteAttempt = mutableMapOf<String, Long>()
     private val defeatedMembers = ConcurrentHashMap.newKeySet<Pair<String, String>>()
     private val combatInvasions = ConcurrentHashMap.newKeySet<String>()
@@ -78,6 +77,7 @@ object PillagerCampaignsEvents {
         commands: List<DirectorCommand> = emptyList(),
         strategicRoutes: List<StrategicRouteObservation> = emptyList(),
         injectedDefeats: List<MemberDefeatObservation> = emptyList(),
+        playersOverride: List<PlayerObservation>? = null,
     ): DirectorTransition {
         val data = PillagerWorldData.get(server)
         val spec = InvasionRoster.runtimeSpec()
@@ -85,22 +85,33 @@ object PillagerCampaignsEvents {
         val now = server.overworld().gameTime
         val liveInvasions = snapshot.tracks.values.mapNotNull { it.invasion?.invasionId }.toSet()
         nextStrategicRouteAttempt.keys.retainAll(liveInvasions)
-        val players = server.playerList.players.map(::observePlayer)
+        val players = playersOverride ?: server.playerList.players.map(::observePlayer)
         val atlas = TerrainAtlasData.get(server)
         val overriddenInvasions = strategicRoutes.map(StrategicRouteObservation::invasionId).toSet()
         val routes = snapshot.tracks.values.mapNotNull { track ->
             val invasion = track.invasion?.takeIf { it.phase == InvasionPhase.APPROACHING } ?: return@mapNotNull null
             if (invasion.invasionId in overriddenInvasions) return@mapNotNull null
             val target = invasion.routeTarget ?: return@mapNotNull null
+            val localSearchTick = if (invasion.kind == EncounterKind.ASSAULT)
+                (invasion.scheduledArrivalEligibleTick - spec.rules.assaultWarningSurfaceTicks).coerceAtLeast(0L)
+            else invasion.scheduledArrivalEligibleTick
+            if (invasion.strategicJourneyTotalMilliBlocks <= 0L ||
+                invasion.strategicTravelMilliBlocks < invasion.strategicJourneyTotalMilliBlocks ||
+                track.eligibleTicks < localSearchTick) return@mapNotNull null
             val needsRoute = invasion.strategicRoute.isEmpty() ||
                 (invasion.strategicFrontier == StrategicFrontier.UNKNOWN && invasion.strategicAtlasRevision != atlas.revision)
             if (!needsRoute) return@mapNotNull null
             if (now < nextStrategicRouteAttempt.getOrDefault(invasion.invasionId, Long.MIN_VALUE)) return@mapNotNull null
-            nextStrategicRouteAttempt[invasion.invasionId] = now + STRATEGIC_ROUTE_RETRY_TICKS
-            val cells = atlas.cellsAround(target.x, target.z, spec.rules.strategicOriginMaximumBlocks + 16)
-            val result = StrategicRoutePlanner.plan(cells, target, spec.rules,
+            nextStrategicRouteAttempt[invasion.invasionId] = now + spec.rules.localApproachRetryTicks
+            val cells = atlas.cellsAround(target.x, target.z, spec.rules.approachMaximumBlocks + 16)
+            val localRules = spec.rules.copy(
+                strategicOriginMinimumBlocks = spec.rules.approachMinimumBlocks,
+                strategicOriginMaximumBlocks = spec.rules.approachMaximumBlocks,
+                strategicMaximumSearchExpansions = spec.rules.maximumSearchExpansions,
+            )
+            val result = StrategicRoutePlanner.plan(cells, target, localRules,
                 routeSeed(snapshot.worldSeed, invasion.invasionId, invasion.currentWave, invasion.usedAnchors.size),
-                if (invasion.usedAnchors.isEmpty()) invasion.strategicPosition else invasion.strategicOrigin,
+                null,
                 invasion.usedAnchors)
             StrategicRouteObservation(track.playerId, invasion.invasionId, target, atlas.revision,
                 result?.route?.map { BlockPoint(target.dimension, it.x, it.bodyY, it.z) }.orEmpty(),
@@ -237,7 +248,11 @@ object PillagerCampaignsEvents {
         val track = PillagerWorldData.get(source.server).snapshot().tracks[player.uuid.toString()]
         val message = if (track == null) "pressure=uninitialized" else buildString {
             append("eligible_ticks=${track.eligibleTicks} next_scout=${track.nextScoutEligibleTick} next_assault=${track.nextAssaultEligibleTick} outcome_adjustment=${track.outcomeAdjustment}")
-            track.invasion?.let { append(" encounter=${it.invasionId} kind=${it.kind.name.lowercase()} phase=${it.phase.name.lowercase()} wave=${it.currentWave + 1}/${it.waves.size} intensity=${it.intensity} members=${it.members.size} origin=${it.strategicOrigin} position=${it.strategicPosition} frontier=${it.strategicFrontier.name.lowercase()} atlas_revision=${it.strategicAtlasRevision}") }
+            track.invasion?.let {
+                val journeyPercent = if (it.strategicJourneyTotalMilliBlocks <= 0L) 0L else
+                    (it.strategicTravelMilliBlocks * 100L / it.strategicJourneyTotalMilliBlocks).coerceIn(0L, 100L)
+                append(" encounter=${it.invasionId} kind=${it.kind.name.lowercase()} phase=${it.phase.name.lowercase()} wave=${it.currentWave + 1}/${it.waves.size} intensity=${it.intensity} members=${it.members.size} virtual_progress=${journeyPercent}% local_approach_ticks=${it.localApproachTicks} route_failure=${it.lastRouteFailure} origin=${it.strategicOrigin} position=${it.strategicPosition} frontier=${it.strategicFrontier.name.lowercase()} atlas_revision=${it.strategicAtlasRevision}")
+            }
         }
         source.sendSuccess({ Component.literal(message) }, false)
         return Command.SINGLE_SUCCESS
@@ -246,16 +261,59 @@ object PillagerCampaignsEvents {
     private fun force(source: CommandSourceStack, name: String?, kind: EncounterKind): Int {
         val player = target(source, name)
         if (player == null) { source.sendFailure(Component.literal("Player is not online")); return 0 }
+        val observation = observePlayer(player)
+        if (!observation.eligible || !observation.surfaceEligible || !observation.physicallyAvailable || observation.downed) {
+            source.sendFailure(Component.literal("Cannot force a campaign: ${player.scoreboardName} must be alive, standing near the Overworld surface, and in Survival mode"))
+            return 0
+        }
+        val data = PillagerWorldData.get(source.server)
+        val spec = InvasionRoster.runtimeSpec()
+        val before = data.snapshot()
+        val existing = before.tracks[player.uuid.toString()]
+        if (existing?.invasion != null || existing?.joinedInvasionId != null) {
+            source.sendFailure(Component.literal("Cannot force a campaign: ${player.scoreboardName} already belongs to an active encounter"))
+            return 0
+        }
         val refreshedChunks = refreshLoadedTerrain(player)
-        advance(source.server, 0L, listOf(DirectorCommand.Force(player.uuid.toString(), kind, expediteTravel = true)))
-        source.sendSuccess({ Component.literal("Forced immediate ${kind.name.lowercase()} pressure for ${player.scoreboardName}; refreshed $refreshedChunks loaded terrain chunks and recorded distant routing is still required") }, true)
+        val packetSize = minOf(spec.rules.maximumSpawnsPerTick, 6)
+        val anchor = SurfaceGridSampler.immediateAnchor(player.serverLevel(), player.blockPosition(),
+            spec.rules.approachMinimumBlocks, spec.rules.approachMaximumBlocks, packetSize)
+        if (anchor == null) {
+            source.sendFailure(Component.literal("Cannot force a campaign: no loaded, traversable approach exists ${spec.rules.approachMinimumBlocks}-${spec.rules.approachMaximumBlocks} blocks from ${player.scoreboardName}"))
+            return 0
+        }
+        advance(source.server, 0L,
+            listOf(DirectorCommand.Force(player.uuid.toString(), kind, expediteTravel = true)),
+            playersOverride = listOf(observation))
+        val created = data.snapshot().tracks[player.uuid.toString()]?.invasion
+        if (created == null) {
+            data.restoreSnapshot(before, spec)
+            source.sendFailure(Component.literal("Cannot force a campaign: the Director rejected the encounter before local materialization"))
+            return 0
+        }
+        val anchorPoint = BlockPoint(observation.position!!.dimension, anchor.x, anchor.y, anchor.z)
+        advance(source.server, 0L, strategicRoutes = listOf(
+            StrategicRouteObservation(player.uuid.toString(), created.invasionId, observation.position!!,
+                TerrainAtlasData.get(source.server).revision, listOf(anchorPoint), StrategicFrontier.OPEN),
+        ), playersOverride = listOf(observation))
+        val materialized = data.snapshot().tracks[player.uuid.toString()]?.invasion
+            ?.takeIf { it.invasionId == created.invasionId && it.phase == InvasionPhase.ACTIVE }
+        val live = InvasionRuntime.liveMembers(source.server, created.invasionId)
+        if (materialized == null || live.isEmpty()) {
+            InvasionRuntime.retire(source.server, created.invasionId)
+            nextStrategicRouteAttempt.remove(created.invasionId)
+            data.restoreSnapshot(before, spec)
+            source.sendFailure(Component.literal("Cannot force a campaign: the loaded approach failed final mob/path validation; no pressure state was changed"))
+            return 0
+        }
+        source.sendSuccess({ Component.literal("Forced ${kind.name.lowercase()} ${created.invasionId} for ${player.scoreboardName}: ${live.size} members materialized at $anchorPoint after refreshing $refreshedChunks loaded terrain chunks") }, true)
         return Command.SINGLE_SUCCESS
     }
 
     internal fun refreshLoadedTerrain(player: ServerPlayer): Int {
         val level = player.serverLevel()
         if (level.dimension() != Level.OVERWORLD) return 0
-        val radius = PillagerCampaignsConfig.rules().strategicOriginMaximumBlocks + 16
+        val radius = PillagerCampaignsConfig.rules().approachMaximumBlocks + 16
         val minChunkX = (player.blockX - radius) shr 4
         val maxChunkX = (player.blockX + radius) shr 4
         val minChunkZ = (player.blockZ - radius) shr 4
@@ -289,7 +347,7 @@ object PillagerCampaignsEvents {
         val provenanced = live.count { it.persistentData.getString(InvasionRuntime.INVASION_TAG) == invasion.invasionId &&
             it.persistentData.getString(InvasionRuntime.MEMBER_TAG).isNotBlank() }
         source.sendSuccess({ Component.literal(
-            "campaign_inspect player=${player.scoreboardName} encounter=${invasion.invasionId} kind=${invasion.kind.name.lowercase()} phase=${invasion.phase.name.lowercase()} wave=${invasion.currentWave + 1}/${invasion.waves.size} planned=${invasion.waves[invasion.currentWave].members.size} queued=${invasion.waves[invasion.currentWave].queuedMembers} materialized=${invasion.waves[invasion.currentWave].materializedMembers} live=${live.size} targeted=$targeted provenanced=$provenanced frontier=${invasion.strategicFrontier.name.lowercase()} origin=${invasion.strategicOrigin} anchor=${invasion.anchor} validated_anchor=${invasion.validatedAnchor} path_proof_pending=${invasion.anchor != invasion.validatedAnchor} roster=[$roster]") }, false)
+            "campaign_inspect player=${player.scoreboardName} encounter=${invasion.invasionId} kind=${invasion.kind.name.lowercase()} phase=${invasion.phase.name.lowercase()} wave=${invasion.currentWave + 1}/${invasion.waves.size} planned=${invasion.waves[invasion.currentWave].members.size} queued=${invasion.waves[invasion.currentWave].queuedMembers} materialized=${invasion.waves[invasion.currentWave].materializedMembers} live=${live.size} targeted=$targeted provenanced=$provenanced virtual_travel=${invasion.strategicTravelMilliBlocks}/${invasion.strategicJourneyTotalMilliBlocks} local_approach_ticks=${invasion.localApproachTicks} route_failure=${invasion.lastRouteFailure} frontier=${invasion.strategicFrontier.name.lowercase()} origin=${invasion.strategicOrigin} anchor=${invasion.anchor} validated_anchor=${invasion.validatedAnchor} path_proof_pending=${invasion.anchor != invasion.validatedAnchor} roster=[$roster]") }, false)
         return Command.SINGLE_SUCCESS
     }
 

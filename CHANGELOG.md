@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.4
+
+- Decouple the deterministic 512–768-block strategic journey from recorded distant chunks; only the final loaded 48–72-block approach requires terrain proof.
+- Retry local approach selection every five seconds and retire/reschedule cleanly after two minutes instead of leaving an encounter stalled forever.
+- Make `/pillager_campaigns force` succeed only after real mobs materialize or fail without changing campaign pressure.
+- Announce each assault wave once when its first packet arrives, and expose virtual progress plus local-route failures in status inspection.
+- Preserve virtual journey progress when the target moves and migrate active schema-3 encounters safely to campaign schema 4.
+
 ## 0.5.3
 
 - Validate a campaign approach with one real lead-mob path, then leave every materialized member to ordinary vanilla navigation.

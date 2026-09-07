@@ -35,7 +35,11 @@ object InvasionRuntime {
     fun execute(server: MinecraftServer, effects: List<DirectorEffect>): List<EffectResult> = effects.map { effect ->
         when (effect.kind) {
             EffectKind.WARN -> EffectResult(effect.effectId, warn(server, effect))
-            EffectKind.MATERIALIZE -> EffectResult(effect.effectId, materialize(server, effect))
+            EffectKind.MATERIALIZE -> {
+                val successful = materialize(server, effect)
+                if (successful && effect.announceWave) announceWave(server, effect)
+                EffectResult(effect.effectId, successful)
+            }
             EffectKind.RETIRE -> EffectResult(effect.effectId, retire(server, effect.invasionId))
         }
     }
@@ -47,6 +51,16 @@ object InvasionRuntime {
             player.displayClientMessage(Component.literal("A pillager assault is forming. You have two minutes."), true)
         }
         return recipients.isNotEmpty()
+    }
+
+    private fun announceWave(server: MinecraftServer, effect: DirectorEffect) {
+        val message = if (effect.encounterKind == com.bettercontent.pillagercampaigns.core.EncounterKind.ASSAULT)
+            "Pillager assault wave ${effect.waveIndex + 1}/3 has arrived."
+        else "A pillager scouting party has arrived."
+        warningPlayerIds(effect).mapNotNull { player(server, it) }.forEach { recipient ->
+            recipient.playNotifySound(SoundEvents.RAID_HORN.get(), SoundSource.HOSTILE, 0.85f, 1.05f)
+            recipient.displayClientMessage(Component.literal(message), true)
+        }
     }
 
     internal fun warningPlayerIds(effect: DirectorEffect): List<String> =

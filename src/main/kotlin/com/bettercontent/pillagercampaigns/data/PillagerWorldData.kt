@@ -38,6 +38,13 @@ class PillagerWorldData private constructor(private var restored: DirectorSnapsh
     fun snapshot(): DirectorSnapshot = engine?.snapshot() ?: copy(restored)
     fun runtimeRevision(): String = runtimeRevision
 
+    internal fun restoreSnapshot(snapshot: DirectorSnapshot, spec: InvasionRuntimeSpec) {
+        restored = copy(snapshot)
+        engine = InvasionDirector.restore(restored, spec)
+        runtimeRevision = spec.revision
+        setDirty()
+    }
+
     override fun save(tag: CompoundTag): CompoundTag {
         val snapshot = snapshot()
         tag.putInt("schema", DirectorSnapshot.CURRENT_SCHEMA_VERSION)
@@ -79,7 +86,27 @@ class PillagerWorldData private constructor(private var restored: DirectorSnapsh
                     }
                 }
                 PillagerCampaignsMod.LOGGER.warn(
-                    "Migrated Pillager Campaigns schema 2 clocks to schema 3; active near-player campaigns were cleared")
+                    "Migrated Pillager Campaigns schema 2 clocks to schema 4; active near-player campaigns were cleared")
+            }
+            if (schema == 3) {
+                snapshot = snapshot.copy(schemaVersion = DirectorSnapshot.CURRENT_SCHEMA_VERSION,
+                    pendingEffects = linkedMapOf()).also { migrated ->
+                    migrated.tracks.values.mapNotNull { it.invasion }.forEach { invasion ->
+                        invasion.anchor = null
+                        invasion.validatedAnchor = null
+                        invasion.strategicRoute.clear()
+                        invasion.strategicRouteIndex = 0
+                        invasion.strategicOrigin = null
+                        invasion.strategicPosition = null
+                        invasion.strategicTravelMilliBlocks = 0L
+                        invasion.strategicJourneyTotalMilliBlocks = 0L
+                        invasion.strategicFrontier = com.bettercontent.pillagercampaigns.core.StrategicFrontier.UNKNOWN
+                        invasion.phase = com.bettercontent.pillagercampaigns.core.InvasionPhase.APPROACHING
+                        invasion.lastRouteFailure = "migrated_schema_3"
+                    }
+                }
+                PillagerCampaignsMod.LOGGER.warn(
+                    "Migrated Pillager Campaigns schema 3 active encounters to virtual strategic travel")
             }
             return PillagerWorldData(snapshot).also { it.runtimeRevision = tag.getString("runtimeRevision").ifBlank { "unresolved" } }
         }
