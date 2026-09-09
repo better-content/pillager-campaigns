@@ -272,6 +272,111 @@ object PillagerCampaignsGameTests {
     }
 
     @JvmStatic
+    @GameTest(templateNamespace = "minecraft", template = "empty", timeoutTicks = 200)
+    fun twelveScheduledAssaultsCompleteThroughRealForgeMaterialization(helper: GameTestHelper) {
+        val base = helper.absolutePos(BlockPos(1, 2, 1))
+        buildSurface(helper, base)
+        val fake = fake(helper, "reliability")
+        fake.setGameMode(GameType.SURVIVAL)
+        fake.moveTo(base.x + 11.5, base.y.toDouble(), base.z + 7.5)
+        val playerId = fake.uuid.toString()
+        val target = BlockPoint("minecraft:overworld", fake.blockX, fake.blockY, fake.blockZ)
+        val anchorPos = base.offset(3, 0, 7)
+        val anchor = BlockPoint(target.dimension, anchorPos.x, anchorPos.y, anchorPos.z)
+        val rules = InvasionRules(
+            scoutWindowMinTicks = 1_000_000, scoutWindowMaxTicks = 1_000_000,
+            assaultWindowMinTicks = 20, assaultWindowMaxTicks = 20,
+            assaultWarningSurfaceTicks = 5, timeTierTicks = 1_000_000,
+            waveProgressTimeoutTicks = 50, assaultActiveTicks = 500, activeIdleTicks = 300,
+            approachMinimumBlocks = 2, approachMaximumBlocks = 10, approachTargetRadiusBlocks = 1,
+            maximumSearchExpansions = 128, strategicOriginMinimumBlocks = 11,
+            strategicOriginMaximumBlocks = 12, assaultStrategicMilliBlocksPerTick = 2_000,
+            normalPacketSpacingTicks = 1,
+        )
+        val director = InvasionDirector.create(97, InvasionRuntimeSpec.create(rules, InvasionRoster.runtimeSpec().recruits))
+        val player = PlayerObservation(playerId, true, true, true, target)
+        val expectedCycles = 12
+        val dispatched = linkedSetOf<String>()
+        val warned = linkedSetOf<String>()
+        val completed = linkedSetOf<String>()
+        val materializedByWave = linkedMapOf<String, MutableMap<Int, Int>>()
+
+        fun record(transition: DirectorTransition) {
+            transition.events.forEach { event ->
+                when (event.type) {
+                    "assault_dispatched" -> dispatched += event.subjectId
+                    "assault_warned" -> warned += event.subjectId
+                    "resolved" -> completed += event.subjectId
+                }
+            }
+        }
+
+        var iterations = 0
+        while (completed.size < expectedCycles && iterations++ < 2_000) {
+            val before = director.snapshot().tracks[playerId]?.invasion
+            val route = before?.takeIf { it.phase == InvasionPhase.APPROACHING }?.let { invasion ->
+                listOf(StrategicRouteObservation(playerId, invasion.invasionId, target, 1,
+                    listOf(anchor), StrategicFrontier.OPEN))
+            }.orEmpty()
+            val defeated = before?.takeIf { it.phase == InvasionPhase.ACTIVE }?.let { invasion ->
+                val wave = invasion.waves[invasion.currentWave]
+                if (wave.materializedMembers == wave.members.size) {
+                    val live = InvasionRuntime.liveMembers(helper.level.server, invasion.invasionId)
+                    helper.assertTrue(live.size == wave.members.size,
+                        "${invasion.invasionId} wave ${wave.waveIndex} planned ${wave.members.size} but had ${live.size} live mobs")
+                    helper.assertTrue(live.all { it.target === fake },
+                        "Every materialized member must retain the scheduled target")
+                    live.forEach { it.discard() }
+                    wave.members.map { MemberDefeatObservation(invasion.invasionId, it.memberId) }
+                } else emptyList()
+            }.orEmpty()
+            val transition = director.transition(DirectorFrame(
+                elapsedTicks = 1,
+                players = listOf(player),
+                strategicRoutes = route,
+                memberDefeats = defeated,
+                liveCampaignMobs = InvasionRuntime.liveCampaignPopulation(helper.level.server),
+            ))
+            record(transition)
+            val results = transition.effects.map { effect ->
+                val successful = when (effect.kind) {
+                    EffectKind.WARN -> true
+                    EffectKind.MATERIALIZE -> InvasionRuntime.materializeAgainst(helper.level, fake, effect)
+                    EffectKind.RETIRE -> InvasionRuntime.retire(helper.level.server, effect.invasionId)
+                }
+                helper.assertTrue(successful, "${effect.kind} failed for repeated campaign ${effect.invasionId}")
+                if (effect.kind == EffectKind.MATERIALIZE) {
+                    val waves = materializedByWave.getOrPut(effect.invasionId) { linkedMapOf() }
+                    waves[effect.waveIndex] = waves.getOrDefault(effect.waveIndex, 0) + effect.members.size
+                }
+                EffectResult(effect.effectId, successful)
+            }
+            if (results.isNotEmpty()) {
+                record(director.transition(DirectorFrame(0, players = listOf(player), effectResults = results,
+                    liveCampaignMobs = InvasionRuntime.liveCampaignPopulation(helper.level.server))))
+            }
+        }
+
+        helper.assertTrue(dispatched.size == expectedCycles,
+            "Expected $expectedCycles scheduled assaults, dispatched ${dispatched.size}")
+        helper.assertTrue(warned == dispatched, "Every scheduled assault must issue its warning")
+        helper.assertTrue(completed == dispatched, "Every scheduled assault must complete before the next cycle")
+        dispatched.forEach { invasionId ->
+            val waves = materializedByWave[invasionId].orEmpty()
+            helper.assertTrue(waves.keys == setOf(0, 1, 2), "$invasionId did not materialize all three waves: $waves")
+            helper.assertTrue(waves.values.all { it in 16..24 }, "$invasionId produced an out-of-bounds wave: $waves")
+            helper.assertTrue(InvasionRuntime.liveMembers(helper.level.server, invasionId).isEmpty(),
+                "$invasionId left campaign mobs behind after completion")
+        }
+        PillagerCampaignsMod.LOGGER.info(
+            "Reliability soak completed {} naturally scheduled assaults, {} waves, and {} real Forge mob materializations",
+            completed.size, materializedByWave.values.sumOf { it.size },
+            materializedByWave.values.sumOf { waves -> waves.values.sum() },
+        )
+        helper.succeed()
+    }
+
+    @JvmStatic
     @GameTest(templateNamespace = "minecraft", template = "empty", timeoutTicks = 300)
     fun terrainAtlasSurvivesActualChunkUnloadWithoutReloadingIt(helper: GameTestHelper) {
         val level = helper.level
