@@ -1,23 +1,31 @@
 package com.bettercontent.pillagercampaigns.gametest
 
 import com.bettercontent.pillagercampaigns.PillagerCampaignsMod
+import com.bettercontent.pillagercampaigns.PillagerCampaignsEvents
 import com.bettercontent.pillagercampaigns.core.*
 import com.bettercontent.pillagercampaigns.system.InvasionRoster
 import com.bettercontent.pillagercampaigns.system.InvasionRuntime
 import com.bettercontent.pillagercampaigns.system.SurfaceGridSampler
 import com.bettercontent.pillagercampaigns.data.TerrainAtlasData
+import com.bettercontent.pillagercampaigns.data.PillagerWorldData
 import net.minecraft.core.BlockPos
 import net.minecraft.gametest.framework.GameTest
 import net.minecraft.gametest.framework.GameTestHelper
+import net.minecraft.network.Connection
+import net.minecraft.network.protocol.PacketFlow
+import net.minecraft.server.level.ServerPlayer
+import net.minecraft.world.Difficulty
 import net.minecraft.world.entity.EntityType
 import net.minecraft.world.level.GameType
 import net.minecraft.world.level.ChunkPos
 import net.minecraft.world.level.block.Blocks
 import net.minecraft.server.level.TicketType
 import net.minecraftforge.common.util.FakePlayer
+import net.minecraftforge.registries.ForgeRegistries
 import net.minecraftforge.gametest.GameTestHolder
 import net.minecraftforge.gametest.PrefixGameTestTemplate
 import com.mojang.authlib.GameProfile
+import io.netty.channel.embedded.EmbeddedChannel
 import java.util.UUID
 
 @GameTestHolder(PillagerCampaignsMod.MOD_ID)
@@ -374,6 +382,94 @@ object PillagerCampaignsGameTests {
             materializedByWave.values.sumOf { waves -> waves.values.sum() },
         )
         helper.succeed()
+    }
+
+    @JvmStatic
+    @GameTest(templateNamespace = "minecraft", template = "empty", timeoutTicks = 600)
+    fun minimumIntensityAssaultKillsFullHealthSurvivalPlayer(helper: GameTestHelper) {
+        val base = helper.absolutePos(BlockPos(1, 2, 1))
+        buildSurface(helper, base)
+        helper.level.server.setDifficulty(Difficulty.NORMAL, true)
+        val target = ServerPlayer(helper.level.server, helper.level,
+            GameProfile(UUID.nameUUIDFromBytes("campaign-test-lethality".toByteArray()), "campaign-test-lethality"))
+        val connection = Connection(PacketFlow.SERVERBOUND)
+        val channel = EmbeddedChannel(connection)
+        helper.level.server.playerList.placeNewPlayer(connection, target)
+        target.setGameMode(GameType.SURVIVAL)
+        target.moveTo(base.x + 11.5, base.y.toDouble(), base.z + 7.5)
+        target.health = target.maxHealth
+
+        val runtime = InvasionRoster.runtimeSpec()
+        val playerId = target.uuid.toString()
+        val targetPoint = BlockPoint("minecraft:overworld", target.blockX, target.blockY, target.blockZ)
+        val player = PlayerObservation(playerId, true, true, true, targetPoint)
+        PillagerCampaignsEvents.advance(helper.level.server, 0,
+            commands = listOf(DirectorCommand.Force(playerId, EncounterKind.ASSAULT,
+                expediteTravel = true, intensity = 0)), playersOverride = listOf(player))
+        val invasion = PillagerWorldData.get(helper.level.server).snapshot().tracks.getValue(playerId).invasion!!
+        val invasionId = invasion.invasionId
+        val memberCount = invasion.waves[0].members.size
+        val anchor = base.offset(3, 0, 7)
+        PillagerCampaignsEvents.advance(helper.level.server, 0,
+            strategicRoutes = listOf(StrategicRouteObservation(playerId, invasionId, targetPoint, 1,
+                listOf(BlockPoint(targetPoint.dimension, anchor.x, anchor.y, anchor.z)), StrategicFrontier.OPEN)),
+            playersOverride = listOf(player))
+        var dispatches = 0
+        while (InvasionRuntime.liveMembers(helper.level.server, invasionId).size < memberCount && dispatches++ < 10) {
+            PillagerCampaignsEvents.advance(helper.level.server, runtime.rules.normalPacketSpacingTicks,
+                playersOverride = listOf(player))
+        }
+        val attackers = InvasionRuntime.liveMembers(helper.level.server, invasionId)
+        helper.assertTrue(attackers.isNotEmpty() && attackers.all { it.target === target },
+            "The rate-limited authored assault packet must spawn targeting the Survival player")
+        PillagerCampaignsMod.LOGGER.info(
+            "Lethality attacker loadout: {}",
+            attackers.joinToString { mob ->
+                "${ForgeRegistries.ENTITY_TYPES.getKey(mob.type)}[hand=${mob.mainHandItem.item},noAi=${mob.isNoAi}]"
+            },
+        )
+
+        val startingHealth = target.health
+        var lowestHealth = startingHealth
+        var finished = false
+        var combatTicks = 0
+        helper.onEachTick {
+            if (finished) return@onEachTick
+            combatTicks++
+            if (combatTicks % runtime.rules.normalPacketSpacingTicks.toInt() == 0) {
+                PillagerCampaignsEvents.advance(helper.level.server, runtime.rules.normalPacketSpacingTicks,
+                    playersOverride = listOf(player))
+            }
+            lowestHealth = minOf(lowestHealth, target.health)
+            if (!target.isAlive || target.health <= 0f) {
+                finished = true
+                val killer = target.killCredit
+                helper.assertTrue(killer != null &&
+                    killer.persistentData.getString(InvasionRuntime.INVASION_TAG) == invasionId,
+                    "A campaign-tagged assault member must receive kill credit, got $killer")
+                PillagerCampaignsMod.LOGGER.info(
+                    "Lethality validation: minimum-intensity authored assault ({} planned, {} materialized) killed a full-health Survival player in {} ticks; health {} -> {}",
+                    memberCount, InvasionRuntime.liveMembers(helper.level.server, invasionId).size,
+                    combatTicks, startingHealth, target.health,
+                )
+                InvasionRuntime.retire(helper.level.server, invasionId)
+                PillagerCampaignsEvents.advance(helper.level.server, 0,
+                    commands = listOf(DirectorCommand.Reset(playerId)), playersOverride = emptyList())
+                helper.level.server.playerList.remove(target)
+                channel.finishAndReleaseAll()
+                helper.succeed()
+            } else if (combatTicks % 100 == 0) {
+                PillagerCampaignsMod.LOGGER.info(
+                    "Lethality validation progress: tick={} difficulty={} health={} lowest_health={} live_attackers={} targeted={} navigating={} ticking={} los={} nearest={} spectator={} creative={} invulnerable={}",
+                    combatTicks, helper.level.difficulty, target.health, lowestHealth,
+                    InvasionRuntime.liveMembers(helper.level.server, invasionId).size,
+                    attackers.count { it.target === target }, attackers.count { !it.navigation.isDone },
+                    attackers.count { it.tickCount > 0 }, attackers.count { it.sensing.hasLineOfSight(target) },
+                    attackers.minOfOrNull { it.distanceTo(target) }, target.isSpectator, target.isCreative,
+                    target.isInvulnerableTo(helper.level.damageSources().mobAttack(attackers.first())),
+                )
+            }
+        }
     }
 
     @JvmStatic
