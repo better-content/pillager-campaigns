@@ -81,6 +81,13 @@ repositories {
     maven("https://maven.minecraftforge.net")
     maven("https://thedarkcolour.github.io/KotlinForForge/")
     maven("https://www.cursemaven.com") { content { includeGroup("curse.maven") } }
+    ivy {
+        name = "downedPlayerRevivalLocal"
+        url = uri("../downed-player-revival/build/libs")
+        patternLayout { artifact("[artifact]-[revision].[ext]") }
+        metadataSources { artifact() }
+        content { includeGroup("bettercontent.local") }
+    }
 }
 
 dependencies {
@@ -88,6 +95,8 @@ dependencies {
     minecraft("net.minecraftforge:forge:$minecraftVersion-$forgeVersion")
     implementation("thedarkcolour:kotlinforforge:$kotlinForForgeVersion")
     testImplementation(kotlin("test"))
+    compileOnly(fg.deobf("bettercontent.local:downed-player-revival:1.0.0"))
+    runtimeOnly(fg.deobf("bettercontent.local:downed-player-revival:1.0.0"))
     runtimeOnly(fg.deobf("curse.maven:it-takes-a-pillage-635843:4981343"))
     runtimeOnly(fg.deobf("curse.maven:savage-and-ravage-381736:7115735"))
     runtimeOnly(fg.deobf("curse.maven:blueprint-382216:6408581"))

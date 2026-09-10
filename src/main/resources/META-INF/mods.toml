@@ -33,3 +33,10 @@ mandatory=true
 versionRange="[${kotlinForForgeVersion},)"
 ordering="NONE"
 side="BOTH"
+
+[[dependencies.${modId}]]
+modId="downed_player_revival"
+mandatory=false
+versionRange="[1.0.0,)"
+ordering="AFTER"
+side="BOTH"

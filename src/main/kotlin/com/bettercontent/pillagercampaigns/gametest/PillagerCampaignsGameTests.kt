@@ -3,6 +3,7 @@ package com.bettercontent.pillagercampaigns.gametest
 import com.bettercontent.pillagercampaigns.PillagerCampaignsMod
 import com.bettercontent.pillagercampaigns.PillagerCampaignsEvents
 import com.bettercontent.pillagercampaigns.core.*
+import com.bettercontent.pillagercampaigns.system.DownedCompat
 import com.bettercontent.pillagercampaigns.system.InvasionRoster
 import com.bettercontent.pillagercampaigns.system.InvasionRuntime
 import com.bettercontent.pillagercampaigns.system.SurfaceGridSampler
@@ -386,7 +387,7 @@ object PillagerCampaignsGameTests {
 
     @JvmStatic
     @GameTest(templateNamespace = "minecraft", template = "empty", timeoutTicks = 600)
-    fun minimumIntensityAssaultKillsFullHealthSurvivalPlayer(helper: GameTestHelper) {
+    fun minimumIntensityAssaultDefeatsFullHealthSurvivalPlayer(helper: GameTestHelper) {
         val base = helper.absolutePos(BlockPos(1, 2, 1))
         buildSurface(helper, base)
         helper.level.server.setDifficulty(Difficulty.NORMAL, true)
@@ -441,16 +442,17 @@ object PillagerCampaignsGameTests {
                     playersOverride = listOf(player))
             }
             lowestHealth = minOf(lowestHealth, target.health)
-            if (!target.isAlive || target.health <= 0f) {
+            val downed = DownedCompat.isDowned(target)
+            if (downed || !target.isAlive || target.health <= 0f) {
                 finished = true
                 val killer = target.killCredit
                 helper.assertTrue(killer != null &&
                     killer.persistentData.getString(InvasionRuntime.INVASION_TAG) == invasionId,
                     "A campaign-tagged assault member must receive kill credit, got $killer")
                 PillagerCampaignsMod.LOGGER.info(
-                    "Lethality validation: minimum-intensity authored assault ({} planned, {} materialized) killed a full-health Survival player in {} ticks; health {} -> {}",
+                    "Lethality validation: minimum-intensity authored assault ({} planned, {} materialized) defeated a full-health Survival player in {} ticks; health {} -> {}, downed={}",
                     memberCount, InvasionRuntime.liveMembers(helper.level.server, invasionId).size,
-                    combatTicks, startingHealth, target.health,
+                    combatTicks, startingHealth, target.health, downed,
                 )
                 InvasionRuntime.retire(helper.level.server, invasionId)
                 PillagerCampaignsEvents.advance(helper.level.server, 0,

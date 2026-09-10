@@ -1,14 +1,10 @@
 package com.bettercontent.pillagercampaigns.system
 
+import com.bettercontent.downedplayerrevival.api.RevivalApi
 import net.minecraft.world.entity.player.Player
-import java.lang.reflect.Method
+import net.minecraftforge.fml.ModList
 
 internal object DownedCompat {
-    private val method: Method? = runCatching {
-        Class.forName("com.bettercontent.downedplayerrevival.api.RevivalApi").getMethod("isDowned", Player::class.java)
-    }.getOrNull()
-
-    fun isDowned(player: Player): Boolean = method?.let { candidate ->
-        runCatching { candidate.invoke(null, player) as Boolean }.getOrDefault(false)
-    } ?: false
+    fun isDowned(player: Player): Boolean =
+        ModList.get().isLoaded("downed_player_revival") && RevivalApi.isDowned(player)
 }
