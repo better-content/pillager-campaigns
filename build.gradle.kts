@@ -7,7 +7,7 @@ plugins {
     jacoco
     `maven-publish`
     id("org.jetbrains.kotlin.jvm") version "1.9.25"
-    id("net.minecraftforge.gradle") version "[6.0,6.2)"
+    id("net.minecraftforge.gradle") version "6.0.54"
 }
 
 val minecraftVersion = property("minecraft_version") as String
@@ -76,6 +76,18 @@ minecraft {
     }
 }
 
+// CI and fresh-release builds provide verified runtime JARs explicitly.
+// Ordinary local builds retain the canonical sibling build/libs convention.
+fun betterContentJar(repository: String, artifact: String): java.io.File {
+    val directory = providers.environmentVariable("BC_CUSTOM_MOD_JAR_DIR").orNull
+    require(directory == null || directory.isNotBlank()) { "BC_CUSTOM_MOD_JAR_DIR must not be blank" }
+    val jar = if (directory == null) file("../$repository/build/libs/$artifact") else file(directory).resolve(artifact)
+    require(jar.isFile) {
+        "Missing Better Content provider $artifact at $jar; prepare BC_CUSTOM_MOD_JAR_DIR or build $repository first"
+    }
+    return jar
+}
+
 repositories {
     mavenCentral()
     maven("https://maven.minecraftforge.net")
@@ -83,7 +95,7 @@ repositories {
     maven("https://www.cursemaven.com") { content { includeGroup("curse.maven") } }
     ivy {
         name = "downedPlayerRevivalLocal"
-        url = uri("../downed-player-revival/build/libs")
+        url = uri(betterContentJar("downed-player-revival", "downed-player-revival-1.0.0.jar").parentFile)
         patternLayout { artifact("[artifact]-[revision].[ext]") }
         metadataSources { artifact() }
         content { includeGroup("bettercontent.local") }
