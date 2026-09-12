@@ -31,7 +31,7 @@ class InvasionDirector private constructor(
             if (track.nextAssaultEligibleTick < 0L) schedule(track, EncounterKind.ASSAULT)
             if (player.eligible) track.eligibleTicks += frame.elapsedTicks
         }
-        applyCombat(frame, players, events)
+        applyCombat(frame, events)
         advanceExisting(players, frame.elapsedTicks, events)
         beginDueEncounters(players, events)
         issuePackets(players, frame, events)
@@ -41,7 +41,7 @@ class InvasionDirector private constructor(
     fun snapshot(): DirectorSnapshot = copy(state)
 
     private fun beginDueEncounters(players: Map<String, PlayerObservation>, events: MutableList<DirectorEvent>) {
-        val available = players.values.filter { it.eligible && it.surfaceEligible && it.physicallyAvailable && !it.downed }
+        val available = players.values.filter { it.eligible && it.surfaceEligible && it.physicallyAvailable }
         fun candidates(kind: EncounterKind) = available.filter { player ->
             val track = track(player.playerId)
             track.invasion == null && track.joinedInvasionId == null &&
@@ -111,10 +111,6 @@ class InvasionDirector private constructor(
         primaryTracks().forEach { track ->
             val invasion = track.invasion ?: return@forEach
             val target = chooseTarget(invasion, players)
-            if (target?.downed == true || invasion.participantPlayerIds.any { players[it]?.downed == true }) {
-                requestRetire(track, InvasionOutcome.TARGET_DIED, events)
-                return@forEach
-            }
             val available = target?.let { it.eligible && it.physicallyAvailable } == true
             invasion.targetUnavailableTicks = if (available) 0L else invasion.targetUnavailableTicks + elapsed
             if (invasion.targetUnavailableTicks >= spec.rules.targetUnavailableTicks) {
@@ -329,7 +325,7 @@ class InvasionDirector private constructor(
         }
     }
 
-    private fun applyCombat(frame: DirectorFrame, players: Map<String, PlayerObservation>, events: MutableList<DirectorEvent>) {
+    private fun applyCombat(frame: DirectorFrame, events: MutableList<DirectorEvent>) {
         frame.combat.map(CombatObservation::invasionId).toSet().forEach { find(it)?.lastCombatTick = state.tick }
         frame.memberDefeats.distinctBy { it.invasionId to it.memberId }.forEach { defeat ->
             val invasion = find(defeat.invasionId) ?: return@forEach
@@ -347,11 +343,7 @@ class InvasionDirector private constructor(
                 requestRetire(it, InvasionOutcome.TARGET_DIED, events)
             }
         }
-        players.values.filter(PlayerObservation::downed).forEach { player ->
-            primaryTracks().firstOrNull { player.playerId in (it.invasion?.participantPlayerIds ?: emptyList()) }?.let {
-                requestRetire(it, InvasionOutcome.TARGET_DIED, events)
-            }
-        }
+
     }
 
     private fun requestRetire(track: PlayerPressureTrack, outcome: InvasionOutcome, events: MutableList<DirectorEvent>) {

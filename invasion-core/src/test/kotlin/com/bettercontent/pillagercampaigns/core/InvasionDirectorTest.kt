@@ -242,14 +242,18 @@ class InvasionDirectorTest {
         }
     }
 
-    @Test fun `downed retirement clears queued work death grace and assault clear adjusts only assaults`() {
+    @Test fun `only final death retires the encounter and applies death grace`() {
         val engine = InvasionDirector.create(6, fixedSpec())
         engine.transition(DirectorFrame(0, commands = listOf(DirectorCommand.Force("player", EncounterKind.ASSAULT))))
         acknowledge(engine, engine.transition(playerFrame(0)))
         engine.transition(playerFrame(20, surfaces = listOf(grid())))
         engine.transition(playerFrame(0, surfaces = listOf(grid())))
         assertTrue(engine.snapshot().pendingEffects.values.any { it.kind == EffectKind.MATERIALIZE })
-        val retire = engine.transition(DirectorFrame(0, players = listOf(observation("player", downed = true))))
+        val injured = engine.transition(DirectorFrame(0, players = listOf(observation("player", low = true))))
+        assertTrue(injured.effects.none { it.kind == EffectKind.RETIRE })
+        assertNotNull(track(engine).invasion)
+        val retire = engine.transition(DirectorFrame(0, players = listOf(observation("player", low = true)),
+            targetDeaths = listOf(TargetDeathObservation("player"))))
         assertTrue(retire.effects.none { it.kind == EffectKind.MATERIALIZE })
         acknowledge(engine, retire)
         val track = track(engine)
@@ -535,8 +539,8 @@ class InvasionDirectorTest {
     }
 
     private fun fixedSpec() = InvasionRuntimeSpec.create(rules, roster)
-    private fun observation(id: String, x: Int = 0, low: Boolean = false, downed: Boolean = false) =
-        PlayerObservation(id, true, true, true, BlockPoint("minecraft:overworld", x, 64, 0), low, downed)
+    private fun observation(id: String, x: Int = 0, low: Boolean = false) =
+        PlayerObservation(id, true, true, true, BlockPoint("minecraft:overworld", x, 64, 0), low)
     private fun playerFrame(
         ticks: Long, eligible: Boolean = true, surface: Boolean = true,
         results: List<EffectResult> = emptyList(), surfaces: List<SurfaceGridObservation> = emptyList(),

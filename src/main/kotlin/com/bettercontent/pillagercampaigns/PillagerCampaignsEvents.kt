@@ -6,7 +6,7 @@ import com.bettercontent.pillagercampaigns.data.TerrainAtlasData
 import com.bettercontent.pillagercampaigns.system.InvasionRoster
 import com.bettercontent.pillagercampaigns.system.InvasionRuntime
 import com.bettercontent.pillagercampaigns.system.SurfaceGridSampler
-import com.bettercontent.pillagercampaigns.system.DownedCompat
+import com.bettercontent.pillagercampaigns.system.InjuryCompat
 import com.mojang.brigadier.Command
 import com.mojang.brigadier.arguments.StringArgumentType
 import kotlinx.serialization.encodeToString
@@ -179,12 +179,11 @@ object PillagerCampaignsEvents {
             eligible && SurfaceGridSampler.isNearSurface(player),
             physicallyAvailable = player.isAlive,
             position = BlockPoint(player.serverLevel().dimension().location().toString(), player.blockX, player.blockY, player.blockZ),
-            lowHealth = player.health / player.maxHealth.coerceAtLeast(1.0f) < 0.35f,
-            downed = DownedCompat.isDowned(player),
+            lowHealth = InjuryCompat.semanticHealth(player) / player.maxHealth.coerceAtLeast(1.0f) < 0.35f,
         )
     }
 
-    @SubscribeEvent
+    @SubscribeEvent(priority = net.minecraftforge.eventbus.api.EventPriority.LOWEST)
     fun onLivingDeath(event: LivingDeathEvent) {
         val invasion = InvasionRuntime.invasionId(event.entity)
         val member = InvasionRuntime.memberId(event.entity)
@@ -262,7 +261,7 @@ object PillagerCampaignsEvents {
         val player = target(source, name)
         if (player == null) { source.sendFailure(Component.literal("Player is not online")); return 0 }
         val observation = observePlayer(player)
-        if (!observation.eligible || !observation.surfaceEligible || !observation.physicallyAvailable || observation.downed) {
+        if (!observation.eligible || !observation.surfaceEligible || !observation.physicallyAvailable) {
             source.sendFailure(Component.literal("Cannot force a campaign: ${player.scoreboardName} must be alive, standing near the Overworld surface, and in Survival mode"))
             return 0
         }

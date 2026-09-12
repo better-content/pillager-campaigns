@@ -100,7 +100,6 @@ data class PlayerObservation(
     val physicallyAvailable: Boolean,
     val position: BlockPoint? = null,
     val lowHealth: Boolean = false,
-    val downed: Boolean = false,
 )
 
 @Serializable enum class EncounterKind { SCOUT, ASSAULT }

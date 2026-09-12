@@ -3,7 +3,7 @@ package com.bettercontent.pillagercampaigns.gametest
 import com.bettercontent.pillagercampaigns.PillagerCampaignsMod
 import com.bettercontent.pillagercampaigns.PillagerCampaignsEvents
 import com.bettercontent.pillagercampaigns.core.*
-import com.bettercontent.pillagercampaigns.system.DownedCompat
+import com.bettercontent.pillagercampaigns.system.InjuryCompat
 import com.bettercontent.pillagercampaigns.system.InvasionRoster
 import com.bettercontent.pillagercampaigns.system.InvasionRuntime
 import com.bettercontent.pillagercampaigns.system.SurfaceGridSampler
@@ -432,6 +432,7 @@ object PillagerCampaignsGameTests {
 
         val startingHealth = target.health
         var lowestHealth = startingHealth
+        var survivedDeathsDoor = false
         var finished = false
         var combatTicks = 0
         helper.onEachTick {
@@ -442,17 +443,23 @@ object PillagerCampaignsGameTests {
                     playersOverride = listOf(player))
             }
             lowestHealth = minOf(lowestHealth, target.health)
-            val downed = DownedCompat.isDowned(target)
-            if (downed || !target.isAlive || target.health <= 0f) {
+            if (target.isAlive && InjuryCompat.semanticHealth(target) == 0f) {
+                survivedDeathsDoor = true
+                val current = PillagerWorldData.get(helper.level.server).snapshot().tracks.getValue(playerId).invasion
+                helper.assertTrue(current != null && current.phase != InvasionPhase.RETIRING,
+                    "An active Death's Door player must not cause assault retirement")
+            }
+            if (!target.isAlive) {
+                helper.assertTrue(survivedDeathsDoor, "The assault must continue through Death's Door to actual final death")
                 finished = true
                 val killer = target.killCredit
                 helper.assertTrue(killer != null &&
                     killer.persistentData.getString(InvasionRuntime.INVASION_TAG) == invasionId,
                     "A campaign-tagged assault member must receive kill credit, got $killer")
                 PillagerCampaignsMod.LOGGER.info(
-                    "Lethality validation: minimum-intensity authored assault ({} planned, {} materialized) defeated a full-health Survival player in {} ticks; health {} -> {}, downed={}",
+                    "Lethality validation: minimum-intensity authored assault ({} planned, {} materialized) defeated a full-health Survival player in {} ticks; health {} -> {}",
                     memberCount, InvasionRuntime.liveMembers(helper.level.server, invasionId).size,
-                    combatTicks, startingHealth, target.health, downed,
+                    combatTicks, startingHealth, target.health,
                 )
                 InvasionRuntime.retire(helper.level.server, invasionId)
                 PillagerCampaignsEvents.advance(helper.level.server, 0,

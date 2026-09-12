@@ -64,3 +64,6 @@ World saves use campaign schema 4. Schema-2 eligible clocks, cadence, sequence, 
 ## Community
 
 For modpack discussion and playtest feedback, join the [Better Content Discord](https://discord.gg/EkRnZbzqS9).
+
+### Injury integration
+Death’s Door players remain eligible campaign targets. Only confirmed final death triggers death retirement; low-health spacing uses semantic HP, including zero at Death’s Door.
