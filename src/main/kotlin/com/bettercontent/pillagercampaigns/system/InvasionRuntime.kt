@@ -160,6 +160,8 @@ object InvasionRuntime {
         synchronized(spawnTicks) { repeat(spawned.size) { spawnTicks.addLast(server.overworld().gameTime) } }
         PillagerCampaignsMod.LOGGER.info("Materialized {} {} wave {} packet with {} members for {}",
             effect.encounterKind.name.lowercase(), effect.invasionId, effect.waveIndex, spawned.size, target.scoreboardName)
+        net.minecraftforge.common.MinecraftForge.EVENT_BUS.post(
+            com.bettercontent.pillagercampaigns.api.CampaignMaterializedEvent(target, effect.invasionId, effect.waveIndex, spawned.size))
         return true
     }
 
