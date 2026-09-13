@@ -104,10 +104,13 @@ object PillagerCampaignsEvents {
             if (now < nextStrategicRouteAttempt.getOrDefault(invasion.invasionId, Long.MIN_VALUE)) return@mapNotNull null
             nextStrategicRouteAttempt[invasion.invasionId] = now + spec.rules.localApproachRetryTicks
             val cells = atlas.cellsAround(target.x, target.z, spec.rules.approachMaximumBlocks + 16)
-            val localRules = spec.rules.copy(
-                strategicOriginMinimumBlocks = spec.rules.approachMinimumBlocks,
-                strategicOriginMaximumBlocks = spec.rules.approachMaximumBlocks,
-                strategicMaximumSearchExpansions = spec.rules.maximumSearchExpansions,
+            val localRules = StrategicRoutePlanner.Rules(
+                approachMinimumBlocks = spec.rules.approachMinimumBlocks,
+                approachMaximumBlocks = spec.rules.approachMaximumBlocks,
+                approachTargetRadiusBlocks = spec.rules.approachTargetRadiusBlocks,
+                originMinimumBlocks = spec.rules.approachMinimumBlocks,
+                originMaximumBlocks = spec.rules.approachMaximumBlocks,
+                maximumSearchExpansions = spec.rules.maximumSearchExpansions,
             )
             val result = StrategicRoutePlanner.plan(cells, target, localRules,
                 routeSeed(snapshot.worldSeed, invasion.invasionId, invasion.currentWave, invasion.usedAnchors.size),

@@ -37,6 +37,7 @@ Run `./gradlew runCampaignHarnessServer --no-daemon`, complete the standard firs
 
 ```text
 pillager_campaigns harness spawn scout immediate <player> 5
+pillager_campaigns harness protect <player>
 pillager_campaigns inspect <player>
 pillager_campaigns reset <player>
 pillager_campaigns harness spawn assault immediate <player> 5

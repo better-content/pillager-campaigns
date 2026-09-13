@@ -16,6 +16,21 @@ class InvasionForgeRulesTest {
         assertFalse(CampaignHarnessCommands.enabled())
     }
 
+    @Test fun `local route bounds may use the approach band without weakening strategic rules`() {
+        val production = InvasionRules()
+        val local = StrategicRoutePlanner.Rules(
+            approachMinimumBlocks = production.approachMinimumBlocks,
+            approachMaximumBlocks = production.approachMaximumBlocks,
+            approachTargetRadiusBlocks = production.approachTargetRadiusBlocks,
+            originMinimumBlocks = production.approachMinimumBlocks,
+            originMaximumBlocks = production.approachMaximumBlocks,
+            maximumSearchExpansions = production.maximumSearchExpansions,
+        )
+        assertEquals(production.approachMinimumBlocks, local.originMinimumBlocks)
+        assertEquals(production.approachMaximumBlocks, local.originMaximumBlocks)
+        assertTrue(local.maximumSearchExpansions > 0)
+    }
+
     @Test fun `authored roster has bounded explicit progression and vanilla fallback`() {
         val roster = InvasionRoster.authored()
         assertTrue(roster.any { it.entityId == "minecraft:pillager" && !it.optional && it.unlockIntensity == 0 })

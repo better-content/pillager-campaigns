@@ -33,11 +33,12 @@ pillager_campaigns harness spawn assault immediate <player> [intensity]
 pillager_campaigns harness spawn scout routed <player> [intensity]
 pillager_campaigns harness spawn assault routed <player> [intensity]
 pillager_campaigns harness next_wave <player>
+pillager_campaigns harness protect <player>
 pillager_campaigns inspect <player>
 pillager_campaigns reset <player>
 ```
 
-Intensity is optional and bounded to `0..5`. `immediate` selects loaded terrain in the normal 48–72-block arrival band while bypassing strategic travel; all roster, packet, spawn, single-path, targeting, and cleanup behavior remains real. `routed` expedites the virtual strategic leg but leaves production local-approach selection and validation in place. `next_wave` is accepted only after the current assault wave has fully materialized. Use `resetCampaignHarnessWorld` when an explicitly fresh harness world is wanted.
+Intensity is optional and bounded to `0..5`. `immediate` selects loaded terrain in the normal 48–72-block arrival band while bypassing strategic travel; all roster, packet, spawn, single-path, targeting, and cleanup behavior remains real. `routed` expedites the virtual strategic leg but leaves production local-approach selection and validation in place. `next_wave` is accepted only after the current assault wave has fully materialized. `protect` grants a test-only invulnerability ability while retaining Survival mode, so a routed campaign can be observed without combat ending the target's soak. Use `resetCampaignHarnessWorld` when an explicitly fresh harness world is wanted.
 
 The `mvp` runner gate proves deterministic Core properties only: per-player cadence, bounded scaling, composition, effect lifecycle, and terminal resolution under authored surface observations. It does not simulate Minecraft combat, entity AI, terrain, or player behavior.
 

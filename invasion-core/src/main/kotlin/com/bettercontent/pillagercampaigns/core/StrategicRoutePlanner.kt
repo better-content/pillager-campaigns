@@ -7,8 +7,39 @@ import kotlin.math.abs
 object StrategicRoutePlanner {
     data class Result(val route: List<SurfaceCell>, val frontier: StrategicFrontier)
 
+    /** The planner's geometric bounds, which may describe either strategic or local routing. */
+    data class Rules(
+        val approachMinimumBlocks: Int,
+        val approachMaximumBlocks: Int,
+        val approachTargetRadiusBlocks: Int,
+        val originMinimumBlocks: Int,
+        val originMaximumBlocks: Int,
+        val maximumSearchExpansions: Int,
+    ) {
+        init {
+            require(approachMinimumBlocks in 1..approachMaximumBlocks)
+            require(approachTargetRadiusBlocks > 0)
+            require(originMinimumBlocks in 0..originMaximumBlocks)
+            require(maximumSearchExpansions > 0)
+        }
+    }
+
+    fun Rules(rules: InvasionRules): Rules = Rules(
+        approachMinimumBlocks = rules.approachMinimumBlocks,
+        approachMaximumBlocks = rules.approachMaximumBlocks,
+        approachTargetRadiusBlocks = rules.approachTargetRadiusBlocks,
+        originMinimumBlocks = rules.strategicOriginMinimumBlocks,
+        originMaximumBlocks = rules.strategicOriginMaximumBlocks,
+        maximumSearchExpansions = rules.strategicMaximumSearchExpansions,
+    )
+
     fun plan(
         cells: Collection<SurfaceCell>, target: BlockPoint, rules: InvasionRules, seed: Long,
+        start: BlockPoint? = null, excludedApproaches: Collection<BlockPoint> = emptyList(),
+    ): Result? = plan(cells, target, Rules(rules), seed, start, excludedApproaches)
+
+    fun plan(
+        cells: Collection<SurfaceCell>, target: BlockPoint, rules: Rules, seed: Long,
         start: BlockPoint? = null, excludedApproaches: Collection<BlockPoint> = emptyList(),
     ): Result? {
         val known = cells.associateBy { key(it.x, it.z) }
@@ -22,13 +53,13 @@ object StrategicRoutePlanner {
         } else {
             data class ScoredOrigin(val cell: SurfaceCell, val missingLineSamples: Int, val stableRank: Long)
             passable.values.asSequence().filter { !excluded(it) &&
-                distance(it, target) in rules.strategicOriginMinimumBlocks..rules.strategicOriginMaximumBlocks
+                distance(it, target) in rules.originMinimumBlocks..rules.originMaximumBlocks
             }.map { ScoredOrigin(it, missingLineSamples(it, target, known), stableRank(it, seed)) }
                 .sortedWith(compareBy<ScoredOrigin> { it.missingLineSamples }
                     .thenBy { it.stableRank }.thenBy { it.cell.x }.thenBy { it.cell.z })
                 .map(ScoredOrigin::cell).toList()
         }
-        var remainingExpansions = rules.strategicMaximumSearchExpansions
+        var remainingExpansions = rules.maximumSearchExpansions
         for (origin in origins) {
             if (remainingExpansions <= 0) break
             data class Node(val cell: SurfaceCell, val steps: Int)

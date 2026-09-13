@@ -34,6 +34,9 @@ object CampaignHarnessCommands {
         .then(Commands.literal("next_wave")
             .then(Commands.argument("player", EntityArgument.player())
                 .executes { nextWave(it.source, EntityArgument.getPlayer(it, "player")) }))
+        .then(Commands.literal("protect")
+            .then(Commands.argument("player", EntityArgument.player())
+                .executes { protect(it.source, EntityArgument.getPlayer(it, "player")) }))
 
     private fun spawnKind(name: String, kind: EncounterKind): LiteralArgumentBuilder<CommandSourceStack> =
         Commands.literal(name)
@@ -156,6 +159,20 @@ object CampaignHarnessCommands {
             "Harness advanced ${player.scoreboardName} to assault wave ${after.currentWave + 1}/${after.waves.size}"
         }
         source.sendSuccess({ Component.literal(message) }, true)
+        return Command.SINGLE_SUCCESS
+    }
+
+    private fun protect(source: CommandSourceStack, player: ServerPlayer): Int {
+        if (player.gameMode.gameModeForPlayer != GameType.SURVIVAL || !player.isAlive) {
+            source.sendFailure(Component.literal("Harness target must be a living Survival player before protection is enabled"))
+            return 0
+        }
+        player.getAbilities().invulnerable = true
+        player.onUpdateAbilities()
+        source.sendSuccess({ Component.literal(
+            "Protected ${player.scoreboardName} gamemode=${player.gameMode.gameModeForPlayer.name.lowercase()}" +
+                " invulnerable=${player.getAbilities().invulnerable}",
+        ) }, true)
         return Command.SINGLE_SUCCESS
     }
 
