@@ -8,6 +8,7 @@ import com.bettercontent.pillagercampaigns.core.MemberDefeatObservation
 import com.bettercontent.pillagercampaigns.core.StrategicFrontier
 import com.bettercontent.pillagercampaigns.core.StrategicRouteObservation
 import com.bettercontent.pillagercampaigns.data.PillagerWorldData
+import com.bettercontent.pillagercampaigns.data.TerrainAtlasData
 import com.bettercontent.pillagercampaigns.system.InvasionRuntime
 import com.bettercontent.pillagercampaigns.system.SurfaceGridSampler
 import com.mojang.brigadier.Command
@@ -78,9 +79,46 @@ object CampaignHarnessCommands {
             PillagerCampaignsEvents.advance(source.server, 0L, listOf(
                 DirectorCommand.Force(player.uuid.toString(), kind, expediteTravel = true, intensity = intensity),
             ))
+            val invasion = invasionFor(player)
+            if (invasion == null) {
+                source.sendFailure(Component.literal("Harness could not create a campaign for the target player"))
+                return 0
+            }
+            val rules = PillagerCampaignsConfig.rules()
+            val packetSize = minOf(rules.maximumSpawnsPerTick, 6 * invasion.participantPlayerIds.size)
+            val anchor = SurfaceGridSampler.immediateAnchor(
+                player.serverLevel(), player.blockPosition(), rules.approachMinimumBlocks,
+                rules.approachMaximumBlocks, packetSize,
+            )
+            if (anchor == null) {
+                cleanupFailedStart(player)
+                source.sendFailure(Component.literal(
+                    "No loaded open anchor exists ${rules.approachMinimumBlocks}-${rules.approachMaximumBlocks} blocks from the player",
+                ))
+                return 0
+            }
+            val target = invasion.routeTarget ?: BlockPoint(
+                player.serverLevel().dimension().location().toString(), player.blockX, player.blockY, player.blockZ,
+            )
+            val anchorPoint = BlockPoint(target.dimension, anchor.x, anchor.y, anchor.z)
+            PillagerCampaignsEvents.advance(source.server, 0L, strategicRoutes = listOf(
+                StrategicRouteObservation(
+                    invasion.targetPlayerId, invasion.invasionId, target,
+                    TerrainAtlasData.get(source.server).revision, listOf(anchorPoint), StrategicFrontier.OPEN,
+                ),
+            ))
+            val active = invasionFor(player)
+            if (active?.phase != InvasionPhase.ACTIVE) {
+                cleanupFailedStart(player)
+                source.sendFailure(Component.literal(
+                    "Routed campaign could not validate the loaded approach at $anchorPoint",
+                ))
+                return 0
+            }
             source.sendSuccess({ Component.literal(
                 "Harness started routed ${kind.name.lowercase()} for ${player.scoreboardName}" +
-                    " intensity=${intensity ?: "policy"}; refreshed=$refreshed loaded chunks; virtual travel is expedited and local routing remains required",
+                    " intensity=${intensity ?: "policy"}; refreshed=$refreshed loaded chunks; " +
+                    "anchor=$anchorPoint; virtual travel is expedited and local routing remains required",
             ) }, true)
             return Command.SINGLE_SUCCESS
         }
