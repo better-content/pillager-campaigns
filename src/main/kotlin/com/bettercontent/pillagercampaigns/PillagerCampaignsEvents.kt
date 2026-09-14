@@ -68,7 +68,17 @@ object PillagerCampaignsEvents {
         val now = server.overworld().gameTime
         val interval = PillagerCampaignsConfig.intervalTicks.get().toLong()
         if (now % interval != 0L) return
-        advance(server, interval)
+        val observedPlayers = server.playerList.players.map(::observePlayer)
+        val players = if (CampaignHarnessCommands.enabled()) {
+            val snapshot = PillagerWorldData.get(server).snapshot()
+            observedPlayers.filter { player ->
+                val track = snapshot.tracks[player.playerId]
+                track?.invasion != null || track?.joinedInvasionId != null
+            }
+        } else {
+            observedPlayers
+        }
+        advance(server, interval, playersOverride = players)
     }
 
     internal fun advance(
