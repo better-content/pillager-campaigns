@@ -175,7 +175,7 @@ object PillagerCampaignsEvents {
         value.toString().fold(hash) { next, character -> (next xor character.code.toLong()) * 1099511628211L }
     }
 
-    private fun observePlayer(player: ServerPlayer): PlayerObservation {
+    internal fun observePlayer(player: ServerPlayer): PlayerObservation {
         val eligible = player.serverLevel().dimension() == Level.OVERWORLD && player.gameMode.gameModeForPlayer == GameType.SURVIVAL
         return PlayerObservation(
             player.uuid.toString(), eligible,

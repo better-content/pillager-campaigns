@@ -123,9 +123,10 @@ object CampaignHarnessCommands {
             return Command.SINGLE_SUCCESS
         }
 
+        val observation = PillagerCampaignsEvents.observePlayer(player)
         PillagerCampaignsEvents.advance(source.server, 0L, listOf(
             DirectorCommand.Force(player.uuid.toString(), kind, expediteTravel = true, intensity = intensity),
-        ))
+        ), playersOverride = listOf(observation))
         val invasion = invasionFor(player)
         if (invasion == null) {
             source.sendFailure(Component.literal("Harness could not create a campaign for the target player"))
@@ -153,7 +154,7 @@ object CampaignHarnessCommands {
                 invasion.targetPlayerId, invasion.invasionId, target, -2L,
                 listOf(anchorPoint), StrategicFrontier.OPEN,
             ),
-        ))
+        ), playersOverride = listOf(observation))
         val active = invasionFor(player)
         if (active?.validatedAnchor != anchorPoint) {
             cleanupFailedStart(player)
