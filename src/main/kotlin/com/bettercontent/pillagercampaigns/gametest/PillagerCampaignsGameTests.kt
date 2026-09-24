@@ -104,8 +104,11 @@ object PillagerCampaignsGameTests {
             "Remote route chunk must begin unloaded")
         helper.assertTrue(SurfaceGridSampler.surfaceCell(helper.level, remoteChunkX shl 4, remoteChunkZ shl 4) == null,
             "Unknown surface cells must remain impassable")
+        val remoteTarget = BlockPos((remoteChunkX shl 4) + 8, base.y, (remoteChunkZ shl 4) + 8)
+        helper.assertTrue(SurfaceGridSampler.immediateAnchor(helper.level, remoteTarget, 6, 8, 3) == null,
+            "An immediate campaign must not invent a loaded arrival anchor in unexplored terrain")
         helper.assertTrue(helper.level.chunkSource.getChunkNow(remoteChunkX, remoteChunkZ) == null,
-            "Sampling an unknown cell must not load, ticket, or generate its chunk")
+            "Sampling or searching for an immediate anchor must not load, ticket, or generate its chunk")
         zombie.discard()
         helper.succeed()
     }

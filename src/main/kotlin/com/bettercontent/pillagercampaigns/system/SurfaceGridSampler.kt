@@ -87,8 +87,10 @@ object SurfaceGridSampler {
             .flatMap { (dx, dz) ->
                 val x = target.x + dx
                 val z = target.z + dz
+                val chunk = level.chunkSource.getChunkNow(x shr 4, z shr 4)
+                    ?: return@flatMap emptySequence()
                 sequenceOf(
-                    level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z),
+                    chunk.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x and 15, z and 15),
                     target.y,
                 ).distinct().map { y -> BlockPos(x, y, z) }
             }
