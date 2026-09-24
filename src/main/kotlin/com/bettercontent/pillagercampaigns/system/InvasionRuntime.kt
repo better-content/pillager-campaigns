@@ -22,7 +22,15 @@ import net.minecraft.world.entity.monster.PatrollingMonster
 import net.minecraft.world.level.GameType
 import net.minecraft.world.level.Level
 import net.minecraftforge.registries.ForgeRegistries
+import net.minecraftforge.fml.ModList
 import java.util.ArrayDeque
+
+internal enum class CampaignTargetAvailability { LIVE_SAME_LEVEL, DEAD, ABSENT, DIFFERENT_LEVEL }
+
+internal object CampaignTargetPolicy {
+    fun mayPursue(availability: CampaignTargetAvailability): Boolean =
+        availability == CampaignTargetAvailability.LIVE_SAME_LEVEL
+}
 
 object InvasionRuntime {
     private val spawnTicks = ArrayDeque<Long>()
@@ -109,6 +117,9 @@ object InvasionRuntime {
                 mob.persistentData.putString(KIND_TAG, effect.encounterKind.name.lowercase())
                 mob.persistentData.putInt(WAVE_TAG, effect.waveIndex)
                 mob.target = target
+                if (ModList.get().isLoaded("tconstruct")) {
+                    CampaignTconLoadouts.apply(mob)
+                }
                 if (mob is PatrollingMonster) {
                     mob.patrolTarget = targetPos
                     mob.isPatrolLeader = member == effect.members.first()
@@ -206,8 +217,19 @@ object InvasionRuntime {
         val tag = mob.persistentData
         if (!tag.hasUUID(TARGET_TAG)) return
         val level = mob.level() as? ServerLevel ?: return
-        val target = level.getPlayerByUUID(tag.getUUID(TARGET_TAG)) ?: return
-        if (target.isAlive && mob.target !== target) mob.target = target
+        val target = level.server.playerList.getPlayer(tag.getUUID(TARGET_TAG))
+        val availability = when {
+            target == null -> CampaignTargetAvailability.ABSENT
+            !target.isAlive -> CampaignTargetAvailability.DEAD
+            target.serverLevel() !== level -> CampaignTargetAvailability.DIFFERENT_LEVEL
+            else -> CampaignTargetAvailability.LIVE_SAME_LEVEL
+        }
+        if (!CampaignTargetPolicy.mayPursue(availability)) {
+            mob.target = null
+            mob.navigation.stop()
+            return
+        }
+        if (mob.target !== target) mob.target = target
     }
 
     fun invasionId(entity: Entity?): String? =

@@ -262,6 +262,39 @@ class InvasionDirectorTest {
         assertTrue(track.nextAssaultEligibleTick >= track.eligibleTicks + 250)
     }
 
+    @Test fun `assault intent and active clock suspend while target is unavailable then resume`() {
+        val engine = InvasionDirector.create(61, fixedSpec())
+        engine.transition(DirectorFrame(0, commands = listOf(
+            DirectorCommand.Force("player", EncounterKind.ASSAULT),
+        )))
+        engine.transition(playerFrame(0))
+        val arrival = engine.transition(playerFrame(20, surfaces = listOf(grid())))
+        assertTrue(arrival.effects.any { it.kind == EffectKind.MATERIALIZE })
+        acknowledge(engine, arrival)
+
+        val active = track(engine).invasion!!
+        assertEquals(InvasionPhase.ACTIVE, active.phase)
+        val invasionId = active.invasionId
+        val activeTicks = active.activeTicks
+        val unavailable = engine.transition(DirectorFrame(80, players = listOf(
+            PlayerObservation("player", eligible = true, surfaceEligible = true, physicallyAvailable = false,
+                position = BlockPoint("minecraft:overworld", 0, 64, 0)),
+        )))
+
+        assertEquals(invasionId, track(engine).invasion?.invasionId)
+        assertTrue(track(engine).invasion!!.targetUnavailableTicks >= rules.targetUnavailableTicks)
+        assertEquals(activeTicks, track(engine).invasion!!.activeTicks,
+            "An unavailable target suspends the assault clock")
+        assertTrue(unavailable.effects.none { it.kind == EffectKind.RETIRE || it.kind == EffectKind.MATERIALIZE })
+
+        engine.transition(playerFrame(1, surfaces = listOf(grid())))
+        val resumed = track(engine).invasion!!
+        assertEquals(invasionId, resumed.invasionId)
+        assertEquals(0L, resumed.targetUnavailableTicks)
+        assertEquals(activeTicks + 1, resumed.activeTicks)
+        assertEquals(InvasionPhase.ACTIVE, resumed.phase)
+    }
+
     @Test fun `route requires a complete connected loaded observation and rejects partial progress`() {
         val target = BlockPoint("minecraft:overworld", 0, 64, 0)
         val open = (-4..4).map { x -> SurfaceCell(x, 64, 0) }
@@ -430,6 +463,45 @@ class InvasionDirectorTest {
         val resolved = track(engine)
         assertNull(resolved.invasion)
         assertTrue(resolved.nextScoutEligibleTick > resolved.eligibleTicks)
+    }
+
+    @Test fun `assault route timeout suspends approach and resumes when a loaded route appears`() {
+        val timeoutRules = rules.copy(
+            assaultWarningSurfaceTicks = 0,
+            localApproachTimeoutTicks = 40,
+            strategicOriginMinimumBlocks = 5,
+            strategicOriginMaximumBlocks = 6,
+            assaultStrategicMilliBlocksPerTick = 1_000,
+        )
+        val engine = InvasionDirector.create(82, InvasionRuntimeSpec.create(timeoutRules, roster))
+        engine.transition(DirectorFrame(0, commands = listOf(
+            DirectorCommand.Force("player", EncounterKind.ASSAULT, expediteTravel = true),
+        )))
+        engine.transition(playerFrame(0))
+        var invasion = track(engine).invasion!!
+        val invasionId = invasion.invasionId
+        engine.transition(DirectorFrame(0, players = listOf(observation("player")), strategicRoutes = listOf(
+            StrategicRouteObservation("player", invasionId, invasion.routeTarget!!, 1, emptyList(), StrategicFrontier.UNKNOWN),
+        )))
+
+        val timedOut = engine.transition(playerFrame(40))
+        invasion = track(engine).invasion!!
+        assertEquals(invasionId, invasion.invasionId)
+        assertEquals(EncounterKind.ASSAULT, invasion.kind)
+        assertEquals(InvasionPhase.APPROACHING, invasion.phase)
+        assertEquals("local_approach_timeout", invasion.lastRouteFailure)
+        assertEquals(0L, invasion.localApproachTicks, "A timeout starts a fresh bounded retry window")
+        assertTrue(timedOut.effects.none { it.kind == EffectKind.RETIRE || it.kind == EffectKind.MATERIALIZE })
+
+        val route = (6 downTo 4).map { BlockPoint("minecraft:overworld", it, 64, 0) }
+        val resumed = engine.transition(DirectorFrame(0, players = listOf(observation("player")), strategicRoutes = listOf(
+            StrategicRouteObservation("player", invasionId, invasion.routeTarget!!, 2, route, StrategicFrontier.OPEN),
+        )))
+        assertEquals(invasionId, track(engine).invasion!!.invasionId)
+        assertEquals(InvasionPhase.READY_TO_MATERIALIZE, track(engine).invasion!!.phase)
+        assertEquals("none", track(engine).invasion!!.lastRouteFailure)
+        assertTrue(resumed.effects.any { it.kind == EffectKind.MATERIALIZE })
+        assertTrue(resumed.effects.none { it.kind == EffectKind.RETIRE })
     }
 
     @Test fun `moving target relocates virtual corridor without resetting travel progress`() {

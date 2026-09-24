@@ -113,10 +113,14 @@ class InvasionDirector private constructor(
             val target = chooseTarget(invasion, players)
             val available = target?.let { it.eligible && it.physicallyAvailable } == true
             invasion.targetUnavailableTicks = if (available) 0L else invasion.targetUnavailableTicks + elapsed
-            if (invasion.targetUnavailableTicks >= spec.rules.targetUnavailableTicks) {
+            if (invasion.kind == EncounterKind.SCOUT &&
+                invasion.targetUnavailableTicks >= spec.rules.targetUnavailableTicks) {
                 requestRetire(track, InvasionOutcome.RETIRED, events)
                 return@forEach
             }
+            // Assaults retain their hostile intent while no participant can be pursued.
+            // Stop all per-encounter clocks and route work until a target is available again.
+            if (invasion.kind == EncounterKind.ASSAULT && !available) return@forEach
             if (target?.position != null && invasion.routeTarget?.let { moved(it, target.position) } == true) {
                 val previousTarget = invasion.routeTarget
                 invasion.routeTarget = target.position
@@ -152,7 +156,18 @@ class InvasionDirector private constructor(
                             invasion.localApproachTicks += elapsed
                             if (invasion.localApproachTicks >= spec.rules.localApproachTimeoutTicks) {
                                 invasion.lastRouteFailure = "local_approach_timeout"
-                                requestRetire(track, InvasionOutcome.RETIRED, events)
+                                if (invasion.kind == EncounterKind.SCOUT) {
+                                    requestRetire(track, InvasionOutcome.RETIRED, events)
+                                } else {
+                                    // Keep assault intent alive and make the missing local route
+                                    // eligible for another loaded-terrain search.
+                                    invasion.localApproachTicks = 0L
+                                    invasion.strategicRoute.clear()
+                                    invasion.strategicRouteIndex = 0
+                                    invasion.strategicFrontier = StrategicFrontier.UNKNOWN
+                                    invasion.anchor = null
+                                    invasion.validatedAnchor = null
+                                }
                             }
                         }
                     }
@@ -209,6 +224,7 @@ class InvasionDirector private constructor(
         if (capacity == 0) return
         val ready = primaryTracks().mapNotNull(PlayerPressureTrack::invasion).filter { invasion ->
             invasion.phase in setOf(InvasionPhase.READY_TO_MATERIALIZE, InvasionPhase.ACTIVE) &&
+                chooseTarget(invasion, players)?.surfaceEligible == true &&
                 invasion.anchor != null && state.tick >= invasion.nextPacketTick &&
                 state.pendingEffects.values.none { it.invasionId == invasion.invasionId && it.kind == EffectKind.MATERIALIZE } &&
                 invasion.waves[invasion.currentWave].queuedMembers < invasion.waves[invasion.currentWave].members.size
