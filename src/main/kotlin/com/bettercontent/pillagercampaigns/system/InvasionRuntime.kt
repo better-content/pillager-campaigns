@@ -15,10 +15,12 @@ import net.minecraft.server.level.ServerPlayer
 import net.minecraft.sounds.SoundEvents
 import net.minecraft.sounds.SoundSource
 import net.minecraft.world.entity.Entity
+import net.minecraft.world.entity.LivingEntity
 import net.minecraft.world.entity.Mob
 import net.minecraft.world.entity.MobSpawnType
 import net.minecraft.world.entity.SpawnGroupData
 import net.minecraft.world.entity.monster.PatrollingMonster
+import net.minecraft.world.entity.monster.Pillager
 import net.minecraft.world.level.GameType
 import net.minecraft.world.level.Level
 import net.minecraftforge.registries.ForgeRegistries
@@ -30,6 +32,8 @@ internal enum class CampaignTargetAvailability { LIVE_SAME_LEVEL, DEAD, ABSENT, 
 internal object CampaignTargetPolicy {
     fun mayPursue(availability: CampaignTargetAvailability): Boolean =
         availability == CampaignTargetAvailability.LIVE_SAME_LEVEL
+
+    fun recentHit(now: Long, hitTick: Long): Boolean = now >= hitTick && now - hitTick < 200L
 }
 
 object InvasionRuntime {
@@ -39,6 +43,8 @@ object InvasionRuntime {
     const val TARGET_TAG = "PillagerCampaignsTarget"
     const val KIND_TAG = "PillagerCampaignsKind"
     const val WAVE_TAG = "PillagerCampaignsWave"
+    private const val LAST_ATTACKER_TAG = "PillagerCampaignsLastAttacker"
+    private const val LAST_HIT_TICK_TAG = "PillagerCampaignsLastHitTick"
 
     fun execute(server: MinecraftServer, effects: List<DirectorEffect>): List<EffectResult> = effects.map { effect ->
         when (effect.kind) {
@@ -120,6 +126,7 @@ object InvasionRuntime {
                 if (ModList.get().isLoaded("tconstruct")) {
                     CampaignTconLoadouts.apply(mob)
                 }
+                installCombatGoal(mob)
                 if (mob is PatrollingMonster) {
                     mob.patrolTarget = targetPos
                     mob.isPatrolLeader = member == effect.members.first()
@@ -229,7 +236,33 @@ object InvasionRuntime {
             mob.navigation.stop()
             return
         }
-        if (mob.target !== target) mob.target = target
+        val attacker = if (tag.getString(KIND_TAG) == "scout" && tag.hasUUID(LAST_ATTACKER_TAG) &&
+            tag.contains(LAST_HIT_TICK_TAG) && CampaignTargetPolicy.recentHit(level.gameTime, tag.getLong(LAST_HIT_TICK_TAG))) {
+            level.getEntity(tag.getUUID(LAST_ATTACKER_TAG)) as? LivingEntity
+        } else null
+        val activeAttacker = attacker?.takeIf { it.isAlive && it.level() === level && !mob.isAlliedTo(it) }
+        if (activeAttacker == null) {
+            tag.remove(LAST_ATTACKER_TAG)
+            tag.remove(LAST_HIT_TICK_TAG)
+        }
+        val chosen = activeAttacker ?: target
+        if (mob.target !== chosen) mob.target = chosen
+    }
+
+    fun recordScoutHit(mob: Mob, attacker: Entity?) {
+        if (mob.persistentData.getString(KIND_TAG) != "scout") return
+        val living = attacker as? LivingEntity ?: return
+        if (!living.isAlive || living.level() !== mob.level() || mob.isAlliedTo(living)) return
+        mob.persistentData.putUUID(LAST_ATTACKER_TAG, living.uuid)
+        mob.persistentData.putLong(LAST_HIT_TICK_TAG, mob.level().gameTime)
+        mob.target = living
+    }
+
+    fun installCombatGoal(mob: Mob) {
+        if (mob !is Pillager || !ModList.get().isLoaded("tconstruct")) return
+        if (mob.goalSelector.availableGoals.none { it.goal is CampaignTconCrossbowGoal }) {
+            mob.goalSelector.addGoal(2, CampaignTconCrossbowGoal(mob))
+        }
     }
 
     fun invasionId(entity: Entity?): String? =

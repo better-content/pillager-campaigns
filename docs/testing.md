@@ -17,6 +17,8 @@ For the installed pack roster, run `/pillager_campaigns export_runtime_spec` aft
 
 - Use Survival in the Overworld with view and simulation distance four.
 - Verify silent scouts arrive within 7,200–14,400 eligible ticks and contain 3–6 ranged/line recruits.
+- Hit a retreating scout and verify it resumes attacking for ten seconds, then returns to its ordinary campaign target.
+- Verify TConstruct-equipped campaign pillagers pursue reachable players and fire arrows.
 - Verify assaults arrive within 72,000–144,000 eligible ticks and receive the full 2,400 surface-tick warning.
 - Verify each assault has three 16–24-member waves and advances after half the prior wave falls or after 1,500 ticks.
 - Go underground before delivery; verify both clocks continue for an eligible Overworld Survival player but delivery waits for viable surface terrain.

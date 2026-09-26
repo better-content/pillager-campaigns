@@ -20,4 +20,11 @@ class InvasionRuntimeTargetPolicyTest {
     @Test fun `live target in another dimension is suspended`() {
         assertFalse(CampaignTargetPolicy.mayPursue(CampaignTargetAvailability.DIFFERENT_LEVEL))
     }
+
+    @Test fun `scout retaliation lasts exactly two hundred ticks from the latest hit`() {
+        assertTrue(CampaignTargetPolicy.recentHit(1_000, 1_000))
+        assertTrue(CampaignTargetPolicy.recentHit(1_199, 1_000))
+        assertFalse(CampaignTargetPolicy.recentHit(1_200, 1_000))
+        assertFalse(CampaignTargetPolicy.recentHit(999, 1_000))
+    }
 }

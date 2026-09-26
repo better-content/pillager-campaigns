@@ -208,6 +208,8 @@ object PillagerCampaignsEvents {
     fun onLivingHurt(event: LivingHurtEvent) {
         InvasionRuntime.invasionId(event.entity)?.let(combatInvasions::add)
         InvasionRuntime.invasionId(event.source.entity)?.let(combatInvasions::add)
+        (event.entity as? Mob)?.takeIf { InvasionRuntime.invasionId(it) != null }
+            ?.let { InvasionRuntime.recordScoutHit(it, event.source.entity) }
     }
 
     @SubscribeEvent
@@ -222,6 +224,7 @@ object PillagerCampaignsEvents {
         val server = event.level.server ?: return
         val active = PillagerWorldData.get(server).snapshot().tracks.values.any { it.invasion?.invasionId == invasionId }
         if (!active) mob.discard()
+        else InvasionRuntime.installCombatGoal(mob)
     }
 
     @SubscribeEvent

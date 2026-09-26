@@ -108,6 +108,7 @@ dependencies {
     implementation("thedarkcolour:kotlinforforge:$kotlinForForgeVersion")
     compileOnly(fg.deobf("curse.maven:tconstruct-74072:7449219"))
     runtimeOnly(fg.deobf("curse.maven:tconstruct-74072:7449219"))
+    runtimeOnly(fg.deobf("curse.maven:mantle-74924:7563777"))
     testImplementation(kotlin("test"))
     compileOnly(fg.deobf("bettercontent.local:downed-player-revival:1.0.0"))
     runtimeOnly(fg.deobf("bettercontent.local:downed-player-revival:1.0.0"))
