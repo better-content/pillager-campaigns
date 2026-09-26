@@ -155,7 +155,16 @@ object CampaignHarnessCommands {
                     listOf(anchorPoint), StrategicFrontier.OPEN,
                 ),
             ), playersOverride = if (immediate) listOf(PillagerCampaignsEvents.observePlayer(player)) else null)
-            val active = invasionFor(player)
+            var active = invasionFor(player)
+            // A rejected packet leaves the next packet behind the director's spacing clock.
+            // Give a newly accepted route its scheduled packet before choosing another anchor.
+            if (active?.phase == InvasionPhase.READY_TO_MATERIALIZE) {
+                PillagerCampaignsEvents.advance(
+                    source.server, rules.normalPacketSpacingTicks * 3,
+                    playersOverride = if (immediate) listOf(PillagerCampaignsEvents.observePlayer(player)) else null,
+                )
+                active = invasionFor(player)
+            }
             if (active?.validatedAnchor == anchorPoint && active.phase == InvasionPhase.ACTIVE) {
                 return anchorPoint to rejected.size
             }
