@@ -18,6 +18,7 @@ import net.minecraft.commands.CommandSourceStack
 import net.minecraft.commands.Commands
 import net.minecraft.commands.arguments.EntityArgument
 import net.minecraft.network.chat.Component
+import net.minecraft.core.BlockPos
 import net.minecraft.server.level.ServerPlayer
 import net.minecraft.world.level.GameType
 import net.minecraft.world.level.Level
@@ -84,41 +85,19 @@ object CampaignHarnessCommands {
                 source.sendFailure(Component.literal("Harness could not create a campaign for the target player"))
                 return 0
             }
-            val rules = PillagerCampaignsConfig.rules()
-            val packetSize = minOf(rules.maximumSpawnsPerTick, 6 * invasion.participantPlayerIds.size)
-            val anchor = SurfaceGridSampler.immediateAnchor(
-                player.serverLevel(), player.blockPosition(), rules.approachMinimumBlocks,
-                rules.approachMaximumBlocks, packetSize,
-            )
-            if (anchor == null) {
-                cleanupFailedStart(player)
-                source.sendFailure(Component.literal(
-                    "No loaded open anchor exists ${rules.approachMinimumBlocks}-${rules.approachMaximumBlocks} blocks from the player",
-                ))
-                return 0
-            }
-            val target = invasion.routeTarget ?: BlockPoint(
-                player.serverLevel().dimension().location().toString(), player.blockX, player.blockY, player.blockZ,
-            )
-            val anchorPoint = BlockPoint(target.dimension, anchor.x, anchor.y, anchor.z)
-            PillagerCampaignsEvents.advance(source.server, 0L, strategicRoutes = listOf(
-                StrategicRouteObservation(
-                    invasion.targetPlayerId, invasion.invasionId, target,
-                    TerrainAtlasData.get(source.server).revision, listOf(anchorPoint), StrategicFrontier.OPEN,
-                ),
-            ))
+            val (anchorPoint, attempted) = tryLoadedApproaches(source, player, immediate = false)
             val active = invasionFor(player)
-            if (active?.phase != InvasionPhase.ACTIVE) {
+            if (anchorPoint == null || active?.phase != InvasionPhase.ACTIVE) {
                 cleanupFailedStart(player)
                 source.sendFailure(Component.literal(
-                    "Routed campaign could not validate the loaded approach at $anchorPoint",
+                    "Routed campaign could not validate a loaded approach after $attempted candidate(s)",
                 ))
                 return 0
             }
             source.sendSuccess({ Component.literal(
                 "Harness started routed ${kind.name.lowercase()} for ${player.scoreboardName}" +
                     " intensity=${intensity ?: "policy"}; refreshed=$refreshed loaded chunks; " +
-                    "anchor=$anchorPoint; virtual travel is expedited and local routing remains required",
+                    "anchor=$anchorPoint attempts=$attempted; virtual travel is expedited and local routing remains required",
             ) }, true)
             return Command.SINGLE_SUCCESS
         }
@@ -132,43 +111,56 @@ object CampaignHarnessCommands {
             source.sendFailure(Component.literal("Harness could not create a campaign for the target player"))
             return 0
         }
-        val rules = PillagerCampaignsConfig.rules()
-        val packetSize = minOf(rules.maximumSpawnsPerTick, 6 * invasion.participantPlayerIds.size)
-        val anchor = SurfaceGridSampler.immediateAnchor(
-            player.serverLevel(), player.blockPosition(), rules.approachMinimumBlocks,
-            rules.approachMaximumBlocks, packetSize,
-        )
-        if (anchor == null) {
-            cleanupFailedStart(player)
-            source.sendFailure(Component.literal(
-                "No loaded open anchor exists ${rules.approachMinimumBlocks}-${rules.approachMaximumBlocks} blocks from the player",
-            ))
-            return 0
-        }
-        val target = invasion.routeTarget ?: BlockPoint(
-            player.serverLevel().dimension().location().toString(), player.blockX, player.blockY, player.blockZ,
-        )
-        val anchorPoint = BlockPoint(target.dimension, anchor.x, anchor.y, anchor.z)
-        PillagerCampaignsEvents.advance(source.server, 0L, strategicRoutes = listOf(
-            StrategicRouteObservation(
-                invasion.targetPlayerId, invasion.invasionId, target, -2L,
-                listOf(anchorPoint), StrategicFrontier.OPEN,
-            ),
-        ), playersOverride = listOf(observation))
+        val (anchorPoint, attempted) = tryLoadedApproaches(source, player, immediate = true)
         val active = invasionFor(player)
-        if (active?.validatedAnchor != anchorPoint) {
+        if (anchorPoint == null || active?.validatedAnchor != anchorPoint) {
             cleanupFailedStart(player)
             source.sendFailure(Component.literal(
-                "Immediate campaign lead could not validate the loaded approach at $anchorPoint",
+                "Immediate campaign lead could not validate a loaded approach after $attempted candidate(s)",
             ))
             return 0
         }
         source.sendSuccess({ Component.literal(
             "Harness started immediate ${kind.name.lowercase()} for ${player.scoreboardName}" +
-                " intensity=${active.intensity} anchor=$anchorPoint" +
+                " intensity=${active.intensity} anchor=$anchorPoint attempts=$attempted" +
                 " phase=${active.phase.name.lowercase()}",
         ) }, true)
         return Command.SINGLE_SUCCESS
+    }
+
+    private fun tryLoadedApproaches(
+        source: CommandSourceStack,
+        player: ServerPlayer,
+        immediate: Boolean,
+    ): Pair<BlockPoint?, Int> {
+        val rules = PillagerCampaignsConfig.rules()
+        val rejected = mutableListOf<BlockPos>()
+        repeat(8) {
+            val invasion = invasionFor(player) ?: return null to rejected.size
+            if (invasion.phase != InvasionPhase.APPROACHING) return null to rejected.size
+            val packetSize = minOf(rules.maximumSpawnsPerTick, 6 * invasion.participantPlayerIds.size)
+            val anchor = SurfaceGridSampler.immediateAnchor(
+                player.serverLevel(), player.blockPosition(), rules.approachMinimumBlocks,
+                rules.approachMaximumBlocks, packetSize, rejected,
+            ) ?: return null to rejected.size
+            rejected += anchor
+            val target = invasion.routeTarget ?: BlockPoint(
+                player.serverLevel().dimension().location().toString(), player.blockX, player.blockY, player.blockZ,
+            )
+            val anchorPoint = BlockPoint(target.dimension, anchor.x, anchor.y, anchor.z)
+            PillagerCampaignsEvents.advance(source.server, 0L, strategicRoutes = listOf(
+                StrategicRouteObservation(
+                    invasion.targetPlayerId, invasion.invasionId, target,
+                    if (immediate) -2L else TerrainAtlasData.get(source.server).revision,
+                    listOf(anchorPoint), StrategicFrontier.OPEN,
+                ),
+            ), playersOverride = if (immediate) listOf(PillagerCampaignsEvents.observePlayer(player)) else null)
+            val active = invasionFor(player)
+            if (active?.validatedAnchor == anchorPoint && active.phase == InvasionPhase.ACTIVE) {
+                return anchorPoint to rejected.size
+            }
+        }
+        return null to rejected.size
     }
 
     private fun nextWave(source: CommandSourceStack, player: ServerPlayer): Int {

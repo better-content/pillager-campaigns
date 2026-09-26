@@ -80,10 +80,15 @@ object SurfaceGridSampler {
         minimumBlocks: Int,
         maximumBlocks: Int,
         packetSize: Int,
+        excluded: Collection<BlockPos> = emptyList(),
     ): BlockPos? {
         require(minimumBlocks in 1..maximumBlocks)
+        val separation = minOf(16, minimumBlocks)
         return orderedOffsets(maximumBlocks).asSequence()
             .filter { (dx, dz) -> maxOf(abs(dx), abs(dz)) in minimumBlocks..maximumBlocks }
+            .filter { (dx, dz) -> excluded.none { rejected ->
+                maxOf(abs(target.x + dx - rejected.x), abs(target.z + dz - rejected.z)) <= separation
+            } }
             .flatMap { (dx, dz) ->
                 val x = target.x + dx
                 val z = target.z + dz
